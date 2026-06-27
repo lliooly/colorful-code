@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "baseUrl": ".",
+    "paths": {
+      "@colorful-code/prompts": ["packages/prompts/src/index.ts"],
+      "@colorful-code/schema": ["packages/schema/src/index.ts"],
+      "@colorful-code/shared": ["packages/shared/src/index.ts"],
+      "@colorful-code/ui": ["packages/ui/src/index.ts"],
+      "@colorful-code/ui/*": ["packages/ui/src/*"]
+    }
+  }
+}

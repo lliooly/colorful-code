@@ -1,0 +1,9 @@
+node_modules
+.pnpm-store
+.turbo
+.next
+dist
+coverage
+.DS_Store
+bazel-*
+*.tsbuildinfo

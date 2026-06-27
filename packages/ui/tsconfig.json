@@ -1,0 +1,9 @@
+{
+  "extends": "../../tooling/typescript-config/package-library.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"]
+}

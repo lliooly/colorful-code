@@ -1,0 +1,8 @@
+{
+  "extends": "../../tooling/typescript-config/package-library.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"]
+}

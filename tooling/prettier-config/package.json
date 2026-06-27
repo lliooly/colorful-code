@@ -1,0 +1,15 @@
+{
+  "name": "@colorful-code/prettier-config",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "scripts": {
+    "build": "node -e \"const fs=require('node:fs');fs.mkdirSync('dist',{recursive:true});fs.writeFileSync('dist/.keep','');\"",
+    "lint": "node -e \"process.exit(0)\"",
+    "typecheck": "node -e \"process.exit(0)\"",
+    "clean": "rm -rf dist"
+  }
+}

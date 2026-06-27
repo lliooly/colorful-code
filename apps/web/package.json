@@ -1,0 +1,29 @@
+{
+  "name": "@colorful-code/web",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build --webpack",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf .next"
+  },
+  "dependencies": {
+    "@colorful-code/prompts": "workspace:*",
+    "@colorful-code/schema": "workspace:*",
+    "@colorful-code/shared": "workspace:*",
+    "@colorful-code/ui": "workspace:*",
+    "next": "^16.2.9",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.1",
+    "@types/node": "^26.0.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "eslint-config-next": "^16.2.9",
+    "tailwindcss": "^4.3.1"
+  }
+}
