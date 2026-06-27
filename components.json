@@ -10,7 +10,10 @@
     "cssVariables": true
   },
   "aliases": {
-    "components": "@colorful-code/ui/src/components",
-    "utils": "@colorful-code/ui/src/lib/utils"
+    "components": "@colorful-code/ui/components",
+    "ui": "@colorful-code/ui/components/ui",
+    "lib": "@colorful-code/ui/lib",
+    "hooks": "@colorful-code/ui/hooks",
+    "utils": "@colorful-code/ui/lib/utils"
   }
 }
