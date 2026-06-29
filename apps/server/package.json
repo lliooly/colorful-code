@@ -7,7 +7,7 @@
     "build": "nest build",
     "lint": "eslint src --max-warnings=0",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "pnpm --filter @colorful-code/tool-runtime build && tsc -p tsconfig.test.json && node --test dist-test/test/*.e2e.js",
+    "test": "pnpm --filter @colorful-code/tool-runtime build && tsc -p tsconfig.test.json && node --test dist-test/test/*.js",
     "start": "node dist/main.js",
     "clean": "rm -rf dist dist-test"
   },
