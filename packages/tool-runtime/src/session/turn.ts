@@ -24,6 +24,12 @@ export type TurnDeps = {
   emit: (event: SessionEvent) => void;
 };
 
+// Defensive ceiling on model round-trips per turn. Real providers should
+// converge (a completion with no tool use ends the turn); a model that requests
+// tools forever would otherwise loop without bound. Hitting this is treated as
+// an error, surfaced like any other turn failure.
+const MAX_ROUNDS = 64;
+
 // Drains audit entries the runner appended since `from` and emits one
 // `permission_decision` per entry. Returns the new high-water mark.
 function flushAudit(deps: TurnDeps, from: number): number {
@@ -49,10 +55,22 @@ function flushTodos(deps: TurnDeps, previous: string): string {
   return serialized;
 }
 
-// Runs a single turn against the model: emit `running`, build descriptors, stream
-// model events (text -> message_delta; tool_use -> tool_call -> run -> tool_result),
-// feed tool results back into history, and loop until the model emits `end`.
-// Abort -> `cancelled`; thrown errors -> `error` + `error` status.
+// Runs a turn against the model as a multi-round loop, the way real providers
+// work: a completion ends at its tool calls (`stop_reason: tool_use`), so the
+// loop runs the requested tools, appends their results to history, and issues a
+// fresh request. Each `model.run` is one completion.
+//
+// Per round: emit `message_delta` for streamed text and collect `tool_use`
+// events (WITHOUT running them) until `end`. Then push the assistant entry
+// (text + collected tool calls) FIRST, emit `message` if there was text, and
+// stop when no tools were requested (`completed`). Otherwise run each tool
+// (`tool_call` -> runner -> flush audit/todos -> `tool_result`), append ONE
+// `{ role: 'tool', toolResults }` entry (results come AFTER the assistant turn),
+// and loop so the next completion sees the results.
+//
+// Abort (checked at the top of, and after, each completion stream) -> `cancelled`;
+// other thrown errors -> `error` + `error` status. A `MAX_ROUNDS` ceiling guards
+// against a model that requests tools without ever converging.
 export async function runTurn(deps: TurnDeps): Promise<void> {
   deps.emit({ type: "run_status", status: "running", runId: deps.runId });
 
@@ -60,54 +78,112 @@ export async function runTurn(deps: TurnDeps): Promise<void> {
   let todosSnapshot = JSON.stringify(deps.context.todos ?? []);
 
   try {
-    let assistantText = "";
-    const toolCalls: ConversationToolCall[] = [];
-    const toolResults: ConversationToolResult[] = [];
+    for (let round = 0; ; round += 1) {
+      if (round >= MAX_ROUNDS) {
+        throw new Error(
+          "Turn exceeded the maximum of " +
+            String(MAX_ROUNDS) +
+            " model rounds without completing.",
+        );
+      }
 
-    const tools = describeTools(deps.registry.list());
-    const stream = deps.model.run({
-      history: deps.history,
-      tools,
-      signal: deps.signal,
-    });
+      let assistantText = "";
+      const pendingToolUses: ConversationToolCall[] = [];
 
-    for await (const event of stream) {
-      if (deps.signal.aborted) {
+      const tools = describeTools(deps.registry.list());
+      const stream = deps.model.run({
+        history: deps.history,
+        tools,
+        signal: deps.signal,
+      });
+
+      // Consume exactly one completion: accumulate text and collect tool uses;
+      // `end` closes the completion. Tools are NOT run inline — they run after
+      // the stream ends so the assistant entry lands in history first.
+      for await (const event of stream) {
+        if (deps.signal.aborted) {
+          break;
+        }
+
+        if (event.type === "text") {
+          assistantText += event.text;
+          deps.emit({
+            type: "message_delta",
+            runId: deps.runId,
+            text: event.text,
+          });
+          continue;
+        }
+
+        if (event.type === "tool_use") {
+          pendingToolUses.push({
+            toolUseId: event.toolUseId,
+            name: event.name,
+            input: event.input,
+          });
+          continue;
+        }
+
+        // event.type === "end": this completion is done.
         break;
       }
 
-      if (event.type === "text") {
-        assistantText += event.text;
+      if (deps.signal.aborted) {
         deps.emit({
-          type: "message_delta",
+          type: "run_status",
+          status: "cancelled",
           runId: deps.runId,
-          text: event.text,
         });
-        continue;
+        return;
       }
 
-      if (event.type === "tool_use") {
-        const call: ConversationToolCall = {
-          toolUseId: event.toolUseId,
-          name: event.name,
-          input: event.input,
-        };
-        toolCalls.push(call);
+      // History ordering: the assistant turn (text + its tool calls) is appended
+      // BEFORE any tool results so the transcript reads assistant-then-tool.
+      if (assistantText.length > 0 || pendingToolUses.length > 0) {
+        deps.history.push({
+          role: "assistant",
+          content: assistantText,
+          ...(pendingToolUses.length > 0 ? { toolCalls: pendingToolUses } : {}),
+        });
+      }
+      if (assistantText.length > 0) {
+        deps.emit({
+          type: "message",
+          runId: deps.runId,
+          role: "assistant",
+          content: assistantText,
+        });
+      }
+
+      // A completion with no tool requests is the model's final answer.
+      if (pendingToolUses.length === 0) {
+        auditCursor = flushAudit(deps, auditCursor);
+        flushTodos(deps, todosSnapshot);
+        deps.emit({
+          type: "run_status",
+          status: "completed",
+          runId: deps.runId,
+        });
+        return;
+      }
+
+      // Run the requested tools. The runner drives the Pillar 2 permission flow,
+      // which may invoke `context.requestApproval` (the session's parked-approval
+      // wiring) and block until the client answers or the run is cancelled.
+      const toolResults: ConversationToolResult[] = [];
+      for (const call of pendingToolUses) {
         deps.emit({
           type: "tool_call",
           runId: deps.runId,
-          toolUseId: event.toolUseId,
-          name: event.name,
-          input: event.input,
+          toolUseId: call.toolUseId,
+          name: call.name,
+          input: call.input,
         });
 
-        // The runner drives the Pillar 2 permission flow, which may invoke
-        // `context.requestApproval` (the session's parked-approval wiring) and
-        // block here until the client answers or the run is cancelled.
         const result = await deps.runner.run({
-          id: event.toolUseId,
-          name: event.name,
-          input: event.input,
+          id: call.toolUseId,
+          name: call.name,
+          input: call.input,
         });
 
         auditCursor = flushAudit(deps, auditCursor);
@@ -126,46 +202,18 @@ export async function runTurn(deps: TurnDeps): Promise<void> {
           content: result.content,
           ...(result.isError ? { isError: true } : {}),
         });
-
-        // Tool exchanges are appended as their own history entry so the model
-        // can observe results on a subsequent turn.
-        deps.history.push({
-          role: "tool",
-          content: result.content,
-          toolCalls: [call],
-          toolResults: [toolResult],
-        });
-        continue;
       }
 
-      // event.type === "end": the model has nothing further to emit.
-      break;
-    }
-
-    if (deps.signal.aborted) {
-      deps.emit({ type: "run_status", status: "cancelled", runId: deps.runId });
-      return;
-    }
-
-    if (assistantText.length > 0) {
+      // Results land as a single `tool` entry AFTER the assistant turn, so the
+      // next `model.run` observes the complete exchange.
       deps.history.push({
-        role: "assistant",
-        content: assistantText,
-        ...(toolCalls.length > 0 ? { toolCalls } : {}),
-        ...(toolResults.length > 0 ? { toolResults } : {}),
+        role: "tool",
+        content: "",
+        toolResults,
       });
-      deps.emit({
-        type: "message",
-        runId: deps.runId,
-        role: "assistant",
-        content: assistantText,
-      });
+
+      // Loop: re-invoke the model with the appended results.
     }
-
-    auditCursor = flushAudit(deps, auditCursor);
-    flushTodos(deps, todosSnapshot);
-
-    deps.emit({ type: "run_status", status: "completed", runId: deps.runId });
   } catch (error) {
     if (deps.signal.aborted) {
       deps.emit({ type: "run_status", status: "cancelled", runId: deps.runId });

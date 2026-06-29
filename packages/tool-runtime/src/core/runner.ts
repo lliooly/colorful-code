@@ -204,8 +204,23 @@ export class ToolRunner {
           response.message ?? "Tool '" + tool.name + "' was not approved.",
         );
       }
-      parsedInput = response.updatedInput ?? parsedInput;
       this.recordAudit(runtimeContext, toolUse, "allow", merged.reason);
+      if (response.updatedInput !== undefined) {
+        // An approval may rewrite the tool input (e.g. an interactive client
+        // edits it before approving). That rewrite never passed the initial
+        // schema parse, so re-validate it here against the tool schema: an
+        // object-shaped but malformed input (missing or wrong-typed fields)
+        // must not reach `tool.call`.
+        try {
+          parsedInput = tool.inputSchema.parse(response.updatedInput);
+        } catch (error) {
+          const message =
+            error instanceof SchemaValidationError
+              ? error.message
+              : "Invalid updated input";
+          return errorResult(toolUse.id, message);
+        }
+      }
     } else {
       this.recordAudit(runtimeContext, toolUse, "allow", merged.reason);
     }

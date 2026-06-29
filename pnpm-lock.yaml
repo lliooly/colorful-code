@@ -41,6 +41,9 @@ importers:
       '@colorful-code/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@colorful-code/tool-runtime':
+        specifier: workspace:*
+        version: link:../../packages/tool-runtime
       '@fastify/cors':
         specifier: ^11.2.0
         version: 11.2.0

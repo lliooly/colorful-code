@@ -32,45 +32,51 @@ export type ModelTurnInput = {
   signal: AbortSignal;
 };
 
-// Streamed model output for a turn. `text` accumulates into the assistant
-// message; each `tool_use` is dispatched through the runner; `end` closes the
-// turn.
+// Streamed model output for a single completion. `text` accumulates into the
+// assistant message; each `tool_use` is collected by the loop (the tools run
+// after the completion ends, not inline); `end` closes the completion. The turn
+// loop owns re-invocation: after running the collected tools it issues a fresh
+// `run` for the next completion.
 export type ModelTurnEvent =
   | { type: "text"; text: string }
   | { type: "tool_use"; toolUseId: string; name: string; input: JsonObject }
   | { type: "end" };
 
-// The injected model boundary. Real provider wiring is a follow-up; the engine
+// The injected model boundary. One `run` call yields exactly one completion;
+// real providers end a completion at the tool call (`stop_reason: tool_use` /
+// `finish_reason: tool_calls`). Real provider wiring is a follow-up; the engine
 // only depends on this async-iterable contract.
 export interface ModelClient {
   run(input: ModelTurnInput): AsyncIterable<ModelTurnEvent>;
 }
 
-// A deterministic mock model used by tests. The script is replayed in order on
-// every `run`. When `loop` is true (the default) a fresh copy of the script is
-// served per turn, so a multi-turn conversation (e.g. after a tool result feeds
-// back in) keeps producing output instead of stalling. Each script always
-// terminates with an implicit `end` if one is not supplied.
-export type ScriptedModelOptions = {
-  loop?: boolean;
-};
+// A single scripted completion: the `ModelTurnEvent[]` one `run` call serves.
+export type ScriptedRound = ModelTurnEvent[];
 
-export function createScriptedModelClient(
-  script: ModelTurnEvent[],
-  options: ScriptedModelOptions = {},
-): ModelClient {
-  const loop = options.loop ?? true;
-  let consumed = false;
+// A deterministic mock model used by tests, modelling the multi-round loop:
+// each `run` call consumes the next scripted round (one completion). A round
+// auto-terminates with an implicit `end` if one is not supplied. When the
+// rounds run out, every further `run` serves an empty `end`-only completion
+// (no text, no tool uses) so the loop terminates cleanly with `completed`.
+//
+// Example — a two-round script (request a tool, then a final text answer):
+//   createScriptedModelClient([
+//     [{ type: "text", text: "Listing." },
+//      { type: "tool_use", toolUseId: "c1", name: "TaskList", input: {} }],
+//     [{ type: "text", text: "Done." }],
+//   ]);
+export function createScriptedModelClient(rounds: ScriptedRound[]): ModelClient {
+  let index = 0;
   return {
     run(input: ModelTurnInput): AsyncIterable<ModelTurnEvent> {
-      const events = loop || !consumed ? [...script] : [];
-      consumed = true;
-      return scriptedTurn(events, input.signal);
+      const round = index < rounds.length ? rounds[index]! : [];
+      index += 1;
+      return scriptedCompletion(round, input.signal);
     },
   };
 }
 
-async function* scriptedTurn(
+async function* scriptedCompletion(
   events: ModelTurnEvent[],
   signal: AbortSignal,
 ): AsyncIterable<ModelTurnEvent> {

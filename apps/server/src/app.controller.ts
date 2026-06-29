@@ -10,4 +10,9 @@ export class AppController {
   health(): HealthResponse {
     return this.appService.getHealth();
   }
+
+  @Get('health/tools')
+  healthTools(): { status: 'ok'; count: number; names: string[] } {
+    return this.appService.getToolsHealth();
+  }
 }

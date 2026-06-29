@@ -259,6 +259,74 @@ test("ToolRunner: an ask with a requestApproval returning allow proceeds and rec
   assert.equal(audit.at(-1)?.behavior, "allow");
 });
 
+test("ToolRunner: a valid approval updatedInput is applied to the tool call", async () => {
+  let received: string | undefined;
+  const asking = buildTool({
+    name: "Touchy",
+    inputSchema: objectSchema({ value: stringField() }),
+    isDestructive: () => true,
+    async checkPermissions() {
+      return { behavior: "ask", message: "please confirm" };
+    },
+    async call(input) {
+      received = input.value;
+      return { data: input.value };
+    },
+    mapResult(data, toolUseId) {
+      return { toolUseId, content: data };
+    },
+  });
+
+  const requestApproval = async (): Promise<ApprovalResponse> => ({
+    behavior: "allow",
+    updatedInput: { value: "rewritten" },
+  });
+  const context = createRuntimeContext({ requestApproval });
+  const runner = new ToolRunner(new ToolRegistry([asking]), context);
+
+  const result = await runner.run({ id: "t1", name: "Touchy", input: { value: "original" } });
+
+  assert.equal(result.isError, undefined);
+  assert.equal(received, "rewritten");
+  assert.equal(result.content, "rewritten");
+});
+
+test("ToolRunner: a schema-invalid approval updatedInput is rejected before tool.call", async () => {
+  let called = false;
+  const asking = buildTool({
+    name: "Touchy",
+    inputSchema: objectSchema({ value: stringField() }),
+    isDestructive: () => true,
+    async checkPermissions() {
+      return { behavior: "ask", message: "please confirm" };
+    },
+    async call() {
+      called = true;
+      return { data: "ran" };
+    },
+    mapResult(data, toolUseId) {
+      return { toolUseId, content: data };
+    },
+  });
+
+  // The approval rewrites the input to an object-shaped but schema-invalid value
+  // (`value` must be a string). The runner must re-validate and reject it before
+  // the tool runs — object-shape alone is not enough.
+  const requestApproval = async (): Promise<ApprovalResponse> => ({
+    behavior: "allow",
+    updatedInput: { value: 123 } as unknown as Record<string, unknown>,
+  });
+  const audit: PermissionAuditEntry[] = [];
+  const context = createRuntimeContext({ requestApproval, permissionAudit: audit });
+  const runner = new ToolRunner(new ToolRegistry([asking]), context);
+
+  const result = await runner.run({ id: "t1", name: "Touchy", input: { value: "ok" } });
+
+  assert.equal(called, false, "tool must not run with malformed updated input");
+  assert.equal(result.isError, true);
+  assert.match(result.content, /must be a string/);
+});
+
 test("ToolRunner: most-restrictive merge — tool allow + policy deny -> deny", async () => {
   let called = false;
   const tool = buildTool({

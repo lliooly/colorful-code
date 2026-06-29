@@ -4,7 +4,7 @@ import {
   Session,
   createBuiltinTools,
   createScriptedModelClient,
-  type ModelTurnEvent,
+  type ScriptedRound,
   type PermissionContext,
   type SessionEvent,
 } from "../index.js";
@@ -31,14 +31,19 @@ async function waitFor(
   assert.fail("timed out waiting for: " + label);
 }
 
-test("a turn streams text, runs a read-only tool, and completes in order", async () => {
-  const script: ModelTurnEvent[] = [
-    { type: "text", text: "Listing tasks." },
-    { type: "tool_use", toolUseId: "call-1", name: "TaskList", input: {} },
-    { type: "end" },
+test("a turn streams text, runs a read-only tool, then a final completion completes in order", async () => {
+  // Round 0: the model answers with text and requests a tool, ending the
+  // completion. Round 1: the model sees the tool result and gives a final
+  // text answer with no further tools, which ends the turn.
+  const rounds: ScriptedRound[] = [
+    [
+      { type: "text", text: "Listing tasks." },
+      { type: "tool_use", toolUseId: "call-1", name: "TaskList", input: {} },
+    ],
+    [{ type: "text", text: "Here are your tasks." }],
   ];
   const session = new Session({
-    model: createScriptedModelClient(script, { loop: false }),
+    model: createScriptedModelClient(rounds),
     tools: createBuiltinTools(),
   });
 
@@ -50,11 +55,13 @@ test("a turn streams text, runs a read-only tool, and completes in order", async
   const order = events.map((event) => event.type);
   assert.deepEqual(order, [
     "run_status", // running
-    "message_delta",
+    "message_delta", // round 0 text
+    "message", // round 0 assistant entry (pushed before tools run)
     "tool_call",
     "permission_decision",
     "tool_result",
-    "message",
+    "message_delta", // round 1 text
+    "message", // round 1 assistant entry
     "run_status", // completed
   ]);
   assert.equal((events[0] as { status: string }).status, "running");
@@ -63,19 +70,60 @@ test("a turn streams text, runs a read-only tool, and completes in order", async
   const toolResult = events.find((event) => event.type === "tool_result");
   assert.ok(toolResult);
   assert.equal((toolResult as { isError?: boolean }).isError, undefined);
+
+  // History reads: user, assistant(+toolCalls), tool(results), assistant(final).
+  const snapshot = session.snapshot();
+  assert.deepEqual(
+    snapshot.history.map((entry) => entry.role),
+    ["user", "assistant", "tool", "assistant"],
+  );
+  assert.equal(snapshot.history[1]?.toolCalls?.[0]?.name, "TaskList");
+  assert.equal(snapshot.history[2]?.toolResults?.[0]?.toolUseId, "call-1");
+  assert.equal(snapshot.history[3]?.content, "Here are your tasks.");
+});
+
+test("the loop issues multiple model.run calls when a tool use occurs", async () => {
+  // A spy model wrapping the scripted client so we can count completions. A
+  // turn that requests a tool must drive at least two completions (one to
+  // request the tool, one to observe the result and finish).
+  const inner = createScriptedModelClient([
+    [{ type: "tool_use", toolUseId: "call-1", name: "TaskList", input: {} }],
+    [{ type: "text", text: "All done." }],
+  ]);
+  let runCalls = 0;
+  const session = new Session({
+    model: {
+      run(input) {
+        runCalls += 1;
+        return inner.run(input);
+      },
+    },
+    tools: createBuiltinTools(),
+  });
+
+  await session.submit("list tasks");
+
+  assert.ok(
+    runCalls >= 2,
+    "expected the multi-round loop to call model.run at least twice, got " +
+      String(runCalls),
+  );
 });
 
 test("an ask parks on approval_required and completes after an allow response", async () => {
   // `default` mode + a destructive built-in (the model calls Write) routes to
-  // `ask`, which the session surfaces as a correlated approval prompt.
-  const script: ModelTurnEvent[] = [
-    {
-      type: "tool_use",
-      toolUseId: "call-1",
-      name: "Write",
-      input: { path: "/tmp/colorful-session-ignored.txt", content: "x" },
-    },
-    { type: "end" },
+  // `ask`, which the session surfaces as a correlated approval prompt. A second
+  // round with no tools lets the turn complete after the tool result feeds back.
+  const rounds: ScriptedRound[] = [
+    [
+      {
+        type: "tool_use",
+        toolUseId: "call-1",
+        name: "Write",
+        input: { path: "/tmp/colorful-session-ignored.txt", content: "x" },
+      },
+    ],
+    [{ type: "text", text: "Wrote the file." }],
   ];
   const permissionContext: PermissionContext = {
     mode: "default",
@@ -83,7 +131,7 @@ test("an ask parks on approval_required and completes after an allow response", 
     rules: [{ source: "session", behavior: "ask", toolName: "Write" }],
   };
   const session = new Session({
-    model: createScriptedModelClient(script, { loop: false }),
+    model: createScriptedModelClient(rounds),
     tools: createBuiltinTools(),
     permissionContext,
   });
@@ -130,14 +178,15 @@ test("an ask parks on approval_required and completes after an allow response", 
 });
 
 test("cancel mid-run yields run_status:cancelled and auto-denies a pending approval", async () => {
-  const script: ModelTurnEvent[] = [
-    {
-      type: "tool_use",
-      toolUseId: "call-1",
-      name: "Write",
-      input: { path: "/tmp/colorful-session-cancel.txt", content: "x" },
-    },
-    { type: "end" },
+  const rounds: ScriptedRound[] = [
+    [
+      {
+        type: "tool_use",
+        toolUseId: "call-1",
+        name: "Write",
+        input: { path: "/tmp/colorful-session-cancel.txt", content: "x" },
+      },
+    ],
   ];
   const permissionContext: PermissionContext = {
     mode: "default",
@@ -145,7 +194,7 @@ test("cancel mid-run yields run_status:cancelled and auto-denies a pending appro
     rules: [{ source: "session", behavior: "ask", toolName: "Write" }],
   };
   const session = new Session({
-    model: createScriptedModelClient(script, { loop: false }),
+    model: createScriptedModelClient(rounds),
     tools: createBuiltinTools(),
     permissionContext,
   });
@@ -173,12 +222,9 @@ test("cancel mid-run yields run_status:cancelled and auto-denies a pending appro
 });
 
 test("snapshot then restore preserves history and permission mode", async () => {
-  const script: ModelTurnEvent[] = [
-    { type: "text", text: "Hello there." },
-    { type: "end" },
-  ];
+  const rounds: ScriptedRound[] = [[{ type: "text", text: "Hello there." }]];
   const session = new Session({
-    model: createScriptedModelClient(script, { loop: false }),
+    model: createScriptedModelClient(rounds),
     tools: createBuiltinTools(),
     permissionContext: { mode: "plan", workspaceRoots: ["/work"], rules: [] },
   });
@@ -192,7 +238,7 @@ test("snapshot then restore preserves history and permission mode", async () => 
   assert.equal(snapshot.history[1]?.content, "Hello there.");
 
   const restored = Session.restore(snapshot, {
-    model: createScriptedModelClient([{ type: "end" }], { loop: false }),
+    model: createScriptedModelClient([]),
     tools: createBuiltinTools(),
   });
 
