@@ -150,6 +150,12 @@ importers:
 
   packages/shared: {}
 
+  packages/tool-runtime:
+    devDependencies:
+      '@types/node':
+        specifier: ^26.0.1
+        version: 26.0.1
+
   packages/ui:
     dependencies:
       clsx:

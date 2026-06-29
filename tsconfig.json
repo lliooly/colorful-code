@@ -3,19 +3,48 @@
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
-      "@colorful-code/prompts": ["packages/prompts/src/index.ts"],
-      "@colorful-code/schema": ["packages/schema/src/index.ts"],
-      "@colorful-code/shared": ["packages/shared/src/index.ts"],
-      "@colorful-code/ui": ["packages/ui/src/index.ts"],
-      "@colorful-code/ui/*": ["packages/ui/src/*"],
-      "@colorful-code/ui/components": ["packages/ui/src/components"],
-      "@colorful-code/ui/components/*": ["packages/ui/src/components/*"],
-      "@colorful-code/ui/components/ui": ["packages/ui/src/components/ui"],
-      "@colorful-code/ui/components/ui/*": ["packages/ui/src/components/ui/*"],
-      "@colorful-code/ui/lib": ["packages/ui/src/lib"],
-      "@colorful-code/ui/lib/*": ["packages/ui/src/lib/*"],
-      "@colorful-code/ui/hooks": ["packages/ui/src/hooks"],
-      "@colorful-code/ui/hooks/*": ["packages/ui/src/hooks/*"]
+      "@colorful-code/prompts": [
+        "packages/prompts/src/index.ts"
+      ],
+      "@colorful-code/schema": [
+        "packages/schema/src/index.ts"
+      ],
+      "@colorful-code/shared": [
+        "packages/shared/src/index.ts"
+      ],
+      "@colorful-code/ui": [
+        "packages/ui/src/index.ts"
+      ],
+      "@colorful-code/ui/*": [
+        "packages/ui/src/*"
+      ],
+      "@colorful-code/ui/components": [
+        "packages/ui/src/components"
+      ],
+      "@colorful-code/ui/components/*": [
+        "packages/ui/src/components/*"
+      ],
+      "@colorful-code/ui/components/ui": [
+        "packages/ui/src/components/ui"
+      ],
+      "@colorful-code/ui/components/ui/*": [
+        "packages/ui/src/components/ui/*"
+      ],
+      "@colorful-code/ui/lib": [
+        "packages/ui/src/lib"
+      ],
+      "@colorful-code/ui/lib/*": [
+        "packages/ui/src/lib/*"
+      ],
+      "@colorful-code/ui/hooks": [
+        "packages/ui/src/hooks"
+      ],
+      "@colorful-code/ui/hooks/*": [
+        "packages/ui/src/hooks/*"
+      ],
+      "@colorful-code/tool-runtime": [
+        "packages/tool-runtime/src/index.ts"
+      ]
     }
   },
   "files": []

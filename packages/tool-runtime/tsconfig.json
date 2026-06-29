@@ -1,0 +1,9 @@
+{
+  "extends": "../../tooling/typescript-config/package-library.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts", "src/__tests__/**", "dist", "dist-test"]
+}
