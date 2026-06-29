@@ -13,6 +13,9 @@
     "test": "tsc -p tsconfig.test.json && node --test dist-test/__tests__/*.test.js",
     "clean": "rm -rf dist dist-test"
   },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
   "devDependencies": {
     "@types/node": "^26.0.1"
   }

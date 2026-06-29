@@ -3,8 +3,18 @@ import {
   createRuntimeContext,
   type JsonObject,
   type RuntimeContext,
+  type Tool,
   type ToolResultBlock,
 } from "./tool.js";
+import {
+  evaluatePermission,
+  isMoreRestrictive,
+  type PermissionAuditEntry,
+  type PermissionBehavior,
+  type PermissionDecisionReason,
+  type PermissionResult,
+  type PermissionRuleUpdate,
+} from "./permissions.js";
 import type { ToolRegistry } from "./registry.js";
 
 export type ToolUseRequest = {
@@ -17,11 +27,70 @@ function errorResult(toolUseId: string, message: string): ToolResultBlock {
   return { toolUseId, content: message, isError: true };
 }
 
+// Carries the merged decision plus the input that travels with an `allow`/`ask`
+// (a layer may rewrite the input, e.g. to redact an argument).
+type MergedDecision = {
+  behavior: PermissionBehavior;
+  message?: string;
+  reason?: PermissionDecisionReason;
+  suggestions?: PermissionRuleUpdate[];
+  input: JsonObject;
+};
+
+// Folds one layer's verdict into the running decision, keeping the most
+// restrictive behaviour (deny > ask > allow). A more-restrictive layer replaces
+// the message/reason/suggestions. An equally-ranked layer keeps the running
+// behaviour but may fill in a missing reason (so a later, more descriptive
+// allow/ask reason surfaces in the audit). Any non-deny layer's `updatedInput`
+// carries forward so input rewrites from an allowing layer are preserved.
+function mergeDecision(
+  current: MergedDecision,
+  next: PermissionResult,
+): MergedDecision {
+  const nextInput =
+    (next.behavior === "deny" ? undefined : next.updatedInput) ?? current.input;
+  if (isMoreRestrictive(next.behavior, current.behavior)) {
+    return {
+      behavior: next.behavior,
+      message: next.behavior === "allow" ? undefined : next.message,
+      reason: next.reason,
+      suggestions: next.behavior === "ask" ? next.suggestions : undefined,
+      input: nextInput,
+    };
+  }
+  return {
+    ...current,
+    reason: current.reason ?? next.reason,
+    input: nextInput,
+  };
+}
+
 export class ToolRunner {
   constructor(
     private readonly registry: ToolRegistry,
     private readonly baseContext: RuntimeContext = createRuntimeContext(),
   ) {}
+
+  // Appends a permission decision to `context.permissionAudit` when the caller
+  // supplied an audit log. No-op otherwise.
+  private recordAudit(
+    context: RuntimeContext,
+    toolUse: ToolUseRequest,
+    behavior: PermissionBehavior,
+    reason?: PermissionDecisionReason,
+  ): void {
+    if (!context.permissionAudit) {
+      return;
+    }
+    const entry: PermissionAuditEntry = {
+      toolUseId: toolUse.id,
+      toolName: toolUse.name,
+      behavior,
+      ...(reason ? { reason } : {}),
+      at: Date.now(),
+    };
+    context.permissionAudit.push(entry);
+  }
 
   canRunConcurrently(toolUse: ToolUseRequest): boolean {
     const tool = this.registry.get(toolUse.name);
@@ -66,19 +135,79 @@ export class ToolRunner {
       return errorResult(toolUse.id, validation.message);
     }
 
+    // Layered permission decision: the tool's own `checkPermissions`, then the
+    // global `permissionContext` via `evaluatePermission` (if present), then the
+    // caller-supplied `permissionPolicy` (if present). Merge most-restrictive-wins
+    // (deny > ask > allow), carrying any rewritten input forward.
     const toolDecision = await tool.checkPermissions(parsedInput, runtimeContext);
-    if (toolDecision.behavior === "deny") {
-      return errorResult(toolUse.id, toolDecision.message);
+    let merged: MergedDecision = {
+      behavior: toolDecision.behavior,
+      message: toolDecision.behavior === "allow" ? undefined : toolDecision.message,
+      reason: toolDecision.reason,
+      suggestions:
+        toolDecision.behavior === "ask" ? toolDecision.suggestions : undefined,
+      input:
+        (toolDecision.behavior === "deny"
+          ? undefined
+          : toolDecision.updatedInput) ?? parsedInput,
+    };
+
+    if (runtimeContext.permissionContext) {
+      merged = mergeDecision(
+        merged,
+        evaluatePermission(tool as Tool, merged.input, runtimeContext),
+      );
     }
 
-    parsedInput = toolDecision.updatedInput ?? parsedInput;
-
     if (runtimeContext.permissionPolicy) {
-      const policyDecision = await runtimeContext.permissionPolicy(tool, parsedInput, runtimeContext);
-      if (policyDecision.behavior === "deny") {
-        return errorResult(toolUse.id, policyDecision.message);
+      const policyDecision = await runtimeContext.permissionPolicy(
+        tool,
+        merged.input,
+        runtimeContext,
+      );
+      merged = mergeDecision(merged, policyDecision);
+    }
+
+    parsedInput = merged.input;
+
+    if (merged.behavior === "deny") {
+      this.recordAudit(runtimeContext, toolUse, "deny", merged.reason);
+      return errorResult(
+        toolUse.id,
+        merged.message ?? "Tool '" + tool.name + "' was denied by policy.",
+      );
+    }
+
+    if (merged.behavior === "ask") {
+      if (!runtimeContext.requestApproval) {
+        // Headless: no approval port, so an `ask` cannot be satisfied. Deny with
+        // a clear message and record the decision as a deny.
+        this.recordAudit(runtimeContext, toolUse, "deny", merged.reason);
+        return errorResult(
+          toolUse.id,
+          (merged.message ??
+            "Tool '" + tool.name + "' requires approval") +
+            " (no approval handler available; denied).",
+        );
       }
-      parsedInput = policyDecision.updatedInput ?? parsedInput;
+      const response = await runtimeContext.requestApproval({
+        toolUseId: toolUse.id,
+        toolName: tool.name,
+        input: parsedInput,
+        message: merged.message ?? "Tool '" + tool.name + "' requires approval.",
+        ...(merged.suggestions ? { suggestions: merged.suggestions } : {}),
+      });
+      if (response.behavior === "deny") {
+        this.recordAudit(runtimeContext, toolUse, "deny", merged.reason);
+        return errorResult(
+          toolUse.id,
+          response.message ?? "Tool '" + tool.name + "' was not approved.",
+        );
+      }
+      parsedInput = response.updatedInput ?? parsedInput;
+      this.recordAudit(runtimeContext, toolUse, "allow", merged.reason);
+    } else {
+      this.recordAudit(runtimeContext, toolUse, "allow", merged.reason);
     }
 
     try {
