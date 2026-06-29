@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import {
   loadDevelopmentEnvFileIfPresent,
   loadServerEnvironment,
-  toRedactedServerEnvironment
+  toRedactedServerEnvironment,
 } from '../src/config/environment';
 
 test('loadServerEnvironment uses development-safe defaults', () => {
@@ -26,24 +26,24 @@ test('loadServerEnvironment accepts a valid PORT', () => {
 test('loadServerEnvironment rejects an invalid PORT', () => {
   assert.throws(
     () => loadServerEnvironment({ PORT: 'abc' }),
-    /PORT must be an integer between 1 and 65535/
+    /PORT must be an integer between 1 and 65535/,
   );
 });
 
 test('loadServerEnvironment parses comma-separated CORS origins', () => {
   const config = loadServerEnvironment({
-    CORS_ORIGIN: 'https://app.example.com, https://admin.example.com'
+    CORS_ORIGIN: 'https://app.example.com, https://admin.example.com',
   });
   assert.deepEqual(config.corsOrigins, [
     'https://app.example.com',
-    'https://admin.example.com'
+    'https://admin.example.com',
   ]);
 });
 
 test('loadServerEnvironment requires CORS_ORIGIN in production', () => {
   assert.throws(
     () => loadServerEnvironment({ NODE_ENV: 'production' }),
-    /CORS_ORIGIN is required when NODE_ENV=production/
+    /CORS_ORIGIN is required when NODE_ENV=production/,
   );
 });
 
@@ -52,9 +52,9 @@ test('loadServerEnvironment rejects malformed CORS origins', () => {
     () =>
       loadServerEnvironment({
         NODE_ENV: 'production',
-        CORS_ORIGIN: 'https://app.example.com,not-a-url'
+        CORS_ORIGIN: 'https://app.example.com,not-a-url',
       }),
-    /CORS_ORIGIN entries must be absolute http\(s\) origins/
+    /CORS_ORIGIN entries must be absolute http\(s\) origins/,
   );
 });
 
@@ -63,8 +63,8 @@ test('toRedactedServerEnvironment masks provider secrets', () => {
     loadServerEnvironment({
       ANTHROPIC_API_KEY: 'sk-ant-real',
       OPENAI_API_KEY: '',
-      DEEPSEEK_API_KEY: 'deepseek-real'
-    })
+      DEEPSEEK_API_KEY: 'deepseek-real',
+    }),
   );
 
   assert.equal(redacted.providerKeys.anthropic, '[set]');
@@ -82,6 +82,24 @@ test('loadDevelopmentEnvFileIfPresent loads .env outside production', () => {
     delete process.env.PORT;
     loadDevelopmentEnvFileIfPresent(dir, { NODE_ENV: 'development' });
     assert.equal(process.env.PORT, '3901');
+  } finally {
+    if (previousPort === undefined) {
+      delete process.env.PORT;
+    } else {
+      process.env.PORT = previousPort;
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('loadDevelopmentEnvFileIfPresent skips .env in production', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'colorful-code-env-'));
+  const previousPort = process.env.PORT;
+  try {
+    writeFileSync(join(dir, '.env'), 'PORT=3901\n');
+    delete process.env.PORT;
+    loadDevelopmentEnvFileIfPresent(dir, { NODE_ENV: 'production' });
+    assert.equal(process.env.PORT, undefined);
   } finally {
     if (previousPort === undefined) {
       delete process.env.PORT;

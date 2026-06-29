@@ -1,12 +1,12 @@
 import { NestFactory } from '@nestjs/core';
 import {
   FastifyAdapter,
-  NestFastifyApplication
+  NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { AppModule } from './app.module';
 import {
   loadDevelopmentEnvFileIfPresent,
-  loadServerEnvironment
+  loadServerEnvironment,
 } from './config/environment';
 
 async function bootstrap() {
@@ -15,11 +15,11 @@ async function bootstrap() {
 
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
-    new FastifyAdapter()
+    new FastifyAdapter(),
   );
 
   app.enableCors({
-    origin: serverEnvironment.corsOrigins
+    origin: serverEnvironment.corsOrigins,
   });
 
   await app.listen(serverEnvironment.port, serverEnvironment.host);

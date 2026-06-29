@@ -9,6 +9,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm --filter @colorful-code/tool-runtime build && tsc -p tsconfig.test.json && node --test dist-test/test/*.js",
     "start": "node dist/main.js",
+    "start:prod": "node dist/main.js",
     "clean": "rm -rf dist dist-test"
   },
   "dependencies": {

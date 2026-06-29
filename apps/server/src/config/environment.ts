@@ -32,7 +32,7 @@ const defaultCorsOrigins = ['http://localhost:3000'];
 
 export function loadDevelopmentEnvFileIfPresent(
   cwd = process.cwd(),
-  env = process.env
+  env = process.env,
 ): void {
   if (env.NODE_ENV === 'production') {
     return;
@@ -45,7 +45,7 @@ export function loadDevelopmentEnvFileIfPresent(
 }
 
 export function loadServerEnvironment(
-  env: EnvironmentSource = process.env
+  env: EnvironmentSource = process.env,
 ): ServerEnvironment {
   const nodeEnv = parseNodeEnv(env.NODE_ENV);
   const isProduction = nodeEnv === 'production';
@@ -62,13 +62,13 @@ export function loadServerEnvironment(
     providerKeys: {
       anthropic: readNonEmpty(env.ANTHROPIC_API_KEY),
       openai: readNonEmpty(env.OPENAI_API_KEY),
-      deepseek: readNonEmpty(env.DEEPSEEK_API_KEY)
-    }
+      deepseek: readNonEmpty(env.DEEPSEEK_API_KEY),
+    },
   };
 }
 
 export function toRedactedServerEnvironment(
-  config: ServerEnvironment
+  config: ServerEnvironment,
 ): RedactedServerEnvironment {
   return {
     nodeEnv: config.nodeEnv,
@@ -79,8 +79,8 @@ export function toRedactedServerEnvironment(
     providerKeys: {
       anthropic: redact(config.providerKeys.anthropic),
       openai: redact(config.providerKeys.openai),
-      deepseek: redact(config.providerKeys.deepseek)
-    }
+      deepseek: redact(config.providerKeys.deepseek),
+    },
   };
 }
 
@@ -113,7 +113,7 @@ function parsePort(value: string | undefined): number {
 
 function parseCorsOrigins(
   value: string | undefined,
-  isProduction: boolean
+  isProduction: boolean,
 ): string[] {
   const normalized = readNonEmpty(value);
   if (!normalized) {

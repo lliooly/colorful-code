@@ -8,3 +8,13 @@ coverage
 .DS_Store
 bazel-*
 *.tsbuildinfo
+.env
+.env.local
+.env.development
+.env.production
+.env.*.local
+apps/*/.env
+apps/*/.env.local
+apps/*/.env.development
+apps/*/.env.production
+apps/*/.env.*.local

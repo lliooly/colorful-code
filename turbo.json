@@ -1,9 +1,11 @@
 {
   "$schema": "https://turborepo.com/schema.json",
+  "globalEnv": ["NODE_ENV"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**", ".next/**"]
+      "outputs": ["dist/**", ".next/**"],
+      "env": ["NEXT_PUBLIC_API_BASE_URL"]
     },
     "lint": {
       "dependsOn": ["^lint"]
@@ -13,7 +15,30 @@
     },
     "dev": {
       "cache": false,
-      "persistent": true
+      "persistent": true,
+      "passThroughEnv": [
+        "HOST",
+        "PORT",
+        "CORS_ORIGIN",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "NEXT_PUBLIC_API_BASE_URL"
+      ]
+    },
+    "start:prod": {
+      "cache": false,
+      "persistent": true,
+      "dependsOn": ["build"],
+      "passThroughEnv": [
+        "HOST",
+        "PORT",
+        "CORS_ORIGIN",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "NEXT_PUBLIC_API_BASE_URL"
+      ]
     },
     "clean": {
       "cache": false

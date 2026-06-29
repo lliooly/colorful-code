@@ -1,3 +1,3 @@
-import config from '@colorful-code/prettier-config';
+import config from './tooling/prettier-config/index.mjs';
 
 export default config;
