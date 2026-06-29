@@ -1,4 +1,4 @@
-import { systemPrompt } from '@colorful-code/prompts';
+import { STATIC_SYSTEM_PROMPT_SECTIONS } from '@colorful-code/prompts';
 import { WORKSPACE_NAME } from '@colorful-code/shared';
 import { Button } from '@/components/ui/button';
 
@@ -14,6 +14,8 @@ const capabilityItems = [
   'Bazel entrypoint reserved for later',
   'CI checks for lint, typecheck, and build'
 ] as const;
+
+const promptPreview = STATIC_SYSTEM_PROMPT_SECTIONS.join('\n\n');
 
 export default function HomePage() {
   return (
@@ -99,7 +101,7 @@ export default function HomePage() {
                 Prompt Seed
               </p>
               <p className="mt-4 whitespace-pre-wrap text-sm leading-7 text-background/78">
-                {systemPrompt}
+                {promptPreview}
               </p>
             </div>
 
