@@ -1,23 +1,24 @@
-import { ToolRegistry } from "../core/registry.js";
-import { ToolRunner } from "../core/runner.js";
-import { ToolScheduler } from "../core/scheduler.js";
+import { ToolRegistry } from '../core/registry.js';
+import { ToolRunner } from '../core/runner.js';
+import { ToolScheduler } from '../core/scheduler.js';
 import {
   createRuntimeContext,
   type RuntimeContext,
   type TodoItem,
   type Tool,
-} from "../core/tool.js";
+} from '../core/tool.js';
 import type {
   ApprovalRequest,
   ApprovalResponse,
   PermissionAuditEntry,
   PermissionContext,
   PermissionMode,
-} from "../core/permissions.js";
-import type { ControlMessage } from "./control.js";
-import type { SessionEvent, SessionEventListener } from "./events.js";
-import type { ConversationEntry, ModelClient } from "./model.js";
-import { runTurn } from "./turn.js";
+} from '../core/permissions.js';
+import type { CompactionConfig } from './compaction.js';
+import type { ControlMessage } from './control.js';
+import type { SessionEvent, SessionEventListener } from './events.js';
+import type { ConversationEntry, ModelClient } from './model.js';
+import { runTurn } from './turn.js';
 
 // Dependencies injected when constructing or restoring a session. `tools` and
 // `model` are required; everything else has a sensible default.
@@ -27,6 +28,16 @@ export type SessionDeps = {
   id?: string;
   cwd?: string;
   permissionContext?: PermissionContext;
+  // The agent's system prompt. Supplied by the caller (the session engine is
+  // prompt-agnostic; the server renders it from `@colorful-code/prompts`) and
+  // forwarded to the model on every turn. Not part of the snapshot — it is
+  // re-supplied via `restore`'s deps, like the model client and tools.
+  systemPrompt?: string;
+  // Optional automatic context-compaction policy (window/threshold/keep budget +
+  // summarization prompt). Like the model and system prompt it is live wiring,
+  // not snapshot data, so it is re-supplied on `restore`. Absent => no
+  // compaction.
+  compaction?: CompactionConfig;
 };
 
 // The serializable shape persisted between sessions. It carries only data — no
@@ -43,7 +54,7 @@ export type SessionSnapshot = {
 
 function defaultPermissionContext(cwd?: string): PermissionContext {
   return {
-    mode: "default",
+    mode: 'default',
     workspaceRoots: cwd ? [cwd] : [],
     rules: [],
   };
@@ -52,7 +63,7 @@ function defaultPermissionContext(cwd?: string): PermissionContext {
 let sessionCounter = 0;
 function nextSessionId(): string {
   sessionCounter += 1;
-  return "session-" + String(sessionCounter);
+  return 'session-' + String(sessionCounter);
 }
 
 // The product boundary: owns conversation history, the runtime context (todos,
@@ -69,6 +80,8 @@ export class Session {
   readonly permissionContext: PermissionContext;
 
   private readonly model: ModelClient;
+  private readonly systemPrompt: string | undefined;
+  private readonly compaction: CompactionConfig | undefined;
   private readonly history: ConversationEntry[] = [];
   private readonly listeners = new Set<SessionEventListener>();
   // Maps a minted requestId to the resolver of its parked approval promise.
@@ -90,6 +103,8 @@ export class Session {
 
     this.registry = new ToolRegistry(deps.tools);
     this.model = deps.model;
+    this.systemPrompt = deps.systemPrompt;
+    this.compaction = deps.compaction;
 
     this.context = createRuntimeContext({
       ...(deps.cwd ? { cwd: deps.cwd } : {}),
@@ -123,10 +138,10 @@ export class Session {
   private requestApproval(request: ApprovalRequest): Promise<ApprovalResponse> {
     return new Promise<ApprovalResponse>((resolve) => {
       this.requestCounter += 1;
-      const requestId = this.id + "-approval-" + String(this.requestCounter);
+      const requestId = this.id + '-approval-' + String(this.requestCounter);
       this.pending.set(requestId, resolve);
       this.emit({
-        type: "approval_required",
+        type: 'approval_required',
         runId: this.activeRunId ?? this.id,
         requestId,
         toolUseId: request.toolUseId,
@@ -140,10 +155,7 @@ export class Session {
 
   // Resolves a parked approval. Unknown ids are ignored (already answered or
   // cancelled).
-  private resolveApproval(
-    requestId: string,
-    response: ApprovalResponse,
-  ): void {
+  private resolveApproval(requestId: string, response: ApprovalResponse): void {
     const resolver = this.pending.get(requestId);
     if (!resolver) {
       return;
@@ -157,7 +169,7 @@ export class Session {
   private denyAllPending(message: string): void {
     for (const [requestId, resolver] of this.pending) {
       this.pending.delete(requestId);
-      resolver({ behavior: "deny", message });
+      resolver({ behavior: 'deny', message });
     }
   }
 
@@ -168,7 +180,7 @@ export class Session {
       await this.activeRun.catch(() => undefined);
     }
 
-    this.history.push({ role: "user", content: text });
+    this.history.push({ role: 'user', content: text });
 
     // A fresh AbortController per run so a prior cancellation does not poison the
     // next turn. The runtime context tracks the current signal.
@@ -176,18 +188,24 @@ export class Session {
     this.context.signal = this.abortController.signal;
 
     this.runCounter += 1;
-    const runId = this.id + "-run-" + String(this.runCounter);
+    const runId = this.id + '-run-' + String(this.runCounter);
     this.activeRunId = runId;
 
     const run = runTurn({
       runId,
       model: this.model,
       registry: this.registry,
-      runner: this.runner,
+      scheduler: this.scheduler,
       context: this.context,
       history: this.history,
       signal: this.abortController.signal,
       emit: (event) => this.emit(event),
+      ...(this.systemPrompt !== undefined
+        ? { systemPrompt: this.systemPrompt }
+        : {}),
+      ...(this.compaction !== undefined
+        ? { compaction: this.compaction }
+        : {}),
     }).finally(() => {
       if (this.activeRunId === runId) {
         this.activeRunId = undefined;
@@ -202,17 +220,17 @@ export class Session {
   // background (callers awaiting completion should use `submit`).
   send(message: ControlMessage): void {
     switch (message.type) {
-      case "user_message":
+      case 'user_message':
         void this.submit(message.text);
         return;
-      case "approval_response":
+      case 'approval_response':
         this.resolveApproval(message.requestId, message.decision);
         return;
-      case "cancel":
+      case 'cancel':
         this.abortController.abort();
-        this.denyAllPending("Run was cancelled.");
+        this.denyAllPending('Run was cancelled.');
         return;
-      case "set_permission_mode":
+      case 'set_permission_mode':
         this.permissionContext.mode = message.mode;
         return;
     }
@@ -235,13 +253,24 @@ export class Session {
   // client cannot be serialized, so they are re-injected via `deps`.
   static restore(
     snapshot: SessionSnapshot,
-    deps: { model: ModelClient; tools: Tool[] },
+    deps: {
+      model: ModelClient;
+      tools: Tool[];
+      systemPrompt?: string;
+      compaction?: CompactionConfig;
+    },
   ): Session {
     const session = new Session({
       model: deps.model,
       tools: deps.tools,
       id: snapshot.id,
       ...(snapshot.cwd ? { cwd: snapshot.cwd } : {}),
+      ...(deps.systemPrompt !== undefined
+        ? { systemPrompt: deps.systemPrompt }
+        : {}),
+      ...(deps.compaction !== undefined
+        ? { compaction: deps.compaction }
+        : {}),
       permissionContext: {
         mode: snapshot.permissionMode,
         workspaceRoots: [...snapshot.workspaceRoots],

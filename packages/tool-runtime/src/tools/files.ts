@@ -1,12 +1,19 @@
+import { createReadStream } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { createInterface } from "node:readline";
 import { dirname, resolve } from "node:path";
 import {
   objectSchema,
   optionalField,
   stringField,
   booleanField,
+  numberField,
 } from "../core/schema.js";
 import { buildTool, type RuntimeContext, type Tool } from "../core/tool.js";
+
+const DEFAULT_READ_LIMIT_LINES = 200;
+const MAX_READ_LIMIT_LINES = 2_000;
+const MAX_COMPLETE_READ_BYTES = 1_000_000;
 
 function absolutePath(filePath: string, context: RuntimeContext): string {
   return resolve(context.cwd ?? process.cwd(), filePath);
@@ -19,7 +26,11 @@ function requireFileState(context: RuntimeContext) {
   return context.fileState;
 }
 
-const readInputSchema = objectSchema({ path: stringField() });
+const readInputSchema = objectSchema({
+  path: stringField(),
+  offset: optionalField(numberField()),
+  limit: optionalField(numberField()),
+});
 const writeInputSchema = objectSchema({ path: stringField(), content: stringField() });
 const editInputSchema = objectSchema({
   path: stringField(),
@@ -32,9 +43,90 @@ type ReadInput = ReturnType<typeof readInputSchema.parse>;
 type WriteInput = ReturnType<typeof writeInputSchema.parse>;
 type EditInput = ReturnType<typeof editInputSchema.parse>;
 
-type ReadOutput = { path: string; content: string };
+type ReadOutput = {
+  path: string;
+  lines: Array<{ number: number; text: string }>;
+  startLine: number;
+  endLine: number;
+  requestedLimit: number;
+  effectiveLimit: number;
+  truncated: boolean;
+};
 type WriteOutput = { path: string; bytes: number };
 type EditOutput = { path: string; replacements: number };
+
+function positiveInteger(value: number, name: string): number {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(name + " must be a positive integer.");
+  }
+  return value;
+}
+
+async function readLinePage(
+  filePath: string,
+  offset: number,
+  limit: number,
+): Promise<{
+  lines: Array<{ number: number; text: string }>;
+  truncated: boolean;
+}> {
+  const stream = createReadStream(filePath, { encoding: "utf8" });
+  const reader = createInterface({
+    input: stream,
+    crlfDelay: Infinity,
+  });
+  const lines: Array<{ number: number; text: string }> = [];
+  let lineNumber = 0;
+  let truncated = false;
+
+  try {
+    for await (const line of reader) {
+      lineNumber += 1;
+      if (lineNumber < offset) {
+        continue;
+      }
+      if (lines.length >= limit) {
+        truncated = true;
+        break;
+      }
+      lines.push({ number: lineNumber, text: line });
+    }
+  } finally {
+    reader.close();
+    stream.destroy();
+  }
+
+  return { lines, truncated };
+}
+
+function formatReadOutput(data: ReadOutput): string {
+  const header = [
+    "Read " + data.path,
+    "Lines " + data.startLine + "-" + data.endLine,
+  ];
+  if (data.requestedLimit !== data.effectiveLimit) {
+    header.push(
+      "Limit capped at " +
+        data.effectiveLimit +
+        " lines (requested " +
+        data.requestedLimit +
+        ").",
+    );
+  }
+
+  const body = data.lines
+    .map((line) => String(line.number) + " | " + line.text)
+    .join("\n");
+  const footer = data.truncated
+    ? "\n\n[truncated: more lines available. Use offset: " +
+      (data.endLine + 1) +
+      ", limit: " +
+      data.effectiveLimit +
+      " to continue.]"
+    : "";
+
+  return header.join("\n") + "\n\n" + body + footer;
+}
 
 export const ReadTool = buildTool<ReadInput, ReadOutput>({
   name: "Read",
@@ -44,17 +136,43 @@ export const ReadTool = buildTool<ReadInput, ReadOutput>({
   isConcurrencySafe: () => true,
   async call(input, context) {
     const filePath = absolutePath(input.path, context);
-    const content = await readFile(filePath, "utf8");
+    const offset = positiveInteger(input.offset ?? 1, "offset");
+    const requestedLimit = positiveInteger(
+      input.limit ?? DEFAULT_READ_LIMIT_LINES,
+      "limit",
+    );
+    const effectiveLimit = Math.min(requestedLimit, MAX_READ_LIMIT_LINES);
     const stats = await stat(filePath);
+    const page = await readLinePage(filePath, offset, effectiveLimit);
+    const complete = offset === 1 && !page.truncated;
+    const canStoreCompleteSnapshot =
+      complete && stats.size <= MAX_COMPLETE_READ_BYTES;
+    const snapshotContent = canStoreCompleteSnapshot
+      ? await readFile(filePath, "utf8")
+      : "";
     requireFileState(context).set(filePath, {
-      content,
+      content: snapshotContent,
       mtimeMs: stats.mtimeMs,
-      complete: true,
+      complete: canStoreCompleteSnapshot,
     });
-    return { data: { path: filePath, content } };
+    const endLine =
+      page.lines.length > 0
+        ? page.lines[page.lines.length - 1]!.number
+        : offset - 1;
+    return {
+      data: {
+        path: filePath,
+        lines: page.lines,
+        startLine: offset,
+        endLine,
+        requestedLimit,
+        effectiveLimit,
+        truncated: page.truncated || requestedLimit > effectiveLimit,
+      },
+    };
   },
   mapResult(data, toolUseId) {
-    return { toolUseId, content: data.content };
+    return { toolUseId, content: formatReadOutput(data) };
   },
 });
 

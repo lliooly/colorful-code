@@ -18,3 +18,10 @@ apps/*/.env.local
 apps/*/.env.development
 apps/*/.env.production
 apps/*/.env.*.local
+
+# SQLite persistence (Step 4). The DB file + its WAL/SHM siblings live under the
+# server's data dir and must never be committed.
+apps/server/data/
+*.db
+*.db-wal
+*.db-shm

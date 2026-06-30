@@ -25,21 +25,28 @@ export type ConversationEntry = {
 };
 
 // Input handed to the model client for a single turn. `tools` are Pillar 1
-// descriptors; `signal` aborts the turn when the session is cancelled.
+// descriptors; `signal` aborts the turn when the session is cancelled. `system`
+// is the agent's system prompt (rendered by the caller, e.g. from
+// `@colorful-code/prompts`) — an adapter sends it as the provider's system
+// channel (Anthropic top-level `system`, OpenAI a leading `system` message).
 export type ModelTurnInput = {
   history: ConversationEntry[];
   tools: ToolDescriptor[];
   signal: AbortSignal;
+  system?: string;
 };
 
 // Streamed model output for a single completion. `text` accumulates into the
 // assistant message; each `tool_use` is collected by the loop (the tools run
-// after the completion ends, not inline); `end` closes the completion. The turn
-// loop owns re-invocation: after running the collected tools it issues a fresh
-// `run` for the next completion.
+// after the completion ends, not inline); `usage` reports the provider's token
+// accounting for the completion (best effort — adapters that cannot observe it
+// simply never emit it); `end` closes the completion. The turn loop owns
+// re-invocation: after running the collected tools it issues a fresh `run` for
+// the next completion.
 export type ModelTurnEvent =
   | { type: "text"; text: string }
   | { type: "tool_use"; toolUseId: string; name: string; input: JsonObject }
+  | { type: "usage"; inputTokens?: number; outputTokens?: number }
   | { type: "end" };
 
 // The injected model boundary. One `run` call yields exactly one completion;

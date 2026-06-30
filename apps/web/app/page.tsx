@@ -43,6 +43,9 @@ export default function HomePage() {
               <div className="flex flex-wrap items-center gap-3">
                 <Button>Preview page online</Button>
                 <Button variant="outline">Scaffold verified</Button>
+                <Button asChild variant="secondary">
+                  <a href="/agent">Open agent debug console</a>
+                </Button>
               </div>
             </div>
 

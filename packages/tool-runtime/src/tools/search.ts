@@ -1,5 +1,5 @@
-import { readdir, readFile, stat } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { spawn } from "node:child_process";
+import { resolve } from "node:path";
 import { objectSchema, optionalField, stringField } from "../core/schema.js";
 import { buildTool, type RuntimeContext, type Tool } from "../core/tool.js";
 
@@ -21,34 +21,44 @@ function baseDir(inputCwd: string | undefined, context: RuntimeContext): string 
   return resolve(context.cwd ?? process.cwd(), inputCwd ?? ".");
 }
 
-async function walk(dir: string): Promise<string[]> {
-  const entries = await readdir(dir, { withFileTypes: true });
-  const files: string[] = [];
-  for (const entry of entries) {
-    if (entry.name === "node_modules" || entry.name === ".git") {
-      continue;
-    }
-    const fullPath = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...(await walk(fullPath)));
-    } else if (entry.isFile()) {
-      files.push(fullPath);
-    }
-  }
-  return files;
-}
+async function runRipgrep(
+  args: string[],
+  cwd: string,
+  signal: AbortSignal | undefined,
+): Promise<string[]> {
+  return await new Promise((resolveOutput, reject) => {
+    const child = spawn(
+      "rg",
+      ["--color", "never", "--null", "--no-require-git", ...args],
+      {
+        cwd,
+        stdio: ["ignore", "pipe", "pipe"],
+        signal,
+      },
+    );
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
 
-function matchesPattern(filePath: string, pattern: string): boolean {
-  if (pattern === "**/*") {
-    return true;
-  }
-  if (pattern.startsWith("**/*.")) {
-    return filePath.endsWith(pattern.slice(4));
-  }
-  if (pattern.startsWith("*.")) {
-    return basename(filePath).endsWith(pattern.slice(1));
-  }
-  return filePath.includes(pattern.replaceAll("*", ""));
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.on("error", (error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        reject(new Error("ripgrep (rg) is required for Glob and Grep tools"));
+        return;
+      }
+      reject(error);
+    });
+    child.on("close", (code) => {
+      if (code !== 0 && code !== 1) {
+        const message = Buffer.concat(stderr).toString("utf8").trim();
+        reject(new Error(message || "ripgrep exited with code " + code));
+        return;
+      }
+      const output = Buffer.concat(stdout).toString("utf8");
+      const matches = output.split("\0").filter(Boolean);
+      resolveOutput(matches.map((file) => resolve(cwd, file)).sort());
+    });
+  });
 }
 
 export const GlobTool = buildTool<GlobInput, SearchOutput>({
@@ -58,8 +68,12 @@ export const GlobTool = buildTool<GlobInput, SearchOutput>({
   isConcurrencySafe: () => true,
   async call(input, context) {
     const root = baseDir(input.cwd, context);
-    const files = await walk(root);
-    return { data: { matches: files.filter((file) => matchesPattern(file, input.pattern)).sort() } };
+    const matches = await runRipgrep(
+      ["--files", "-g", input.pattern],
+      root,
+      context.signal,
+    );
+    return { data: { matches } };
   },
   mapResult(data, toolUseId) {
     return { toolUseId, content: data.matches.join("\n") };
@@ -73,23 +87,12 @@ export const GrepTool = buildTool<GrepInput, SearchOutput>({
   isConcurrencySafe: () => true,
   async call(input, context) {
     const root = baseDir(input.cwd, context);
-    const files = await walk(root);
-    const matches: string[] = [];
-    for (const file of files) {
-      const info = await stat(file);
-      if (info.size > 1_000_000) {
-        continue;
-      }
-      try {
-        const content = await readFile(file, "utf8");
-        if (content.includes(input.pattern)) {
-          matches.push(file);
-        }
-      } catch {
-        // Ignore non-text files in the first implementation.
-      }
-    }
-    return { data: { matches: matches.sort() } };
+    const matches = await runRipgrep(
+      ["--files-with-matches", "-e", input.pattern],
+      root,
+      context.signal,
+    );
+    return { data: { matches } };
   },
   mapResult(data, toolUseId) {
     return { toolUseId, content: data.matches.join("\n") };

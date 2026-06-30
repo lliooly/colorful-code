@@ -5,6 +5,7 @@ import {
   ToolRegistry,
   ToolRunner,
   SdkMcpManager,
+  MCPTool,
   createMcpRuntimeTools,
   createRuntimeContext,
   normalizeMcpName,
@@ -118,6 +119,46 @@ test('MCP resource tools use the manager when one is configured', async () => {
 
   assert.match(listed.content, /docs server\s+docs:\/\/intro\s+Intro/);
   assert.equal(read.content, 'hello from docs://intro');
+});
+
+test('MCPTool uses mcpManager.callTool before the legacy provider fallback', async () => {
+  let providerCalled = false;
+  const runner = new ToolRunner(
+    new ToolRegistry([MCPTool]),
+    createRuntimeContext({
+      mcpManager: fakeManager,
+      mcpToolProvider: async () => {
+        providerCalled = true;
+        return 'provider fallback';
+      },
+    }),
+  );
+
+  const result = await runner.run({
+    id: 'mcp-manager',
+    name: 'MCPTool',
+    input: { server: 'docs server', tool: 'search docs', args: { query: 'api' } },
+  });
+
+  assert.equal(providerCalled, false);
+  assert.equal(result.isError, undefined);
+  assert.equal(result.content, 'docs server/search docs:api');
+});
+
+test('MCPTool reports an error when neither manager nor provider is configured', async () => {
+  const runner = new ToolRunner(
+    new ToolRegistry([MCPTool]),
+    createRuntimeContext(),
+  );
+
+  const result = await runner.run({
+    id: 'mcp-missing',
+    name: 'MCPTool',
+    input: { server: 'docs', tool: 'search', args: { query: 'api' } },
+  });
+
+  assert.equal(result.isError, true);
+  assert.match(result.content, /MCP provider not configured/);
 });
 
 test('SdkMcpManager connects to a stdio server and exposes tools and resources', async () => {

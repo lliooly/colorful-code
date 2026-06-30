@@ -2,7 +2,7 @@ import type {
   PromptSection,
   PromptSectionCache,
   PromptSectionComputeContext,
-} from "./types";
+} from "./types.js";
 
 export function cachedSection(
   name: string,
@@ -42,6 +42,27 @@ export async function resolvePromptSections(
       return value;
     }),
   );
+}
+
+export function resolvePromptSectionsSync(
+  sections: readonly PromptSection[],
+  context: PromptSectionComputeContext = {},
+  cache: PromptSectionCache = new Map(),
+): (string | null)[] {
+  return sections.map(section => {
+    if (!section.cacheBreak && cache.has(section.name)) {
+      return cache.get(section.name) ?? null;
+    }
+
+    const value = section.compute(context);
+    if (value instanceof Promise) {
+      throw new Error(
+        `Prompt section "${section.name}" cannot be resolved synchronously.`,
+      );
+    }
+    cache.set(section.name, value);
+    return value;
+  });
 }
 
 export function clearPromptSectionCache(cache: PromptSectionCache): void {

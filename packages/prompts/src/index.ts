@@ -1,19 +1,22 @@
 export {
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
   STATIC_SYSTEM_PROMPT_SECTIONS,
+  createEnvironmentSummary,
   createDefaultDynamicSections,
-} from "./system/defaults";
+} from "./system/defaults.js";
 export {
   buildEffectiveSystemPrompt,
   buildPromptBlocks,
   buildSystemPrompt,
-} from "./system/assemble";
+  buildSystemPromptSync,
+} from "./system/assemble.js";
 export {
   cachedSection,
   clearPromptSectionCache,
   resolvePromptSections,
+  resolvePromptSectionsSync,
   uncachedSection,
-} from "./system/sections";
+} from "./system/sections.js";
 export type {
   BuildEffectiveSystemPromptOptions,
   BuildPromptBlocksOptions,
@@ -24,28 +27,28 @@ export type {
   PromptSectionComputeContext,
   PromptTextBlock,
   SystemPrompt,
-} from "./system/types";
-export { asSystemPrompt } from "./system/types";
+} from "./system/types.js";
+export { asSystemPrompt } from "./system/types.js";
 
 export {
   DEFAULT_TOOL_PROMPTS,
   createToolPrompt,
-} from "./tools";
-export type { ToolPromptDefinition } from "./tools";
+} from "./tools.js";
+export type { ToolPromptDefinition } from "./tools.js";
 
 export {
   DEFAULT_AGENT_PROMPTS,
   createAgentPrompt,
-} from "./agents";
-export type { AgentPromptDefinition } from "./agents";
+} from "./agents.js";
+export type { AgentPromptDefinition } from "./agents.js";
 
 export {
   DEFAULT_WORKFLOW_PROMPTS,
   createWorkflowPrompt,
-} from "./workflows";
-export type { WorkflowPromptDefinition } from "./workflows";
+} from "./workflows.js";
+export type { WorkflowPromptDefinition } from "./workflows.js";
 
 export {
   augmentPromptForRequest,
-} from "./runtime";
-export type { RequestAugmentContext } from "./runtime";
+} from "./runtime.js";
+export type { RequestAugmentContext } from "./runtime.js";

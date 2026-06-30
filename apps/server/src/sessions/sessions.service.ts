@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Inject,
   Injectable,
   NotFoundException,
@@ -9,22 +10,42 @@ import {
   createBuiltinTools,
   Session,
   type ControlMessage,
+  type PermissionAuditEntry,
   type PermissionContext,
   type PermissionMode,
   type PermissionRule,
-  type SessionEvent
+  type SessionEvent,
+  type SessionSnapshot
 } from '@colorful-code/tool-runtime';
 import {
+  buildSystemPromptSync,
+  createDefaultDynamicSections,
+  STATIC_SYSTEM_PROMPT_SECTIONS,
+  SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+} from '@colorful-code/prompts';
+import {
   MODEL_CLIENT_FACTORY,
-  type ModelClientFactory
+  ModelSelectionError,
+  type ModelClientFactory,
+  type ModelSelection
 } from './model-factory';
+import { buildCompactionConfig } from './compaction-config';
+import { SessionStore } from '../persistence/session-store';
 
-// Options accepted by `POST /sessions` to seed a session's PermissionContext.
+// Options accepted by `POST /sessions` to seed a session's PermissionContext and
+// (optionally) choose the model. `model` is the validated per-request selection;
+// absent means the server default. The apiKey inside a selection (custom BYO
+// path) is forwarded to the factory and never stored on the session.
 export type CreateSessionOptions = {
   permissionMode?: PermissionMode;
   workspaceRoots?: string[];
   rules?: PermissionRule[];
   cwd?: string;
+  model?: ModelSelection;
+};
+
+export type RestoreSessionOptions = {
+  model?: ModelSelection;
 };
 
 // What the service tracks per live session: the engine `Session`, an append-only
@@ -37,7 +58,42 @@ type SessionEntry = {
   log: SessionEvent[];
   listeners: Set<(event: SessionEvent) => void>;
   unsubscribe: () => void;
+  // Permission-audit entries observed since the last persistence flush. Drained
+  // into the append-only audit table when a run reaches a terminal status (and
+  // on dispose) so the table never holds duplicates of an already-flushed entry.
+  pendingAudit: PermissionAuditEntry[];
 };
+
+// Renders the agent prompt for one session. Static identity/safety/behaviour
+// sections stay unchanged; the dynamic tail records runtime context that the
+// model otherwise cannot infer from conversation history.
+function buildSessionSystemPrompt(
+  options: CreateSessionOptions,
+  permissionContext: PermissionContext
+): string {
+  const prompt = buildSystemPromptSync({
+    staticSections: STATIC_SYSTEM_PROMPT_SECTIONS,
+    dynamicSections: createDefaultDynamicSections(),
+    sectionContext: {
+      now: new Date(),
+      ...(options.cwd ? { cwd: options.cwd } : {}),
+      workspaceRoots: [...permissionContext.workspaceRoots],
+      permissionMode: permissionContext.mode
+    }
+  });
+
+  return prompt
+    .filter((section) => section !== SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
+    .join('\n\n');
+}
+
+// Run statuses that mark a turn finished; a terminal status triggers a snapshot
+// save + audit flush.
+const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
+  'completed',
+  'cancelled',
+  'error'
+]);
 
 @Injectable()
 export class SessionsService implements OnModuleDestroy {
@@ -45,7 +101,8 @@ export class SessionsService implements OnModuleDestroy {
 
   constructor(
     @Inject(MODEL_CLIENT_FACTORY)
-    private readonly modelClientFactory: ModelClientFactory
+    private readonly modelClientFactory: ModelClientFactory,
+    private readonly store: SessionStore
   ) {}
 
   // Builds a fresh PermissionContext from the request options. `workspaceRoots`
@@ -62,6 +119,66 @@ export class SessionsService implements OnModuleDestroy {
     };
   }
 
+  private buildRestoredPermissionContext(
+    snapshot: SessionSnapshot
+  ): PermissionContext {
+    return {
+      mode: snapshot.permissionMode,
+      workspaceRoots: [...snapshot.workspaceRoots],
+      rules: []
+    };
+  }
+
+  private buildModelClient(id: string, selection?: ModelSelection) {
+    try {
+      return this.modelClientFactory({
+        sessionId: id,
+        ...(selection ? { selection } : {})
+      });
+    } catch (error) {
+      if (error instanceof ModelSelectionError) {
+        throw new BadRequestException(error.message);
+      }
+      throw error;
+    }
+  }
+
+  // Wires a live session to the replay buffer + live listeners and registers it.
+  // Both create and restore use this so restored sessions persist, stream, and
+  // dispose exactly like freshly created ones.
+  private register(session: Session): { id: string } {
+    const log: SessionEvent[] = [];
+    const listeners = new Set<(event: SessionEvent) => void>();
+    const pendingAudit: PermissionAuditEntry[] = [];
+
+    const unsubscribe = session.subscribe((event) => {
+      // Buffer first (so late subscribers replay it), then fan out live.
+      log.push(event);
+      for (const listener of listeners) {
+        listener(event);
+      }
+      // Persistence taps the same stream: collect audit entries as they arrive,
+      // and flush a snapshot + the buffered audit whenever a run terminates.
+      if (event.type === 'permission_decision') {
+        pendingAudit.push(event.entry);
+      } else if (
+        event.type === 'run_status' &&
+        TERMINAL_RUN_STATUSES.has(event.status)
+      ) {
+        this.persist(session, pendingAudit);
+      }
+    });
+
+    this.entries.set(session.id, {
+      session,
+      log,
+      listeners,
+      unsubscribe,
+      pendingAudit
+    });
+    return { id: session.id };
+  }
+
   // Creates a session, wires its event subscription to the replay buffer + live
   // listeners, and registers it. The model client is built per session via the
   // injected factory; tools are the built-ins.
@@ -71,27 +188,74 @@ export class SessionsService implements OnModuleDestroy {
     // Mint the id up front so the factory can key on it if needed.
     const id = `session-${String(Date.now())}-${String(this.entries.size + 1)}`;
 
-    const session = new Session({
-      id,
-      model: this.modelClientFactory({ sessionId: id }),
-      tools: createBuiltinTools(),
-      ...(options.cwd ? { cwd: options.cwd } : {}),
-      permissionContext
-    });
+    // Build the model client now so a bad selection (missing provider key,
+    // incomplete custom config) fails the create request with a 400 rather than
+    // surfacing mid-turn. The apiKey lives only inside the built client.
+    const model = this.buildModelClient(id, options.model);
 
-    const log: SessionEvent[] = [];
-    const listeners = new Set<(event: SessionEvent) => void>();
+    return this.register(
+      new Session({
+        id,
+        model,
+        tools: createBuiltinTools(),
+        systemPrompt: buildSessionSystemPrompt(options, permissionContext),
+        compaction: buildCompactionConfig(options.model),
+        ...(options.cwd ? { cwd: options.cwd } : {}),
+        permissionContext
+      })
+    );
+  }
 
-    const unsubscribe = session.subscribe((event) => {
-      // Buffer first (so late subscribers replay it), then fan out live.
-      log.push(event);
-      for (const listener of listeners) {
-        listener(event);
+  // Restore path: rebuilds a live session from a persisted snapshot, re-injecting
+  // the model client, built-in tools, and current system prompt. If the session
+  // is already live, the request is idempotent and returns that entry rather
+  // than creating a duplicate live object for the same id.
+  restore(id: string, options: RestoreSessionOptions = {}): { id: string } {
+    if (this.entries.has(id)) {
+      return { id };
+    }
+
+    const snapshot = this.store.loadSnapshot(id);
+    if (!snapshot) {
+      throw new NotFoundException(`No persisted snapshot for session: ${id}`);
+    }
+
+    const permissionContext = this.buildRestoredPermissionContext(snapshot);
+    const createOptions: CreateSessionOptions = {
+      ...(snapshot.cwd ? { cwd: snapshot.cwd } : {}),
+      permissionMode: snapshot.permissionMode,
+      workspaceRoots: [...snapshot.workspaceRoots]
+    };
+    return this.register(
+      Session.restore(snapshot, {
+        model: this.buildModelClient(id, options.model),
+        tools: createBuiltinTools(),
+        systemPrompt: buildSessionSystemPrompt(createOptions, permissionContext),
+        compaction: buildCompactionConfig(options.model)
+      })
+    );
+  }
+
+  // Saves the session snapshot (upsert) and drains any buffered audit entries
+  // into the append-only audit table. Drains in place so a subsequent flush does
+  // not re-insert the same entries. Best-effort: a persistence failure must not
+  // crash a live run, so it is swallowed (the run already surfaced its own
+  // events). The snapshot never contains a secret (the engine excludes the
+  // apiKey), and the audit carries only permission metadata.
+  private persist(
+    session: Session,
+    pendingAudit: PermissionAuditEntry[]
+  ): void {
+    try {
+      const snapshot: SessionSnapshot = session.snapshot();
+      this.store.saveSnapshot(snapshot);
+      if (pendingAudit.length > 0) {
+        const drained = pendingAudit.splice(0, pendingAudit.length);
+        this.store.appendAudit(session.id, drained);
       }
-    });
-
-    this.entries.set(id, { session, log, listeners, unsubscribe });
-    return { id };
+    } catch {
+      // Swallow: persistence is a side channel; never let it break a run.
+    }
   }
 
   has(id: string): boolean {
@@ -157,10 +321,25 @@ export class SessionsService implements OnModuleDestroy {
       return false;
     }
     entry.session.send({ type: 'cancel' });
+    // Persist the final state (and flush any not-yet-flushed audit) before the
+    // session leaves memory.
+    this.persist(entry.session, entry.pendingAudit);
     entry.unsubscribe();
     entry.listeners.clear();
     this.entries.delete(id);
     return true;
+  }
+
+  // Load path: the persisted snapshot for a session id, or `undefined` if none
+  // was ever saved. Reads straight from the store — independent of whether the
+  // session is still live in memory.
+  loadSnapshot(id: string): SessionSnapshot | undefined {
+    return this.store.loadSnapshot(id);
+  }
+
+  // The persisted permission-audit trail for a session id (insertion order).
+  loadAudit(id: string): PermissionAuditEntry[] {
+    return this.store.listAudit(id);
   }
 
   // Disposes every session so tests (and shutdown) do not leak runs/timers.

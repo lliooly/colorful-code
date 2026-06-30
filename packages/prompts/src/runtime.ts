@@ -1,5 +1,5 @@
-import type { SystemPrompt } from "./system/types";
-import { asSystemPrompt } from "./system/types";
+import type { SystemPrompt } from "./system/types.js";
+import { asSystemPrompt } from "./system/types.js";
 
 export type RequestAugmentContext = {
   browserMode?: boolean;
@@ -17,13 +17,13 @@ export function augmentPromptForRequest(
     ...(context.browserMode
       ? [
           `# Browser Mode
-TODO: Describe browser automation constraints, startup steps, and stop conditions.`,
+Use browser automation when it helps inspect or verify the user's task. Prefer focused navigation, keep the user informed about visible state changes, and stop once the requested verification or action is complete.`,
         ]
       : []),
     ...(context.coordinatorMode
       ? [
           `# Coordinator Mode
-TODO: Describe delegation strategy, anti-duplication rules, and how to combine subagent results.`,
+Coordinate parallel work only when tasks are independent. Keep ownership boundaries clear, avoid duplicate edits, and combine results into one coherent status for the user.`,
         ]
       : []),
     ...(context.mcpToolLoadingHint ? [context.mcpToolLoadingHint] : []),

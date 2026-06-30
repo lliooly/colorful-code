@@ -48,6 +48,24 @@ export type SessionEvent =
   // Carries the audit entry the runner recorded for a permission decision.
   | { type: "permission_decision"; runId: string; entry: PermissionAuditEntry }
   | { type: "todos_updated"; runId: string; todos: TodoItem[] }
+  // Provider token accounting for the completion just observed. Emitted only
+  // when the model adapter reports usage; absent fields mean "not reported".
+  | {
+      type: "usage";
+      runId: string;
+      inputTokens?: number;
+      outputTokens?: number;
+    }
+  // History was summarized to stay within the context window. `tokensBefore` /
+  // `tokensAfter` are the loop's pre/post estimates; `entriesSummarized` is how
+  // many leading history entries the summary replaced.
+  | {
+      type: "context_compacted";
+      runId: string;
+      tokensBefore: number;
+      tokensAfter: number;
+      entriesSummarized: number;
+    }
   | { type: "error"; runId: string; message: string };
 
 export type SessionEventListener = (event: SessionEvent) => void;

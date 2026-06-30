@@ -28,25 +28,68 @@ function ensureResources(context: RuntimeContext) {
   return context.mcpResources;
 }
 
+function stringifyMcpContent(content: unknown): string {
+  if (content === undefined || content === null) {
+    return '';
+  }
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => {
+        if (
+          item &&
+          typeof item === 'object' &&
+          'text' in item &&
+          typeof item.text === 'string'
+        ) {
+          return item.text;
+        }
+        return JSON.stringify(item);
+      })
+      .join('\n');
+  }
+  return JSON.stringify(content);
+}
+
+function mapMcpToolResult(result: unknown): string {
+  if (result && typeof result === 'object') {
+    const value = result as { content?: unknown; structuredContent?: unknown };
+    if (value.structuredContent !== undefined) {
+      return stringifyMcpContent(value.structuredContent);
+    }
+    if (value.content !== undefined) {
+      return stringifyMcpContent(value.content);
+    }
+  }
+  return stringifyMcpContent(result);
+}
+
 export const MCPTool = buildTool({
   name: 'MCPTool',
   aliases: ['mcp'],
   inputSchema: mcpToolSchema,
   async call(input, context) {
+    if (context.mcpManager) {
+      const result = await context.mcpManager.callTool(
+        input.server,
+        input.tool,
+        input.args ?? {},
+      );
+      return { data: mapMcpToolResult(result) };
+    }
     if (!context.mcpToolProvider) {
-      return {
-        data:
-          'MCP provider not configured for ' + input.server + '/' + input.tool,
-      };
+      throw new Error(
+        'MCP provider not configured for ' + input.server + '/' + input.tool,
+      );
     }
     const result = await context.mcpToolProvider(
       input.server,
       input.tool,
       input.args ?? {},
     );
-    return {
-      data: typeof result === 'string' ? result : JSON.stringify(result),
-    };
+    return { data: mapMcpToolResult(result) };
   },
   mapResult(data, toolUseId) {
     return { toolUseId, content: data };

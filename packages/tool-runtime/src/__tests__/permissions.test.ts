@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import {
   ToolRegistry,
   ToolRunner,
+  BashTool,
   buildTool,
   createRuntimeContext,
   evaluatePermission,
@@ -113,6 +114,21 @@ test("evaluatePermission: a matching rule short-circuits to its behavior", () =>
   const result = evaluatePermission(tool, { value: "x" }, context);
   assert.equal(result.behavior, "allow");
   assert.equal(result.reason?.type, "rule");
+});
+
+test("evaluatePermission: default mode asks before running a non-read-only Bash command", () => {
+  const permissionContext: PermissionContext = {
+    mode: "default",
+    workspaceRoots: [],
+    rules: [],
+  };
+  const context: RuntimeContext = createRuntimeContext({ permissionContext });
+  const input = BashTool.inputSchema.parse({ command: "rm -rf tmp" });
+
+  const result = evaluatePermission(BashTool, input, context);
+
+  assert.equal(result.behavior, "ask");
+  assert.equal(result.reason?.type, "destructive");
 });
 
 test("evaluatePermission: MCP trust drives allow/deny/ask", () => {

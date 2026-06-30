@@ -1,6 +1,5 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadEnvFile } from 'node:process';
 
 type NodeEnvironment = 'development' | 'production' | 'test';
 
@@ -15,6 +14,10 @@ export interface ServerEnvironment {
   port: number;
   corsOrigins: string[];
   providerKeys: ProviderKeys;
+  // Filesystem path to the SQLite persistence file. Defaults to
+  // `./data/colorful-code.db` (gitignored); override with `DATABASE_PATH`. The
+  // special value `:memory:` opens an ephemeral in-process DB (used by tests).
+  databasePath: string;
 }
 
 export interface RedactedServerEnvironment {
@@ -24,11 +27,14 @@ export interface RedactedServerEnvironment {
   port: number;
   corsOrigins: string[];
   providerKeys: Record<ProviderKeyName, '[set]' | '[unset]'>;
+  databasePath: string;
 }
 
 type EnvironmentSource = NodeJS.ProcessEnv;
 
 const defaultCorsOrigins = ['http://localhost:3000'];
+
+const defaultDatabasePath = './data/colorful-code.db';
 
 export function loadDevelopmentEnvFileIfPresent(
   cwd = process.cwd(),
@@ -39,8 +45,37 @@ export function loadDevelopmentEnvFileIfPresent(
   }
 
   const envPath = join(cwd, '.env');
-  if (existsSync(envPath)) {
-    loadEnvFile(envPath);
+  if (!existsSync(envPath)) {
+    return;
+  }
+
+  // Load the dev `.env` into `process.env`. We parse it ourselves rather than use
+  // Node's `process.loadEnvFile` (Node-only; Bun, the runtime target, lacks it —
+  // Bun only auto-loads the startup-cwd `.env`, not an arbitrary path). Minimal
+  // `KEY=VALUE` parsing is enough for a dev convenience file; already-set vars are
+  // left untouched so the shell environment always wins.
+  for (const line of readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0 || trimmed.startsWith('#')) {
+      continue;
+    }
+    const separator = trimmed.indexOf('=');
+    if (separator <= 0) {
+      continue;
+    }
+    const key = trimmed.slice(0, separator).trim();
+    if (key in process.env) {
+      continue;
+    }
+    let value = trimmed.slice(separator + 1).trim();
+    if (
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'")))
+    ) {
+      value = value.slice(1, -1);
+    }
+    process.env[key] = value;
   }
 }
 
@@ -52,6 +87,7 @@ export function loadServerEnvironment(
   const host = readNonEmpty(env.HOST) ?? '127.0.0.1';
   const port = parsePort(env.PORT);
   const corsOrigins = parseCorsOrigins(env.CORS_ORIGIN, isProduction);
+  const databasePath = readNonEmpty(env.DATABASE_PATH) ?? defaultDatabasePath;
 
   return {
     nodeEnv,
@@ -59,6 +95,7 @@ export function loadServerEnvironment(
     host,
     port,
     corsOrigins,
+    databasePath,
     providerKeys: {
       anthropic: readNonEmpty(env.ANTHROPIC_API_KEY),
       openai: readNonEmpty(env.OPENAI_API_KEY),
@@ -76,6 +113,7 @@ export function toRedactedServerEnvironment(
     host: config.host,
     port: config.port,
     corsOrigins: config.corsOrigins,
+    databasePath: config.databasePath,
     providerKeys: {
       anthropic: redact(config.providerKeys.anthropic),
       openai: redact(config.providerKeys.openai),

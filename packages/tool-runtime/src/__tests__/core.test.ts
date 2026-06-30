@@ -93,3 +93,25 @@ test("ToolRunner validates input and maps successful results", async () => {
   assert.equal(bad.isError, true);
   assert.match(bad.content, /Invalid input/);
 });
+
+test("buildTool truncates large mapped results with head and tail context", async () => {
+  const tool = buildTool({
+    name: "Noisy",
+    inputSchema: objectSchema({ text: stringField() }),
+    async call(input) {
+      return { data: input.text };
+    },
+    mapResult(data, toolUseId) {
+      return { toolUseId, content: data };
+    },
+  });
+  const runner = new ToolRunner(new ToolRegistry([tool]));
+  const payload = "HEAD" + "x".repeat(25_000) + "TAIL";
+
+  const result = await runner.run({ id: "t4", name: "Noisy", input: { text: payload } });
+
+  assert.ok(result.content.length < payload.length);
+  assert.match(result.content, /tool output truncated/i);
+  assert.match(result.content, /^HEAD/);
+  assert.match(result.content, /TAIL$/);
+});

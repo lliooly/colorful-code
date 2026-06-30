@@ -19,6 +19,7 @@ import {
   MODEL_CLIENT_FACTORY,
   type ModelClientFactory
 } from '../src/sessions/model-factory';
+import { SessionStore } from '../src/persistence/session-store';
 
 // ---------------------------------------------------------------------------
 // Test harness: boot the real Nest app on the Fastify platform on an ephemeral
@@ -44,11 +45,16 @@ const scriptedFactory: ModelClientFactory = (): ModelClient =>
     [{ type: 'text', text: 'There are no tasks yet.' }]
   ]);
 
+// An in-memory persistence store so the wired SessionsService can satisfy its
+// SessionStore dependency without touching the filesystem. The golden path does
+// not assert persistence (covered by session-store.test.ts); this just keeps the
+// transport contract green.
 @Module({
   controllers: [SessionsController],
   providers: [
     SessionsService,
-    { provide: MODEL_CLIENT_FACTORY, useValue: scriptedFactory }
+    { provide: MODEL_CLIENT_FACTORY, useValue: scriptedFactory },
+    { provide: SessionStore, useValue: SessionStore.openAt(':memory:') }
   ]
 })
 class TestAppModule {}

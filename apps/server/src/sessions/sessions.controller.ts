@@ -3,6 +3,7 @@ import {
   Body,
   Controller,
   Delete,
+  Get,
   HttpCode,
   NotFoundException,
   Param,
@@ -13,16 +14,20 @@ import type { MessageEvent } from '@nestjs/common';
 import { map, type Observable } from 'rxjs';
 import type {
   ControlMessage,
+  PermissionAuditEntry,
   PermissionBehavior,
   PermissionMode,
   PermissionRule,
   PermissionRuleSource,
-  SessionEvent
+  SessionEvent,
+  SessionSnapshot
 } from '@colorful-code/tool-runtime';
 import {
   SessionsService,
-  type CreateSessionOptions
+  type CreateSessionOptions,
+  type RestoreSessionOptions
 } from './sessions.service';
+import type { ModelSelection } from './model-factory';
 
 // ---- Request body shapes (validated by hand to avoid a validation dep) ----
 
@@ -33,6 +38,11 @@ type CreateSessionBody = {
   workspaceRoots?: unknown;
   rules?: unknown;
   cwd?: unknown;
+  model?: unknown;
+};
+
+type RestoreSessionBody = {
+  model?: unknown;
 };
 
 type MessageBody = {
@@ -142,6 +152,88 @@ function validateRules(value: unknown): PermissionRule[] | undefined {
   });
 }
 
+const MODEL_PROTOCOLS = ['anthropic', 'openai'] as const;
+
+function isModelProtocol(
+  value: unknown
+): value is (typeof MODEL_PROTOCOLS)[number] {
+  return (
+    typeof value === 'string' &&
+    (MODEL_PROTOCOLS as readonly string[]).includes(value)
+  );
+}
+
+// Validates the optional `model` selection from a create-session body into a
+// well-formed ModelSelection (wire-shape only). Preset existence and provider-key
+// availability are resolved server-side at session create and surface as a 400
+// from the service — they are NOT re-checked here (the controller has no
+// environment). A present-but-malformed field is a 400 so a typo fails loudly.
+function validateModelSelection(value: unknown): ModelSelection | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isPlainObject(value)) {
+    throw new BadRequestException('`model` must be an object.');
+  }
+
+  const selection: ModelSelection = {};
+
+  if (value.preset !== undefined) {
+    if (typeof value.preset !== 'string') {
+      throw new BadRequestException('`model.preset` must be a string.');
+    }
+    selection.preset = value.preset;
+  }
+  if (value.protocol !== undefined) {
+    if (!isModelProtocol(value.protocol)) {
+      throw new BadRequestException(
+        "`model.protocol` must be 'anthropic' or 'openai'."
+      );
+    }
+    selection.protocol = value.protocol;
+  }
+  if (value.model !== undefined) {
+    if (typeof value.model !== 'string') {
+      throw new BadRequestException('`model.model` must be a string.');
+    }
+    selection.model = value.model;
+  }
+  if (value.baseURL !== undefined) {
+    if (typeof value.baseURL !== 'string') {
+      throw new BadRequestException('`model.baseURL` must be a string.');
+    }
+    selection.baseURL = value.baseURL;
+  }
+  if (value.apiKey !== undefined) {
+    if (typeof value.apiKey !== 'string') {
+      throw new BadRequestException('`model.apiKey` must be a string.');
+    }
+    selection.apiKey = value.apiKey;
+  }
+  if (value.maxTokens !== undefined) {
+    if (typeof value.maxTokens !== 'number' || !Number.isInteger(value.maxTokens)) {
+      throw new BadRequestException('`model.maxTokens` must be an integer.');
+    }
+    selection.maxTokens = value.maxTokens;
+  }
+  if (value.temperature !== undefined) {
+    if (typeof value.temperature !== 'number') {
+      throw new BadRequestException('`model.temperature` must be a number.');
+    }
+    selection.temperature = value.temperature;
+  }
+  if (value.thinking !== undefined) {
+    if (value.thinking !== 'adaptive' && value.thinking !== 'disabled') {
+      throw new BadRequestException(
+        "`model.thinking` must be 'adaptive' or 'disabled'."
+      );
+    }
+    selection.thinking = value.thinking;
+  }
+
+  return selection;
+}
+
 // Validates and narrows an arbitrary control body into a ControlMessage. Throws
 // BadRequestException (400) on anything malformed so a bad client cannot push an
 // ill-formed message into the engine.
@@ -230,13 +322,31 @@ export class SessionsController {
     const permissionMode = validatePermissionMode(body.permissionMode);
     const workspaceRoots = validateWorkspaceRoots(body.workspaceRoots);
     const rules = validateRules(body.rules);
+    const model = validateModelSelection(body.model);
     const options: CreateSessionOptions = {
       ...(permissionMode !== undefined ? { permissionMode } : {}),
       ...(workspaceRoots !== undefined ? { workspaceRoots } : {}),
       ...(rules !== undefined ? { rules } : {}),
-      ...(typeof body.cwd === 'string' ? { cwd: body.cwd } : {})
+      ...(typeof body.cwd === 'string' ? { cwd: body.cwd } : {}),
+      ...(model !== undefined ? { model } : {})
     };
     return this.sessions.create(options);
+  }
+
+  // POST /sessions/:id/restore -> restore a disposed/non-live session from its
+  // persisted snapshot. The snapshot does not contain secrets; if a client needs
+  // a custom model key it can provide a fresh `model` selection here. If the
+  // session is already live, the service returns that existing live session id.
+  @Post(':id/restore')
+  restore(
+    @Param('id') id: string,
+    @Body() body: RestoreSessionBody = {}
+  ): { id: string } {
+    const model = validateModelSelection(body.model);
+    const options: RestoreSessionOptions = {
+      ...(model !== undefined ? { model } : {})
+    };
+    return this.sessions.restore(id, options);
   }
 
   // POST /sessions/:id/messages { text } -> submit (fire-and-forget). 202 ack;
@@ -279,6 +389,27 @@ export class SessionsController {
         data: event
       }))
     );
+  }
+
+  // GET /sessions/:id/snapshot -> the persisted SessionSnapshot for this id, or
+  // 404 if nothing was ever persisted. Reads from the store, so it works for a
+  // session that has already been disposed from memory. The snapshot carries no
+  // secret (the engine excludes the apiKey).
+  @Get(':id/snapshot')
+  snapshot(@Param('id') id: string): SessionSnapshot {
+    const snapshot = this.sessions.loadSnapshot(id);
+    if (!snapshot) {
+      throw new NotFoundException(`No persisted snapshot for session: ${id}`);
+    }
+    return snapshot;
+  }
+
+  // GET /sessions/:id/audit -> the persisted permission-audit trail for this id
+  // (insertion order). Empty array when there is none — an absent trail is not a
+  // 404 here (a session may simply have made no audited decisions).
+  @Get(':id/audit')
+  audit(@Param('id') id: string): { entries: PermissionAuditEntry[] } {
+    return { entries: this.sessions.loadAudit(id) };
   }
 
   // DELETE /sessions/:id -> dispose. 404 if unknown.

@@ -1,5 +1,5 @@
-import { cachedSection, uncachedSection } from "./sections";
-import type { PromptSection } from "./types";
+import { cachedSection, uncachedSection } from "./sections.js";
+import type { PromptSection, PromptSectionComputeContext } from "./types.js";
 
 export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY =
   "__PROMPT_DYNAMIC_BOUNDARY__";
@@ -44,29 +44,48 @@ Do not use a colon before a tool call. Your tool calls may not be shown in the o
 Only use emojis if the user explicitly requests them.`,
 ] as const;
 
+function formatWorkspaceRoots(roots: readonly string[]): string | null {
+  if (roots.length === 0) {
+    return null;
+  }
+  return `workspaceRoots:
+${roots.map(root => `- ${root}`).join("\n")}`;
+}
+
+export function createEnvironmentSummary(
+  context: PromptSectionComputeContext,
+): string | null {
+  const details = [
+    context.environmentSummary,
+    context.cwd ? `cwd: ${context.cwd}` : null,
+    context.workspaceRoots ? formatWorkspaceRoots(context.workspaceRoots) : null,
+    context.permissionMode ? `permissionMode: ${context.permissionMode}` : null,
+    context.now ? `currentDateTime: ${context.now.toISOString()}` : null,
+  ].filter((line): line is string => Boolean(line));
+
+  return details.length > 0 ? details.join("\n") : null;
+}
+
 export function createDefaultDynamicSections(): PromptSection[] {
   return [
     cachedSection("language", context =>
       context.language
         ? `# Language
-TODO: Finalize language policy.
-
 Current preferred language: ${context.language}`
         : null,
     ),
-    cachedSection("environment", context =>
-      context.environmentSummary
+    cachedSection("environment", context => {
+      const summary = createEnvironmentSummary(context);
+      return summary
         ? `# Environment
-${context.environmentSummary}`
-        : `# Environment
-TODO: Inject runtime environment details here.`,
-    ),
+${summary}`
+        : null;
+    }),
     cachedSection("memory", context =>
       context.memorySummary
         ? `# Memory
 ${context.memorySummary}`
-        : `# Memory
-TODO: Inject session memory or long-term memory summary here.`,
+        : null,
     ),
     cachedSection("output_style", context =>
       context.outputStyle
@@ -78,8 +97,7 @@ ${context.outputStyle}`
       context.mcpInstructions
         ? `# MCP Instructions
 ${context.mcpInstructions}`
-        : `# MCP Instructions
-TODO: Inject connected MCP server instructions here when available.`,
+        : null,
     ),
   ];
 }

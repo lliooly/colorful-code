@@ -1,19 +1,25 @@
-import test from "node:test";
-import assert from "node:assert/strict";
+import test from 'node:test';
+import assert from 'node:assert/strict';
 import {
   Session,
+  buildTool,
   createBuiltinTools,
   createScriptedModelClient,
+  objectSchema,
+  type ModelClient,
+  type ModelTurnInput,
   type ScriptedRound,
   type PermissionContext,
   type SessionEvent,
-} from "../index.js";
+} from '../index.js';
 
 // Spins the microtask/macrotask queue so parked promises (approvals) settle and
 // emitted events flush before assertions run.
 function flush(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Waits until `predicate` holds, pumping the event loop between checks. Bounded
 // so a stuck run fails the test instead of hanging.
@@ -28,19 +34,19 @@ async function waitFor(
     }
     await flush();
   }
-  assert.fail("timed out waiting for: " + label);
+  assert.fail('timed out waiting for: ' + label);
 }
 
-test("a turn streams text, runs a read-only tool, then a final completion completes in order", async () => {
+test('a turn streams text, runs a read-only tool, then a final completion completes in order', async () => {
   // Round 0: the model answers with text and requests a tool, ending the
   // completion. Round 1: the model sees the tool result and gives a final
   // text answer with no further tools, which ends the turn.
   const rounds: ScriptedRound[] = [
     [
-      { type: "text", text: "Listing tasks." },
-      { type: "tool_use", toolUseId: "call-1", name: "TaskList", input: {} },
+      { type: 'text', text: 'Listing tasks.' },
+      { type: 'tool_use', toolUseId: 'call-1', name: 'TaskList', input: {} },
     ],
-    [{ type: "text", text: "Here are your tasks." }],
+    [{ type: 'text', text: 'Here are your tasks.' }],
   ];
   const session = new Session({
     model: createScriptedModelClient(rounds),
@@ -50,24 +56,24 @@ test("a turn streams text, runs a read-only tool, then a final completion comple
   const events: SessionEvent[] = [];
   session.subscribe((event) => events.push(event));
 
-  await session.submit("list my tasks");
+  await session.submit('list my tasks');
 
   const order = events.map((event) => event.type);
   assert.deepEqual(order, [
-    "run_status", // running
-    "message_delta", // round 0 text
-    "message", // round 0 assistant entry (pushed before tools run)
-    "tool_call",
-    "permission_decision",
-    "tool_result",
-    "message_delta", // round 1 text
-    "message", // round 1 assistant entry
-    "run_status", // completed
+    'run_status', // running
+    'message_delta', // round 0 text
+    'message', // round 0 assistant entry (pushed before tools run)
+    'tool_call',
+    'permission_decision',
+    'tool_result',
+    'message_delta', // round 1 text
+    'message', // round 1 assistant entry
+    'run_status', // completed
   ]);
-  assert.equal((events[0] as { status: string }).status, "running");
-  assert.equal((events.at(-1) as { status: string }).status, "completed");
+  assert.equal((events[0] as { status: string }).status, 'running');
+  assert.equal((events.at(-1) as { status: string }).status, 'completed');
 
-  const toolResult = events.find((event) => event.type === "tool_result");
+  const toolResult = events.find((event) => event.type === 'tool_result');
   assert.ok(toolResult);
   assert.equal((toolResult as { isError?: boolean }).isError, undefined);
 
@@ -75,20 +81,20 @@ test("a turn streams text, runs a read-only tool, then a final completion comple
   const snapshot = session.snapshot();
   assert.deepEqual(
     snapshot.history.map((entry) => entry.role),
-    ["user", "assistant", "tool", "assistant"],
+    ['user', 'assistant', 'tool', 'assistant'],
   );
-  assert.equal(snapshot.history[1]?.toolCalls?.[0]?.name, "TaskList");
-  assert.equal(snapshot.history[2]?.toolResults?.[0]?.toolUseId, "call-1");
-  assert.equal(snapshot.history[3]?.content, "Here are your tasks.");
+  assert.equal(snapshot.history[1]?.toolCalls?.[0]?.name, 'TaskList');
+  assert.equal(snapshot.history[2]?.toolResults?.[0]?.toolUseId, 'call-1');
+  assert.equal(snapshot.history[3]?.content, 'Here are your tasks.');
 });
 
-test("the loop issues multiple model.run calls when a tool use occurs", async () => {
+test('the loop issues multiple model.run calls when a tool use occurs', async () => {
   // A spy model wrapping the scripted client so we can count completions. A
   // turn that requests a tool must drive at least two completions (one to
   // request the tool, one to observe the result and finish).
   const inner = createScriptedModelClient([
-    [{ type: "tool_use", toolUseId: "call-1", name: "TaskList", input: {} }],
-    [{ type: "text", text: "All done." }],
+    [{ type: 'tool_use', toolUseId: 'call-1', name: 'TaskList', input: {} }],
+    [{ type: 'text', text: 'All done.' }],
   ]);
   let runCalls = 0;
   const session = new Session({
@@ -101,34 +107,75 @@ test("the loop issues multiple model.run calls when a tool use occurs", async ()
     tools: createBuiltinTools(),
   });
 
-  await session.submit("list tasks");
+  await session.submit('list tasks');
 
   assert.ok(
     runCalls >= 2,
-    "expected the multi-round loop to call model.run at least twice, got " +
+    'expected the multi-round loop to call model.run at least twice, got ' +
       String(runCalls),
   );
 });
 
-test("an ask parks on approval_required and completes after an allow response", async () => {
+test('a turn runs neighboring read-only tool uses concurrently', async () => {
+  const readTool = buildTool({
+    name: 'SlowRead',
+    inputSchema: objectSchema({}),
+    isReadOnly: () => true,
+    isConcurrencySafe: () => true,
+    async call() {
+      await delay(70);
+      return { data: 'read' };
+    },
+    mapResult(data, toolUseId) {
+      return { toolUseId, content: data };
+    },
+  });
+  const session = new Session({
+    model: createScriptedModelClient([
+      [
+        { type: 'tool_use', toolUseId: 'read-1', name: 'SlowRead', input: {} },
+        { type: 'tool_use', toolUseId: 'read-2', name: 'SlowRead', input: {} },
+      ],
+      [{ type: 'text', text: 'Done.' }],
+    ]),
+    tools: [readTool],
+  });
+
+  const events: SessionEvent[] = [];
+  session.subscribe((event) => events.push(event));
+
+  const started = Date.now();
+  await session.submit('read twice');
+  const elapsed = Date.now() - started;
+
+  assert.ok(elapsed < 125, 'expected read-only tool uses to overlap');
+  assert.deepEqual(
+    events
+      .filter((event) => event.type === 'tool_result')
+      .map((event) => (event as { toolUseId: string }).toolUseId),
+    ['read-1', 'read-2'],
+  );
+});
+
+test('an ask parks on approval_required and completes after an allow response', async () => {
   // `default` mode + a destructive built-in (the model calls Write) routes to
   // `ask`, which the session surfaces as a correlated approval prompt. A second
   // round with no tools lets the turn complete after the tool result feeds back.
   const rounds: ScriptedRound[] = [
     [
       {
-        type: "tool_use",
-        toolUseId: "call-1",
-        name: "Write",
-        input: { path: "/tmp/colorful-session-ignored.txt", content: "x" },
+        type: 'tool_use',
+        toolUseId: 'call-1',
+        name: 'Write',
+        input: { path: '/tmp/colorful-session-ignored.txt', content: 'x' },
       },
     ],
-    [{ type: "text", text: "Wrote the file." }],
+    [{ type: 'text', text: 'Wrote the file.' }],
   ];
   const permissionContext: PermissionContext = {
-    mode: "default",
+    mode: 'default',
     workspaceRoots: [],
-    rules: [{ source: "session", behavior: "ask", toolName: "Write" }],
+    rules: [{ source: 'session', behavior: 'ask', toolName: 'Write' }],
   };
   const session = new Session({
     model: createScriptedModelClient(rounds),
@@ -139,59 +186,57 @@ test("an ask parks on approval_required and completes after an allow response", 
   const events: SessionEvent[] = [];
   session.subscribe((event) => events.push(event));
 
-  const done = session.submit("write a file");
+  const done = session.submit('write a file');
 
   await waitFor(
-    () => events.some((event) => event.type === "approval_required"),
-    "approval_required",
+    () => events.some((event) => event.type === 'approval_required'),
+    'approval_required',
   );
-  const approval = events.find((event) => event.type === "approval_required");
+  const approval = events.find((event) => event.type === 'approval_required');
   assert.ok(approval);
   const requestId = (approval as { requestId: string }).requestId;
-  assert.equal((approval as { name: string }).name, "Write");
+  assert.equal((approval as { name: string }).name, 'Write');
 
   // Not yet completed while parked.
   assert.ok(
     !events.some(
       (event) =>
-        event.type === "run_status" &&
-        (event as { status: string }).status === "completed",
+        event.type === 'run_status' &&
+        (event as { status: string }).status === 'completed',
     ),
   );
 
   session.send({
-    type: "approval_response",
+    type: 'approval_response',
     requestId,
-    decision: { behavior: "allow" },
+    decision: { behavior: 'allow' },
   });
   await done;
 
-  const decision = events.find(
-    (event) => event.type === "permission_decision",
-  );
+  const decision = events.find((event) => event.type === 'permission_decision');
   assert.ok(decision);
-  assert.equal((decision as { entry: { behavior: string } }).entry.behavior, "allow");
   assert.equal(
-    (events.at(-1) as { status: string }).status,
-    "completed",
+    (decision as { entry: { behavior: string } }).entry.behavior,
+    'allow',
   );
+  assert.equal((events.at(-1) as { status: string }).status, 'completed');
 });
 
-test("cancel mid-run yields run_status:cancelled and auto-denies a pending approval", async () => {
+test('cancel mid-run yields run_status:cancelled and auto-denies a pending approval', async () => {
   const rounds: ScriptedRound[] = [
     [
       {
-        type: "tool_use",
-        toolUseId: "call-1",
-        name: "Write",
-        input: { path: "/tmp/colorful-session-cancel.txt", content: "x" },
+        type: 'tool_use',
+        toolUseId: 'call-1',
+        name: 'Write',
+        input: { path: '/tmp/colorful-session-cancel.txt', content: 'x' },
       },
     ],
   ];
   const permissionContext: PermissionContext = {
-    mode: "default",
+    mode: 'default',
     workspaceRoots: [],
-    rules: [{ source: "session", behavior: "ask", toolName: "Write" }],
+    rules: [{ source: 'session', behavior: 'ask', toolName: 'Write' }],
   };
   const session = new Session({
     model: createScriptedModelClient(rounds),
@@ -202,40 +247,40 @@ test("cancel mid-run yields run_status:cancelled and auto-denies a pending appro
   const events: SessionEvent[] = [];
   session.subscribe((event) => events.push(event));
 
-  const done = session.submit("write a file");
+  const done = session.submit('write a file');
 
   await waitFor(
-    () => events.some((event) => event.type === "approval_required"),
-    "approval_required",
+    () => events.some((event) => event.type === 'approval_required'),
+    'approval_required',
   );
 
-  session.send({ type: "cancel" });
+  session.send({ type: 'cancel' });
   await done;
 
   // The denied (auto-deny) tool result surfaces as an error, and the run ends
   // cancelled rather than completed.
   const statuses = events
-    .filter((event) => event.type === "run_status")
+    .filter((event) => event.type === 'run_status')
     .map((event) => (event as { status: string }).status);
-  assert.ok(statuses.includes("cancelled"));
-  assert.ok(!statuses.includes("completed"));
+  assert.ok(statuses.includes('cancelled'));
+  assert.ok(!statuses.includes('completed'));
 });
 
-test("snapshot then restore preserves history and permission mode", async () => {
-  const rounds: ScriptedRound[] = [[{ type: "text", text: "Hello there." }]];
+test('snapshot then restore preserves history and permission mode', async () => {
+  const rounds: ScriptedRound[] = [[{ type: 'text', text: 'Hello there.' }]];
   const session = new Session({
     model: createScriptedModelClient(rounds),
     tools: createBuiltinTools(),
-    permissionContext: { mode: "plan", workspaceRoots: ["/work"], rules: [] },
+    permissionContext: { mode: 'plan', workspaceRoots: ['/work'], rules: [] },
   });
 
-  await session.submit("say hello");
+  await session.submit('say hello');
 
   const snapshot = session.snapshot();
-  assert.equal(snapshot.permissionMode, "plan");
+  assert.equal(snapshot.permissionMode, 'plan');
   assert.equal(snapshot.history.length, 2); // user + assistant
-  assert.equal(snapshot.history[0]?.role, "user");
-  assert.equal(snapshot.history[1]?.content, "Hello there.");
+  assert.equal(snapshot.history[0]?.role, 'user');
+  assert.equal(snapshot.history[1]?.content, 'Hello there.');
 
   const restored = Session.restore(snapshot, {
     model: createScriptedModelClient([]),
@@ -243,8 +288,35 @@ test("snapshot then restore preserves history and permission mode", async () => 
   });
 
   assert.equal(restored.id, session.id);
-  assert.equal(restored.permissionContext.mode, "plan");
+  assert.equal(restored.permissionContext.mode, 'plan');
   const restoredSnapshot = restored.snapshot();
   assert.deepEqual(restoredSnapshot.history, snapshot.history);
-  assert.equal(restoredSnapshot.permissionMode, "plan");
+  assert.equal(restoredSnapshot.permissionMode, 'plan');
+});
+
+test('a session forwards its systemPrompt to the model on every turn', async () => {
+  // A capturing model records the ModelTurnInput it is handed, then ends the
+  // completion immediately. This proves the session threads `systemPrompt` all
+  // the way to `model.run`, rather than the adapter having to guess a system
+  // prompt from the conversation history.
+  const seen: ModelTurnInput[] = [];
+  const capturingModel: ModelClient = {
+    run(input: ModelTurnInput) {
+      seen.push(input);
+      return (async function* () {
+        yield { type: 'end' as const };
+      })();
+    },
+  };
+
+  const session = new Session({
+    model: capturingModel,
+    tools: createBuiltinTools(),
+    systemPrompt: 'You are Colorful Code.',
+  });
+
+  await session.submit('hello');
+
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0]?.system, 'You are Colorful Code.');
 });

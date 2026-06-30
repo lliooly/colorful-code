@@ -55,6 +55,22 @@ export type RuntimeTask = {
   updatedAt: number;
 };
 
+export type RuntimeBackgroundProcess = {
+  id: string;
+  command: string;
+  cwd?: string;
+  pid?: number;
+  status: 'running' | 'exited' | 'error';
+  stdout: string;
+  stderr: string;
+  code: number | null;
+  signal: string | null;
+  error?: string;
+  startedAt: number;
+  updatedAt: number;
+  kill(signal?: NodeJS.Signals): boolean;
+};
+
 export type McpResource = {
   uri: string;
   name?: string;
@@ -76,6 +92,7 @@ export type RuntimeContext = {
   fileState?: Map<string, FileReadSnapshot>;
   todos?: TodoItem[];
   tasks?: Map<string, RuntimeTask>;
+  backgroundProcesses?: Map<string, RuntimeBackgroundProcess>;
   teams?: Map<string, { id: string; name: string; members: string[] }>;
   mcpResources?: Map<string, McpResource>;
   mcpManager?: McpManager;
@@ -103,6 +120,7 @@ export type RuntimeContext = {
   ) => Promise<PermissionResult> | PermissionResult;
   webFetchProvider?: (url: string) => Promise<string>;
   webSearchProvider?: (query: string) => Promise<string[]>;
+  webBrowserProvider?: (url: string) => Promise<string>;
   mcpToolProvider?: (
     server: string,
     tool: string,
@@ -158,6 +176,46 @@ export type ToolDefinition<Input extends JsonObject, Output> = {
   isDestructive?(input: Input): boolean;
 };
 
+export const TOOL_RESULT_MAX_CHARS = 20_000;
+
+export function truncateToolResultContent(
+  content: string,
+  maxChars = TOOL_RESULT_MAX_CHARS,
+): string {
+  if (content.length <= maxChars) {
+    return content;
+  }
+
+  let notice = "\n\n[tool output truncated: showing head and tail]\n\n";
+  let available = Math.max(0, maxChars - notice.length);
+  let headChars = Math.ceil(available / 2);
+  let tailChars = Math.floor(available / 2);
+  let omittedChars = content.length - headChars - tailChars;
+
+  notice =
+    "\n\n[tool output truncated: omitted " +
+    omittedChars +
+    " characters; showing first " +
+    headChars +
+    " and last " +
+    tailChars +
+    " characters]\n\n";
+  available = Math.max(0, maxChars - notice.length);
+  headChars = Math.ceil(available / 2);
+  tailChars = Math.floor(available / 2);
+  omittedChars = content.length - headChars - tailChars;
+  notice =
+    "\n\n[tool output truncated: omitted " +
+    omittedChars +
+    " characters; showing first " +
+    headChars +
+    " and last " +
+    tailChars +
+    " characters]\n\n";
+
+  return content.slice(0, headChars) + notice + content.slice(-tailChars);
+}
+
 export function buildTool<Input extends JsonObject, Output>(
   definition: ToolDefinition<Input, Output>,
 ): Tool<Input, Output> {
@@ -170,6 +228,13 @@ export function buildTool<Input extends JsonObject, Output>(
     isReadOnly: definition.isReadOnly ?? (() => false),
     isConcurrencySafe: definition.isConcurrencySafe ?? (() => false),
     isDestructive: definition.isDestructive ?? (() => false),
+    mapResult(data, toolUseId) {
+      const result = definition.mapResult(data, toolUseId);
+      return {
+        ...result,
+        content: truncateToolResultContent(result.content),
+      };
+    },
   };
 }
 
@@ -180,6 +245,7 @@ export function createRuntimeContext(
     fileState: new Map<string, FileReadSnapshot>(),
     todos: [],
     tasks: new Map<string, RuntimeTask>(),
+    backgroundProcesses: new Map<string, RuntimeBackgroundProcess>(),
     teams: new Map<string, { id: string; name: string; members: string[] }>(),
     mcpResources: new Map<string, McpResource>(),
     cronJobs: new Map<string, CronJob>(),

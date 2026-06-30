@@ -9,6 +9,9 @@ export type PromptTextBlock = {
 export type PromptSectionComputeContext = {
   now?: Date;
   language?: string;
+  cwd?: string;
+  workspaceRoots?: readonly string[];
+  permissionMode?: string | null;
   environmentSummary?: string | null;
   memorySummary?: string | null;
   mcpInstructions?: string | null;

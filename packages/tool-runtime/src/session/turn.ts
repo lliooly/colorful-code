@@ -1,15 +1,22 @@
-import { describeTools } from "../core/descriptor.js";
-import type { ToolRegistry } from "../core/registry.js";
-import type { ToolRunner } from "../core/runner.js";
-import type { RuntimeContext, TodoItem } from "../core/tool.js";
-import type { PermissionAuditEntry } from "../core/permissions.js";
-import type { SessionEvent } from "./events.js";
+import { describeTools } from '../core/descriptor.js';
+import type { ToolRegistry } from '../core/registry.js';
+import type { ToolUseRequest } from '../core/runner.js';
+import type { ToolScheduler } from '../core/scheduler.js';
+import type { RuntimeContext, TodoItem } from '../core/tool.js';
+import type { PermissionAuditEntry } from '../core/permissions.js';
+import {
+  compactHistory,
+  estimatePromptTokens,
+  shouldCompact,
+  type CompactionConfig,
+} from './compaction.js';
+import type { SessionEvent } from './events.js';
 import type {
   ConversationEntry,
   ConversationToolCall,
   ConversationToolResult,
   ModelClient,
-} from "./model.js";
+} from './model.js';
 
 // Everything the turn loop needs from the owning session. Keeping this narrow
 // makes the loop unit-testable and the session free to evolve independently.
@@ -17,11 +24,18 @@ export type TurnDeps = {
   runId: string;
   model: ModelClient;
   registry: ToolRegistry;
-  runner: ToolRunner;
+  scheduler: ToolScheduler;
   context: RuntimeContext;
   history: ConversationEntry[];
   signal: AbortSignal;
   emit: (event: SessionEvent) => void;
+  // The agent's system prompt, passed through to the model on every completion.
+  systemPrompt?: string;
+  // Automatic context-compaction policy. When present, the loop estimates the
+  // prompt size before each completion and summarizes older history once it
+  // crosses the configured threshold. Absent => no compaction (history grows
+  // unbounded, as before).
+  compaction?: CompactionConfig;
 };
 
 // Defensive ceiling on model round-trips per turn. Real providers should
@@ -39,7 +53,7 @@ function flushAudit(deps: TurnDeps, from: number): number {
   }
   for (let i = from; i < audit.length; i += 1) {
     const entry = audit[i] as PermissionAuditEntry;
-    deps.emit({ type: "permission_decision", runId: deps.runId, entry });
+    deps.emit({ type: 'permission_decision', runId: deps.runId, entry });
   }
   return audit.length;
 }
@@ -50,7 +64,7 @@ function flushTodos(deps: TurnDeps, previous: string): string {
   const todos: TodoItem[] = deps.context.todos ?? [];
   const serialized = JSON.stringify(todos);
   if (serialized !== previous) {
-    deps.emit({ type: "todos_updated", runId: deps.runId, todos: [...todos] });
+    deps.emit({ type: 'todos_updated', runId: deps.runId, todos: [...todos] });
   }
   return serialized;
 }
@@ -72,7 +86,7 @@ function flushTodos(deps: TurnDeps, previous: string): string {
 // other thrown errors -> `error` + `error` status. A `MAX_ROUNDS` ceiling guards
 // against a model that requests tools without ever converging.
 export async function runTurn(deps: TurnDeps): Promise<void> {
-  deps.emit({ type: "run_status", status: "running", runId: deps.runId });
+  deps.emit({ type: 'run_status', status: 'running', runId: deps.runId });
 
   let auditCursor = deps.context.permissionAudit?.length ?? 0;
   let todosSnapshot = JSON.stringify(deps.context.todos ?? []);
@@ -81,20 +95,62 @@ export async function runTurn(deps: TurnDeps): Promise<void> {
     for (let round = 0; ; round += 1) {
       if (round >= MAX_ROUNDS) {
         throw new Error(
-          "Turn exceeded the maximum of " +
+          'Turn exceeded the maximum of ' +
             String(MAX_ROUNDS) +
-            " model rounds without completing.",
+            ' model rounds without completing.',
         );
       }
 
-      let assistantText = "";
+      let assistantText = '';
       const pendingToolUses: ConversationToolCall[] = [];
 
       const tools = describeTools(deps.registry.list());
+
+      // Before issuing the completion, keep the prompt within the context
+      // window: if the estimate crosses the threshold, summarize older history
+      // in place. Compaction itself runs a model completion (which respects the
+      // signal), so an abort during it surfaces below at the post-stream check.
+      if (deps.compaction) {
+        const promptTokens = estimatePromptTokens({
+          history: deps.history,
+          ...(deps.systemPrompt !== undefined
+            ? { system: deps.systemPrompt }
+            : {}),
+          tools,
+          ...(deps.compaction.estimateTokens
+            ? { estimate: deps.compaction.estimateTokens }
+            : {}),
+        });
+        if (shouldCompact(promptTokens, deps.compaction)) {
+          const result = await compactHistory({
+            history: deps.history,
+            model: deps.model,
+            config: deps.compaction,
+            ...(deps.systemPrompt !== undefined
+              ? { system: deps.systemPrompt }
+              : {}),
+            tools,
+            signal: deps.signal,
+          });
+          if (result) {
+            deps.emit({
+              type: 'context_compacted',
+              runId: deps.runId,
+              tokensBefore: result.tokensBefore,
+              tokensAfter: result.tokensAfter,
+              entriesSummarized: result.entriesSummarized,
+            });
+          }
+        }
+      }
+
       const stream = deps.model.run({
         history: deps.history,
         tools,
         signal: deps.signal,
+        ...(deps.systemPrompt !== undefined
+          ? { system: deps.systemPrompt }
+          : {}),
       });
 
       // Consume exactly one completion: accumulate text and collect tool uses;
@@ -105,21 +161,35 @@ export async function runTurn(deps: TurnDeps): Promise<void> {
           break;
         }
 
-        if (event.type === "text") {
+        if (event.type === 'text') {
           assistantText += event.text;
           deps.emit({
-            type: "message_delta",
+            type: 'message_delta',
             runId: deps.runId,
             text: event.text,
           });
           continue;
         }
 
-        if (event.type === "tool_use") {
+        if (event.type === 'tool_use') {
           pendingToolUses.push({
             toolUseId: event.toolUseId,
             name: event.name,
             input: event.input,
+          });
+          continue;
+        }
+
+        if (event.type === 'usage') {
+          deps.emit({
+            type: 'usage',
+            runId: deps.runId,
+            ...(event.inputTokens !== undefined
+              ? { inputTokens: event.inputTokens }
+              : {}),
+            ...(event.outputTokens !== undefined
+              ? { outputTokens: event.outputTokens }
+              : {}),
           });
           continue;
         }
@@ -130,8 +200,8 @@ export async function runTurn(deps: TurnDeps): Promise<void> {
 
       if (deps.signal.aborted) {
         deps.emit({
-          type: "run_status",
-          status: "cancelled",
+          type: 'run_status',
+          status: 'cancelled',
           runId: deps.runId,
         });
         return;
@@ -141,16 +211,16 @@ export async function runTurn(deps: TurnDeps): Promise<void> {
       // BEFORE any tool results so the transcript reads assistant-then-tool.
       if (assistantText.length > 0 || pendingToolUses.length > 0) {
         deps.history.push({
-          role: "assistant",
+          role: 'assistant',
           content: assistantText,
           ...(pendingToolUses.length > 0 ? { toolCalls: pendingToolUses } : {}),
         });
       }
       if (assistantText.length > 0) {
         deps.emit({
-          type: "message",
+          type: 'message',
           runId: deps.runId,
-          role: "assistant",
+          role: 'assistant',
           content: assistantText,
         });
       }
@@ -160,8 +230,8 @@ export async function runTurn(deps: TurnDeps): Promise<void> {
         auditCursor = flushAudit(deps, auditCursor);
         flushTodos(deps, todosSnapshot);
         deps.emit({
-          type: "run_status",
-          status: "completed",
+          type: 'run_status',
+          status: 'completed',
           runId: deps.runId,
         });
         return;
@@ -170,45 +240,57 @@ export async function runTurn(deps: TurnDeps): Promise<void> {
       // Run the requested tools. The runner drives the Pillar 2 permission flow,
       // which may invoke `context.requestApproval` (the session's parked-approval
       // wiring) and block until the client answers or the run is cancelled.
-      const toolResults: ConversationToolResult[] = [];
-      for (const call of pendingToolUses) {
-        deps.emit({
-          type: "tool_call",
-          runId: deps.runId,
-          toolUseId: call.toolUseId,
-          name: call.name,
-          input: call.input,
-        });
-
-        const result = await deps.runner.run({
+      const scheduledToolUses: ToolUseRequest[] = pendingToolUses.map(
+        (call) => ({
           id: call.toolUseId,
           name: call.name,
           input: call.input,
-        });
+        }),
+      );
+      const callsById = new Map(
+        pendingToolUses.map((call) => [call.toolUseId, call]),
+      );
+      const runnerResults = await deps.scheduler.runAll(scheduledToolUses, {
+        onToolStart(toolUse) {
+          const call = callsById.get(toolUse.id);
+          deps.emit({
+            type: 'tool_call',
+            runId: deps.runId,
+            toolUseId: toolUse.id,
+            name: toolUse.name,
+            input: call?.input ?? {},
+          });
+        },
+        onToolResult(result) {
+          auditCursor = flushAudit(deps, auditCursor);
+          todosSnapshot = flushTodos(deps, todosSnapshot);
+          deps.emit({
+            type: 'tool_result',
+            runId: deps.runId,
+            toolUseId: result.toolUseId,
+            content: result.content,
+            ...(result.isError ? { isError: true } : {}),
+          });
+        },
+      });
 
-        auditCursor = flushAudit(deps, auditCursor);
-        todosSnapshot = flushTodos(deps, todosSnapshot);
-
+      const toolResults: ConversationToolResult[] = [];
+      for (const result of runnerResults) {
+        const call = callsById.get(result.toolUseId);
+        const toolUseId = call?.toolUseId ?? result.toolUseId;
         const toolResult: ConversationToolResult = {
-          toolUseId: result.toolUseId,
+          toolUseId,
           content: result.content,
           ...(result.isError ? { isError: true } : {}),
         };
         toolResults.push(toolResult);
-        deps.emit({
-          type: "tool_result",
-          runId: deps.runId,
-          toolUseId: result.toolUseId,
-          content: result.content,
-          ...(result.isError ? { isError: true } : {}),
-        });
       }
 
       // Results land as a single `tool` entry AFTER the assistant turn, so the
       // next `model.run` observes the complete exchange.
       deps.history.push({
-        role: "tool",
-        content: "",
+        role: 'tool',
+        content: '',
         toolResults,
       });
 
@@ -216,11 +298,11 @@ export async function runTurn(deps: TurnDeps): Promise<void> {
     }
   } catch (error) {
     if (deps.signal.aborted) {
-      deps.emit({ type: "run_status", status: "cancelled", runId: deps.runId });
+      deps.emit({ type: 'run_status', status: 'cancelled', runId: deps.runId });
       return;
     }
     const message = error instanceof Error ? error.message : String(error);
-    deps.emit({ type: "error", runId: deps.runId, message });
-    deps.emit({ type: "run_status", status: "error", runId: deps.runId });
+    deps.emit({ type: 'error', runId: deps.runId, message });
+    deps.emit({ type: 'run_status', status: 'error', runId: deps.runId });
   }
 }
