@@ -1,5 +1,15 @@
-import { arrayField, objectSchema, optionalField, stringField } from "../core/schema.js";
-import { buildTool, type RuntimeContext, type RuntimeTask, type Tool } from "../core/tool.js";
+import {
+  arrayField,
+  objectSchema,
+  optionalField,
+  stringField,
+} from '../core/schema.js';
+import {
+  buildTool,
+  type RuntimeContext,
+  type RuntimeTask,
+  type Tool,
+} from '../core/tool.js';
 
 function ensureTasks(context: RuntimeContext): Map<string, RuntimeTask> {
   if (!context.tasks) context.tasks = new Map();
@@ -9,64 +19,115 @@ function ensureTasks(context: RuntimeContext): Map<string, RuntimeTask> {
 function taskId(prefix: string, context: RuntimeContext): string {
   let count = 0;
   for (const id of ensureTasks(context).keys()) {
-    if (id.startsWith(prefix + "-")) count += 1;
+    if (id.startsWith(prefix + '-')) count += 1;
   }
-  return prefix + "-" + String(count + 1);
+  return prefix + '-' + String(count + 1);
 }
 
 function getTask(context: RuntimeContext, id: string): RuntimeTask {
   const task = ensureTasks(context).get(id);
-  if (!task) throw new Error("Task not found: " + id);
+  if (!task) throw new Error('Task not found: ' + id);
   return task;
 }
 
 function renderTask(task: RuntimeTask): string {
-  return task.id + " [" + task.status + "] " + task.description + (task.output ? "\n" + task.output : "");
+  return (
+    task.id +
+    ' [' +
+    task.status +
+    '] ' +
+    task.description +
+    (task.output ? '\n' + task.output : '')
+  );
 }
 
-const createSchema = objectSchema({ description: stringField(), prompt: optionalField(stringField()), subagent_type: optionalField(stringField()) });
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+const createSchema = objectSchema({
+  description: stringField(),
+  prompt: optionalField(stringField()),
+  subagent_type: optionalField(stringField()),
+});
 const idSchema = objectSchema({ id: stringField() });
 const sendSchema = objectSchema({ to: stringField(), message: stringField() });
-const updateSchema = objectSchema({ id: stringField(), status: optionalField(stringField()), output: optionalField(stringField()) });
-const teamCreateSchema = objectSchema({ name: stringField(), members: optionalField(arrayField(stringField())) });
+const updateSchema = objectSchema({
+  id: stringField(),
+  status: optionalField(stringField()),
+  output: optionalField(stringField()),
+});
+const teamCreateSchema = objectSchema({
+  name: stringField(),
+  members: optionalField(arrayField(stringField())),
+});
 
 export const AgentTool = buildTool({
-  name: "Agent",
-  aliases: ["Task"],
+  name: 'Agent',
+  aliases: ['Task'],
   inputSchema: createSchema,
   async call(input, context) {
     const now = Date.now();
     const task: RuntimeTask = {
-      id: taskId("agent", context),
+      id: taskId('agent', context),
       description: input.description,
       prompt: input.prompt ?? input.description,
       type: input.subagent_type,
-      status: "running",
-      output: "",
+      status: 'running',
+      output: '',
       messages: [],
       createdAt: now,
       updatedAt: now,
     };
     ensureTasks(context).set(task.id, task);
+    if (context.runSubagent) {
+      const maxDepth = context.maxSubagentDepth ?? 1;
+      const depth = context.subagentDepth ?? 0;
+      if (depth >= maxDepth) {
+        task.status = 'error';
+        task.output = 'Maximum subagent depth reached.';
+        task.updatedAt = Date.now();
+        throw new Error(task.output);
+      }
+
+      try {
+        const result = await context.runSubagent(
+          {
+            description: input.description,
+            prompt: input.prompt ?? input.description,
+            ...(input.subagent_type ? { type: input.subagent_type } : {}),
+          },
+          context,
+        );
+        task.status = result.status;
+        task.output = result.output;
+        task.updatedAt = Date.now();
+      } catch (error) {
+        task.status = 'error';
+        task.output = errorMessage(error);
+        task.updatedAt = Date.now();
+        throw error;
+      }
+    }
     return { data: task };
   },
   mapResult(data, toolUseId) {
-    return { toolUseId, content: "Started agent " + renderTask(data) };
+    return { toolUseId, content: 'Agent ' + renderTask(data) };
   },
 });
 
 export const TaskCreateTool = buildTool({
-  name: "TaskCreate",
+  name: 'TaskCreate',
   inputSchema: createSchema,
   async call(input, context) {
     const now = Date.now();
     const task: RuntimeTask = {
-      id: taskId("task", context),
+      id: taskId('task', context),
       description: input.description,
       prompt: input.prompt ?? input.description,
       type: input.subagent_type,
-      status: "pending",
-      output: "",
+      status: 'pending',
+      output: '',
       messages: [],
       createdAt: now,
       updatedAt: now,
@@ -75,12 +136,12 @@ export const TaskCreateTool = buildTool({
     return { data: task };
   },
   mapResult(data, toolUseId) {
-    return { toolUseId, content: "Created task " + renderTask(data) };
+    return { toolUseId, content: 'Created task ' + renderTask(data) };
   },
 });
 
 export const SendMessageTool = buildTool({
-  name: "SendMessage",
+  name: 'SendMessage',
   inputSchema: sendSchema,
   async call(input, context) {
     const task = getTask(context, input.to);
@@ -89,12 +150,12 @@ export const SendMessageTool = buildTool({
     return { data: task };
   },
   mapResult(data, toolUseId) {
-    return { toolUseId, content: "Sent message to " + data.id };
+    return { toolUseId, content: 'Sent message to ' + data.id };
   },
 });
 
 export const TaskUpdateTool = buildTool({
-  name: "TaskUpdate",
+  name: 'TaskUpdate',
   inputSchema: updateSchema,
   async call(input, context) {
     const task = getTask(context, input.id);
@@ -104,12 +165,12 @@ export const TaskUpdateTool = buildTool({
     return { data: task };
   },
   mapResult(data, toolUseId) {
-    return { toolUseId, content: "Updated task " + renderTask(data) };
+    return { toolUseId, content: 'Updated task ' + renderTask(data) };
   },
 });
 
 export const TaskGetTool = buildTool({
-  name: "TaskGet",
+  name: 'TaskGet',
   inputSchema: idSchema,
   isReadOnly: () => true,
   isConcurrencySafe: () => true,
@@ -122,7 +183,7 @@ export const TaskGetTool = buildTool({
 });
 
 export const TaskOutputTool = buildTool({
-  name: "TaskOutput",
+  name: 'TaskOutput',
   inputSchema: idSchema,
   isReadOnly: () => true,
   isConcurrencySafe: () => true,
@@ -135,7 +196,7 @@ export const TaskOutputTool = buildTool({
 });
 
 export const TaskListTool = buildTool({
-  name: "TaskList",
+  name: 'TaskList',
   inputSchema: objectSchema({}),
   isReadOnly: () => true,
   isConcurrencySafe: () => true,
@@ -143,48 +204,54 @@ export const TaskListTool = buildTool({
     return { data: [...ensureTasks(context).values()] };
   },
   mapResult(data, toolUseId) {
-    return { toolUseId, content: data.map(renderTask).join("\n") };
+    return { toolUseId, content: data.map(renderTask).join('\n') };
   },
 });
 
 export const TaskStopTool = buildTool({
-  name: "TaskStop",
+  name: 'TaskStop',
   inputSchema: idSchema,
   async call(input, context) {
     const task = getTask(context, input.id);
-    task.status = "stopped";
+    task.status = 'stopped';
     task.updatedAt = Date.now();
     return { data: task };
   },
   mapResult(data, toolUseId) {
-    return { toolUseId, content: "Task stopped: " + data.id };
+    return { toolUseId, content: 'Task stopped: ' + data.id };
   },
 });
 
 export const TeamCreateTool = buildTool({
-  name: "TeamCreate",
+  name: 'TeamCreate',
   inputSchema: teamCreateSchema,
   async call(input, context) {
     if (!context.teams) context.teams = new Map();
-    const id = "team-" + String(context.teams.size + 1);
+    const id = 'team-' + String(context.teams.size + 1);
     const team = { id, name: input.name, members: input.members ?? [] };
     context.teams.set(id, team);
     return { data: team };
   },
   mapResult(data, toolUseId) {
-    return { toolUseId, content: "Created team " + data.name + " (" + data.id + ")" };
+    return {
+      toolUseId,
+      content: 'Created team ' + data.name + ' (' + data.id + ')',
+    };
   },
 });
 
 export const TeamDeleteTool = buildTool({
-  name: "TeamDelete",
+  name: 'TeamDelete',
   inputSchema: idSchema,
   async call(input, context) {
     const deleted = context.teams?.delete(input.id) ?? false;
-    return { data: deleted ? input.id : "" };
+    return { data: deleted ? input.id : '' };
   },
   mapResult(data, toolUseId) {
-    return { toolUseId, content: data ? "Deleted team " + data : "Team not found" };
+    return {
+      toolUseId,
+      content: data ? 'Deleted team ' + data : 'Team not found',
+    };
   },
 });
 

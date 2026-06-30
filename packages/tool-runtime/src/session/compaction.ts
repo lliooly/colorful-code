@@ -1,5 +1,6 @@
-import type { ToolDescriptor } from "../core/descriptor.js";
-import type { ConversationEntry, ModelClient } from "./model.js";
+import type { ToolDescriptor } from '../core/descriptor.js';
+import type { ConversationEntry, ModelClient } from './model.js';
+import { contentToText, prependTextToContent } from './content.js';
 
 // Automatic context compaction. A long-running session's history grows without
 // bound; every turn re-sends the full transcript, so an untended session
@@ -34,27 +35,27 @@ export type CompactionConfig = {
 // Framing for the merged summary so the model reads it as authoritative context
 // for everything that preceded the preserved tail, not as user instructions.
 const SUMMARY_PREAMBLE =
-  "The earlier part of this conversation was automatically summarized to stay " +
-  "within the context window. Treat the summary below as an authoritative " +
-  "record of everything that came before.\n\n<conversation-summary>\n";
+  'The earlier part of this conversation was automatically summarized to stay ' +
+  'within the context window. Treat the summary below as an authoritative ' +
+  'record of everything that came before.\n\n<conversation-summary>\n';
 const SUMMARY_SEPARATOR =
   "\n</conversation-summary>\n\nThe user's most recent request follows.\n\n";
 // Appended to the to-summarize slice to force a fresh summary turn from the
 // model (the slice always ends on an assistant turn, so this alternates cleanly).
 const SUMMARY_REQUEST =
-  "Summarize the conversation so far following the instructions in the system " +
-  "prompt. Output only the summary.";
+  'Summarize the conversation so far following the instructions in the system ' +
+  'prompt. Output only the summary.';
 
 // Flattens an entry to the text that will be sent to the provider, so the
 // estimate tracks the real prompt: message content plus each tool call's name +
 // serialized arguments and each tool result's content.
 function entryToText(entry: ConversationEntry): string {
-  let text = entry.content;
+  let text = contentToText(entry.content);
   for (const call of entry.toolCalls ?? []) {
-    text += "\n" + call.name + " " + JSON.stringify(call.input);
+    text += '\n' + call.name + ' ' + JSON.stringify(call.input);
   }
   for (const result of entry.toolResults ?? []) {
-    text += "\n" + result.content;
+    text += '\n' + contentToText(result.content);
   }
   return text;
 }
@@ -120,7 +121,7 @@ export function selectCompactionBoundary(
   let acc = 0;
   for (let i = history.length - 1; i >= 0; i -= 1) {
     acc += estimateEntryTokens(history[i]!, estimate);
-    if (history[i]!.role === "user") {
+    if (history[i]!.role === 'user') {
       if (acc <= keepRecentTokens) {
         candidate = i;
       } else {
@@ -155,9 +156,9 @@ async function summarize(
 ): Promise<string> {
   const request: ConversationEntry[] = [
     ...prefix,
-    { role: "user", content: SUMMARY_REQUEST },
+    { role: 'user', content: SUMMARY_REQUEST },
   ];
-  let summary = "";
+  let summary = '';
   const stream = model.run({
     history: request,
     tools: [],
@@ -168,9 +169,9 @@ async function summarize(
     if (signal.aborted) {
       break;
     }
-    if (event.type === "text") {
+    if (event.type === 'text') {
       summary += event.text;
-    } else if (event.type === "end") {
+    } else if (event.type === 'end') {
       break;
     }
   }
@@ -220,9 +221,11 @@ export async function compactHistory(params: {
   }
 
   const merged: ConversationEntry = {
-    role: "user",
-    content:
-      SUMMARY_PREAMBLE + summary + SUMMARY_SEPARATOR + boundaryUser.content,
+    role: 'user',
+    content: prependTextToContent(
+      SUMMARY_PREAMBLE + summary + SUMMARY_SEPARATOR,
+      boundaryUser.content,
+    ),
   };
   // Replace [0 .. boundary] (the summarized prefix + the boundary user message)
   // with the single merged user message. The tail that follows starts with the

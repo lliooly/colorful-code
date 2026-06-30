@@ -55,6 +55,17 @@ export type RuntimeTask = {
   updatedAt: number;
 };
 
+export type RuntimeSubagentRequest = {
+  description: string;
+  prompt: string;
+  type?: string;
+};
+
+export type RuntimeSubagentResult = {
+  output: string;
+  status: 'completed';
+};
+
 export type RuntimeBackgroundProcess = {
   id: string;
   command: string;
@@ -105,6 +116,12 @@ export type RuntimeContext = {
   toolNames?: string[];
   planMode?: boolean;
   lastPlan?: string;
+  subagentDepth?: number;
+  maxSubagentDepth?: number;
+  runSubagent?: (
+    request: RuntimeSubagentRequest,
+    context: RuntimeContext,
+  ) => Promise<RuntimeSubagentResult>;
   // The layered permission context (mode, workspace roots, rules, MCP trust)
   // consulted by `evaluatePermission`. Provided by the session (Pillar 3).
   permissionContext?: PermissionContext;
@@ -186,32 +203,32 @@ export function truncateToolResultContent(
     return content;
   }
 
-  let notice = "\n\n[tool output truncated: showing head and tail]\n\n";
+  let notice = '\n\n[tool output truncated: showing head and tail]\n\n';
   let available = Math.max(0, maxChars - notice.length);
   let headChars = Math.ceil(available / 2);
   let tailChars = Math.floor(available / 2);
   let omittedChars = content.length - headChars - tailChars;
 
   notice =
-    "\n\n[tool output truncated: omitted " +
+    '\n\n[tool output truncated: omitted ' +
     omittedChars +
-    " characters; showing first " +
+    ' characters; showing first ' +
     headChars +
-    " and last " +
+    ' and last ' +
     tailChars +
-    " characters]\n\n";
+    ' characters]\n\n';
   available = Math.max(0, maxChars - notice.length);
   headChars = Math.ceil(available / 2);
   tailChars = Math.floor(available / 2);
   omittedChars = content.length - headChars - tailChars;
   notice =
-    "\n\n[tool output truncated: omitted " +
+    '\n\n[tool output truncated: omitted ' +
     omittedChars +
-    " characters; showing first " +
+    ' characters; showing first ' +
     headChars +
-    " and last " +
+    ' and last ' +
     tailChars +
-    " characters]\n\n";
+    ' characters]\n\n';
 
   return content.slice(0, headChars) + notice + content.slice(-tailChars);
 }

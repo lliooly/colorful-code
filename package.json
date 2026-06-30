@@ -10,7 +10,8 @@
     "typecheck": "turbo run typecheck",
     "format": "prettier --check .",
     "format:write": "prettier --write .",
-    "clean": "turbo run clean"
+    "clean": "turbo run clean",
+    "agent:cli": "bun apps/cli/src/main.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.36.0",

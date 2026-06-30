@@ -116,6 +116,200 @@ test('the loop issues multiple model.run calls when a tool use occurs', async ()
   );
 });
 
+test('Agent runs a child session synchronously and returns its final output', async () => {
+  const scripted = createScriptedModelClient([
+    [
+      {
+        type: 'tool_use',
+        toolUseId: 'agent-call',
+        name: 'Agent',
+        input: {
+          description: 'Inspect the project',
+          prompt: 'Find the important detail',
+          subagent_type: 'research',
+        },
+      },
+    ],
+    [{ type: 'text', text: 'child found the important detail.' }],
+    [{ type: 'text', text: 'parent saw the child result.' }],
+  ]);
+  const seen: ModelTurnInput[] = [];
+  const session = new Session({
+    model: {
+      run(input) {
+        seen.push(input);
+        return scripted.run(input);
+      },
+    },
+    tools: createBuiltinTools(),
+    systemPrompt: 'Shared project instructions.',
+  });
+
+  const events: SessionEvent[] = [];
+  session.subscribe((event) => events.push(event));
+
+  await session.submit('delegate this');
+
+  const toolResult = events.find(
+    (event): event is Extract<SessionEvent, { type: 'tool_result' }> =>
+      event.type === 'tool_result' && event.toolUseId === 'agent-call',
+  );
+  assert.ok(toolResult);
+  assert.match(
+    toolResult.content,
+    /child found the important detail\./,
+    'Agent tool result includes the child final answer',
+  );
+
+  assert.equal(seen.length, 3, 'parent, child, then resumed parent');
+  assert.equal(seen[1]?.history[0]?.role, 'user');
+  assert.equal(seen[1]?.history[0]?.content, 'Find the important detail');
+  assert.equal(seen[1]?.system, 'Shared project instructions.');
+  assert.match(
+    seen[2]?.history[2]?.toolResults?.[0]?.content ?? '',
+    /child found the important detail\./,
+    'parent resumes with the child output as the Agent tool result',
+  );
+
+  const tasks = session.context.tasks;
+  const task = tasks?.get('agent-1');
+  assert.equal(task?.status, 'completed');
+  assert.match(task?.output ?? '', /child found the important detail\./);
+  assert.equal((events.at(-1) as { status: string }).status, 'completed');
+});
+
+test('Agent child approval requests bubble through the parent session', async () => {
+  const approvalTool = buildTool({
+    name: 'NeedsApproval',
+    inputSchema: objectSchema({}),
+    checkPermissions() {
+      return { behavior: 'ask', message: 'Approve child tool?' };
+    },
+    async call() {
+      return { data: 'approved child tool' };
+    },
+    mapResult(data, toolUseId) {
+      return { toolUseId, content: data };
+    },
+  });
+  const scripted = createScriptedModelClient([
+    [
+      {
+        type: 'tool_use',
+        toolUseId: 'agent-call',
+        name: 'Agent',
+        input: {
+          description: 'Run approval child',
+          prompt: 'Use the gated tool',
+        },
+      },
+    ],
+    [
+      {
+        type: 'tool_use',
+        toolUseId: 'child-tool',
+        name: 'NeedsApproval',
+        input: {},
+      },
+    ],
+    [{ type: 'text', text: 'child completed after approval.' }],
+    [{ type: 'text', text: 'parent finished.' }],
+  ]);
+  const session = new Session({
+    model: scripted,
+    tools: [...createBuiltinTools(), approvalTool],
+  });
+  const events: SessionEvent[] = [];
+  session.subscribe((event) => events.push(event));
+
+  const done = session.submit('delegate gated work');
+  await waitFor(
+    () => events.some((event) => event.type === 'approval_required'),
+    'child approval_required',
+  );
+
+  const approval = events.find(
+    (event): event is Extract<SessionEvent, { type: 'approval_required' }> =>
+      event.type === 'approval_required',
+  );
+  assert.ok(approval);
+  assert.equal(approval.name, 'NeedsApproval');
+  assert.equal(approval.toolUseId, 'child-tool');
+
+  session.send({
+    type: 'approval_response',
+    requestId: approval.requestId,
+    decision: { behavior: 'allow' },
+  });
+  await done;
+
+  const agentResult = events.find(
+    (event): event is Extract<SessionEvent, { type: 'tool_result' }> =>
+      event.type === 'tool_result' && event.toolUseId === 'agent-call',
+  );
+  assert.ok(agentResult);
+  assert.match(agentResult.content, /child completed after approval\./);
+  assert.equal((events.at(-1) as { status: string }).status, 'completed');
+});
+
+test('cancel while Agent child is waiting for approval cancels the parent run', async () => {
+  const approvalTool = buildTool({
+    name: 'NeedsApproval',
+    inputSchema: objectSchema({}),
+    checkPermissions() {
+      return { behavior: 'ask', message: 'Approve child tool?' };
+    },
+    async call() {
+      return { data: 'approved child tool' };
+    },
+    mapResult(data, toolUseId) {
+      return { toolUseId, content: data };
+    },
+  });
+  const session = new Session({
+    model: createScriptedModelClient([
+      [
+        {
+          type: 'tool_use',
+          toolUseId: 'agent-call',
+          name: 'Agent',
+          input: {
+            description: 'Run cancellable child',
+            prompt: 'Use the gated tool',
+          },
+        },
+      ],
+      [
+        {
+          type: 'tool_use',
+          toolUseId: 'child-tool',
+          name: 'NeedsApproval',
+          input: {},
+        },
+      ],
+    ]),
+    tools: [...createBuiltinTools(), approvalTool],
+  });
+  const events: SessionEvent[] = [];
+  session.subscribe((event) => events.push(event));
+
+  const done = session.submit('delegate cancellable work');
+  await waitFor(
+    () => events.some((event) => event.type === 'approval_required'),
+    'child approval_required',
+  );
+
+  session.send({ type: 'cancel' });
+  await done;
+
+  const statuses = events
+    .filter((event) => event.type === 'run_status')
+    .map((event) => event.status);
+  assert.ok(statuses.includes('cancelled'));
+  assert.ok(!statuses.includes('completed'));
+  assert.equal(session.context.tasks?.get('agent-1')?.status, 'error');
+});
+
 test('a turn runs neighboring read-only tool uses concurrently', async () => {
   const readTool = buildTool({
     name: 'SlowRead',

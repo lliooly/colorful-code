@@ -3,8 +3,10 @@ import {
   Inject,
   Injectable,
   NotFoundException,
-  OnModuleDestroy
+  OnModuleDestroy,
 } from '@nestjs/common';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { Observable } from 'rxjs';
 import {
   createBuiltinTools,
@@ -15,19 +17,19 @@ import {
   type PermissionMode,
   type PermissionRule,
   type SessionEvent,
-  type SessionSnapshot
+  type SessionSnapshot,
 } from '@colorful-code/tool-runtime';
 import {
   buildSystemPromptSync,
   createDefaultDynamicSections,
   STATIC_SYSTEM_PROMPT_SECTIONS,
-  SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+  SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 } from '@colorful-code/prompts';
 import {
   MODEL_CLIENT_FACTORY,
   ModelSelectionError,
   type ModelClientFactory,
-  type ModelSelection
+  type ModelSelection,
 } from './model-factory';
 import { buildCompactionConfig } from './compaction-config';
 import { SessionStore } from '../persistence/session-store';
@@ -64,12 +66,78 @@ type SessionEntry = {
   pendingAudit: PermissionAuditEntry[];
 };
 
+const PROJECT_MEMORY_FILE = 'CLAUDE.md';
+const PROJECT_MEMORY_MAX_CHARS = 64_000;
+
+function isWithinOrEqual(parent: string, child: string): boolean {
+  return (
+    child === parent ||
+    child.startsWith(parent.endsWith('/') ? parent : parent + '/')
+  );
+}
+
+function findWorkspaceMemoryDirs(
+  cwd: string,
+  workspaceRoots: string[],
+): string[] {
+  const resolvedCwd = resolve(cwd);
+  const roots = workspaceRoots.map((root) => resolve(root));
+  const boundary =
+    roots
+      .filter((root) => isWithinOrEqual(root, resolvedCwd))
+      .sort((a, b) => b.length - a.length)[0] ?? resolvedCwd;
+
+  const dirs: string[] = [];
+  for (let dir = resolvedCwd; ; dir = dirname(dir)) {
+    dirs.push(dir);
+    if (dir === boundary || dir === dirname(dir)) {
+      break;
+    }
+  }
+  return dirs.reverse();
+}
+
+function readProjectMemory(
+  cwd: string | undefined,
+  workspaceRoots: string[],
+): string | null {
+  if (!cwd) {
+    return null;
+  }
+
+  const sections: string[] = [];
+  for (const dir of findWorkspaceMemoryDirs(cwd, workspaceRoots)) {
+    const file = join(dir, PROJECT_MEMORY_FILE);
+    try {
+      if (!existsSync(file) || !statSync(file).isFile()) {
+        continue;
+      }
+      const content = readFileSync(file, 'utf8').trim();
+      if (content.length === 0) {
+        continue;
+      }
+      sections.push(
+        PROJECT_MEMORY_FILE +
+          ': ' +
+          file +
+          '\n' +
+          content.slice(0, PROJECT_MEMORY_MAX_CHARS),
+      );
+    } catch {
+      // Project memory is advisory context. A transient filesystem issue should
+      // not make session creation fail.
+    }
+  }
+
+  return sections.length > 0 ? sections.join('\n\n') : null;
+}
+
 // Renders the agent prompt for one session. Static identity/safety/behaviour
 // sections stay unchanged; the dynamic tail records runtime context that the
 // model otherwise cannot infer from conversation history.
 function buildSessionSystemPrompt(
   options: CreateSessionOptions,
-  permissionContext: PermissionContext
+  permissionContext: PermissionContext,
 ): string {
   const prompt = buildSystemPromptSync({
     staticSections: STATIC_SYSTEM_PROMPT_SECTIONS,
@@ -78,8 +146,12 @@ function buildSessionSystemPrompt(
       now: new Date(),
       ...(options.cwd ? { cwd: options.cwd } : {}),
       workspaceRoots: [...permissionContext.workspaceRoots],
-      permissionMode: permissionContext.mode
-    }
+      permissionMode: permissionContext.mode,
+      memorySummary: readProjectMemory(
+        options.cwd,
+        permissionContext.workspaceRoots,
+      ),
+    },
   });
 
   return prompt
@@ -92,7 +164,7 @@ function buildSessionSystemPrompt(
 const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
   'completed',
   'cancelled',
-  'error'
+  'error',
 ]);
 
 @Injectable()
@@ -102,30 +174,30 @@ export class SessionsService implements OnModuleDestroy {
   constructor(
     @Inject(MODEL_CLIENT_FACTORY)
     private readonly modelClientFactory: ModelClientFactory,
-    private readonly store: SessionStore
+    private readonly store: SessionStore,
   ) {}
 
   // Builds a fresh PermissionContext from the request options. `workspaceRoots`
   // falls back to `[cwd]` when a cwd is supplied (mirrors the engine default).
   private buildPermissionContext(
-    options: CreateSessionOptions
+    options: CreateSessionOptions,
   ): PermissionContext {
     const workspaceRoots =
       options.workspaceRoots ?? (options.cwd ? [options.cwd] : []);
     return {
       mode: options.permissionMode ?? 'default',
       workspaceRoots: [...workspaceRoots],
-      rules: options.rules ? [...options.rules] : []
+      rules: options.rules ? [...options.rules] : [],
     };
   }
 
   private buildRestoredPermissionContext(
-    snapshot: SessionSnapshot
+    snapshot: SessionSnapshot,
   ): PermissionContext {
     return {
       mode: snapshot.permissionMode,
       workspaceRoots: [...snapshot.workspaceRoots],
-      rules: []
+      rules: [],
     };
   }
 
@@ -133,7 +205,7 @@ export class SessionsService implements OnModuleDestroy {
     try {
       return this.modelClientFactory({
         sessionId: id,
-        ...(selection ? { selection } : {})
+        ...(selection ? { selection } : {}),
       });
     } catch (error) {
       if (error instanceof ModelSelectionError) {
@@ -174,7 +246,7 @@ export class SessionsService implements OnModuleDestroy {
       log,
       listeners,
       unsubscribe,
-      pendingAudit
+      pendingAudit,
     });
     return { id: session.id };
   }
@@ -201,8 +273,8 @@ export class SessionsService implements OnModuleDestroy {
         systemPrompt: buildSessionSystemPrompt(options, permissionContext),
         compaction: buildCompactionConfig(options.model),
         ...(options.cwd ? { cwd: options.cwd } : {}),
-        permissionContext
-      })
+        permissionContext,
+      }),
     );
   }
 
@@ -224,15 +296,18 @@ export class SessionsService implements OnModuleDestroy {
     const createOptions: CreateSessionOptions = {
       ...(snapshot.cwd ? { cwd: snapshot.cwd } : {}),
       permissionMode: snapshot.permissionMode,
-      workspaceRoots: [...snapshot.workspaceRoots]
+      workspaceRoots: [...snapshot.workspaceRoots],
     };
     return this.register(
       Session.restore(snapshot, {
         model: this.buildModelClient(id, options.model),
         tools: createBuiltinTools(),
-        systemPrompt: buildSessionSystemPrompt(createOptions, permissionContext),
-        compaction: buildCompactionConfig(options.model)
-      })
+        systemPrompt: buildSessionSystemPrompt(
+          createOptions,
+          permissionContext,
+        ),
+        compaction: buildCompactionConfig(options.model),
+      }),
     );
   }
 
@@ -244,7 +319,7 @@ export class SessionsService implements OnModuleDestroy {
   // apiKey), and the audit carries only permission metadata.
   private persist(
     session: Session,
-    pendingAudit: PermissionAuditEntry[]
+    pendingAudit: PermissionAuditEntry[],
   ): void {
     try {
       const snapshot: SessionSnapshot = session.snapshot();

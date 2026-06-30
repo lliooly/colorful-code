@@ -4,6 +4,8 @@ import { ToolScheduler } from '../core/scheduler.js';
 import {
   createRuntimeContext,
   type RuntimeContext,
+  type RuntimeSubagentRequest,
+  type RuntimeSubagentResult,
   type TodoItem,
   type Tool,
 } from '../core/tool.js';
@@ -16,6 +18,7 @@ import type {
 } from '../core/permissions.js';
 import type { CompactionConfig } from './compaction.js';
 import type { ControlMessage } from './control.js';
+import { contentToText } from './content.js';
 import type { SessionEvent, SessionEventListener } from './events.js';
 import type { ConversationEntry, ModelClient } from './model.js';
 import { runTurn } from './turn.js';
@@ -38,6 +41,10 @@ export type SessionDeps = {
   // not snapshot data, so it is re-supplied on `restore`. Absent => no
   // compaction.
   compaction?: CompactionConfig;
+  // Maximum nested Agent depth. The default allows a parent session to run one
+  // child agent, while preventing recursive agent spawning unless explicitly
+  // widened by the caller later.
+  maxSubagentDepth?: number;
 };
 
 // The serializable shape persisted between sessions. It carries only data — no
@@ -92,6 +99,7 @@ export class Session {
   private abortController = new AbortController();
   private runCounter = 0;
   private requestCounter = 0;
+  private subagentCounter = 0;
   private activeRun: Promise<void> | undefined;
   private activeRunId: string | undefined;
 
@@ -112,6 +120,9 @@ export class Session {
       permissionContext: this.permissionContext,
       permissionAudit: [] as PermissionAuditEntry[],
       requestApproval: (request) => this.requestApproval(request),
+      subagentDepth: 0,
+      maxSubagentDepth: deps.maxSubagentDepth ?? 1,
+      runSubagent: (request, context) => this.runSubagent(request, context),
     });
 
     this.runner = new ToolRunner(this.registry, this.context);
@@ -173,6 +184,90 @@ export class Session {
     }
   }
 
+  private async runSubagent(
+    request: RuntimeSubagentRequest,
+    parentContext: RuntimeContext,
+  ): Promise<RuntimeSubagentResult> {
+    this.subagentCounter += 1;
+    const runId =
+      (this.activeRunId ?? this.id) +
+      '-subagent-' +
+      String(this.subagentCounter);
+    const signal =
+      parentContext.signal ??
+      this.context.signal ??
+      this.abortController.signal;
+    const childContext = createRuntimeContext({
+      ...((parentContext.cwd ?? this.cwd)
+        ? { cwd: parentContext.cwd ?? this.cwd }
+        : {}),
+      signal,
+      permissionContext: this.permissionContext,
+      permissionAudit: this.context.permissionAudit,
+      requestApproval: (approval) => this.requestApproval(approval),
+      permissionPolicy: parentContext.permissionPolicy,
+      subagentDepth: (parentContext.subagentDepth ?? 0) + 1,
+      maxSubagentDepth:
+        parentContext.maxSubagentDepth ?? this.context.maxSubagentDepth ?? 1,
+      runSubagent: (nestedRequest, nestedContext) =>
+        this.runSubagent(nestedRequest, nestedContext),
+      mcpManager: parentContext.mcpManager,
+      mcpToolProvider: parentContext.mcpToolProvider,
+      webFetchProvider: parentContext.webFetchProvider,
+      webSearchProvider: parentContext.webSearchProvider,
+      webBrowserProvider: parentContext.webBrowserProvider,
+    });
+    const runner = new ToolRunner(this.registry, childContext);
+    const scheduler = new ToolScheduler(runner);
+    const history: ConversationEntry[] = [
+      { role: 'user', content: request.prompt },
+    ];
+    let finalOutput = '';
+    let errorMessage = '';
+    let terminalStatus:
+      | Extract<SessionEvent, { type: 'run_status' }>['status']
+      | undefined;
+
+    await runTurn({
+      runId,
+      model: this.model,
+      registry: this.registry,
+      scheduler,
+      context: childContext,
+      history,
+      signal,
+      emit: (event) => {
+        if (event.type === 'message') {
+          finalOutput = contentToText(event.content);
+        } else if (event.type === 'error') {
+          errorMessage = event.message;
+        } else if (event.type === 'run_status') {
+          terminalStatus = event.status;
+        }
+      },
+      ...(this.systemPrompt !== undefined
+        ? { systemPrompt: this.systemPrompt }
+        : {}),
+      ...(this.compaction !== undefined ? { compaction: this.compaction } : {}),
+    });
+
+    if (signal.aborted || terminalStatus === 'cancelled') {
+      throw new Error('Subagent was cancelled.');
+    }
+    if (terminalStatus === 'error') {
+      throw new Error(errorMessage || 'Subagent failed.');
+    }
+
+    if (finalOutput.length === 0) {
+      const lastAssistant = [...history]
+        .reverse()
+        .find((entry) => entry.role === 'assistant');
+      finalOutput = lastAssistant ? contentToText(lastAssistant.content) : '';
+    }
+
+    return { status: 'completed', output: finalOutput };
+  }
+
   // Appends a user message and runs a turn to completion. Concurrent submits are
   // serialized behind the active run.
   async submit(text: string): Promise<void> {
@@ -203,9 +298,7 @@ export class Session {
       ...(this.systemPrompt !== undefined
         ? { systemPrompt: this.systemPrompt }
         : {}),
-      ...(this.compaction !== undefined
-        ? { compaction: this.compaction }
-        : {}),
+      ...(this.compaction !== undefined ? { compaction: this.compaction } : {}),
     }).finally(() => {
       if (this.activeRunId === runId) {
         this.activeRunId = undefined;
@@ -268,9 +361,7 @@ export class Session {
       ...(deps.systemPrompt !== undefined
         ? { systemPrompt: deps.systemPrompt }
         : {}),
-      ...(deps.compaction !== undefined
-        ? { compaction: deps.compaction }
-        : {}),
+      ...(deps.compaction !== undefined ? { compaction: deps.compaction } : {}),
       permissionContext: {
         mode: snapshot.permissionMode,
         workspaceRoots: [...snapshot.workspaceRoots],

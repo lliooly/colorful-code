@@ -3,15 +3,15 @@ import { test } from 'node:test';
 import type {
   ModelTurnEvent,
   ModelTurnInput,
-  ToolDescriptor
+  ToolDescriptor,
 } from '@colorful-code/tool-runtime';
 import {
   AnthropicModelClient,
-  type AnthropicStreamClient
+  type AnthropicStreamClient,
 } from '../src/model/anthropic-client';
 import {
   OpenAIModelClient,
-  type OpenAIStreamClient
+  type OpenAIStreamClient,
 } from '../src/model/openai-client';
 
 // ---------------------------------------------------------------------------
@@ -25,7 +25,7 @@ import {
 const NEVER_ABORT = new AbortController().signal;
 
 async function collect(
-  events: AsyncIterable<ModelTurnEvent>
+  events: AsyncIterable<ModelTurnEvent>,
 ): Promise<ModelTurnEvent[]> {
   const out: ModelTurnEvent[] = [];
   for await (const event of events) {
@@ -43,13 +43,13 @@ function fakeTool(): ToolDescriptor {
     inputSchema: {
       type: 'object',
       properties: { path: { type: 'string' } },
-      required: ['path']
+      required: ['path'],
     },
     source: 'builtin',
     readOnly: false,
     destructive: true,
     concurrencySafe: false,
-    enabled: true
+    enabled: true,
   };
 }
 
@@ -63,20 +63,20 @@ function translationHistory(): ModelTurnInput {
         role: 'assistant',
         content: 'Writing the file.',
         toolCalls: [
-          { toolUseId: 'call-1', name: 'Write', input: { path: 'a.txt' } }
-        ]
+          { toolUseId: 'call-1', name: 'Write', input: { path: 'a.txt' } },
+        ],
       },
       {
         role: 'tool',
         content: '',
         toolResults: [
-          { toolUseId: 'call-1', content: 'wrote a.txt', isError: false }
-        ]
-      }
+          { toolUseId: 'call-1', content: 'wrote a.txt', isError: false },
+        ],
+      },
     ],
     tools: [fakeTool()],
     signal: NEVER_ABORT,
-    system: 'You are a helpful agent.'
+    system: 'You are a helpful agent.',
   };
 }
 
@@ -100,8 +100,8 @@ function fakeAnthropicClient(events: unknown[]): {
           }
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         })() as any;
-      }
-    }
+      },
+    },
   };
   return { client, calls };
 }
@@ -112,46 +112,53 @@ test('anthropic adapter: text deltas, accumulated tool_use, single end', async (
     {
       type: 'content_block_delta',
       index: 0,
-      delta: { type: 'text_delta', text: 'Writing ' }
+      delta: { type: 'text_delta', text: 'Writing ' },
     },
     {
       type: 'content_block_delta',
       index: 0,
-      delta: { type: 'text_delta', text: 'the file.' }
+      delta: { type: 'text_delta', text: 'the file.' },
     },
     { type: 'content_block_stop', index: 0 },
     {
       type: 'content_block_start',
       index: 1,
-      content_block: { type: 'tool_use', id: 'call-1', name: 'Write', input: {} }
+      content_block: {
+        type: 'tool_use',
+        id: 'call-1',
+        name: 'Write',
+        input: {},
+      },
     },
     {
       type: 'content_block_delta',
       index: 1,
-      delta: { type: 'input_json_delta', partial_json: '{"pa' }
+      delta: { type: 'input_json_delta', partial_json: '{"pa' },
     },
     {
       type: 'content_block_delta',
       index: 1,
-      delta: { type: 'input_json_delta', partial_json: 'th":"a.txt"}' }
+      delta: { type: 'input_json_delta', partial_json: 'th":"a.txt"}' },
     },
     { type: 'content_block_stop', index: 1 },
-    { type: 'message_stop' }
+    { type: 'message_stop' },
   ]);
 
   const adapter = new AnthropicModelClient({ client, model: 'claude-test' });
   const events = await collect(
-    adapter.run({ history: [], tools: [], signal: NEVER_ABORT })
+    adapter.run({ history: [], tools: [], signal: NEVER_ABORT }),
   );
 
   const texts = events
-    .filter((e): e is Extract<ModelTurnEvent, { type: 'text' }> => e.type === 'text')
+    .filter(
+      (e): e is Extract<ModelTurnEvent, { type: 'text' }> => e.type === 'text',
+    )
     .map((e) => e.text);
   assert.deepEqual(texts, ['Writing ', 'the file.']);
 
   const toolUses = events.filter(
     (e): e is Extract<ModelTurnEvent, { type: 'tool_use' }> =>
-      e.type === 'tool_use'
+      e.type === 'tool_use',
   );
   assert.equal(toolUses.length, 1, 'exactly one tool_use');
   assert.equal(toolUses[0]?.toolUseId, 'call-1');
@@ -168,7 +175,7 @@ test('anthropic adapter: translates history + tools into the request', async () 
   const adapter = new AnthropicModelClient({
     client,
     model: 'claude-test',
-    maxTokens: 1234
+    maxTokens: 1234,
   });
   await collect(adapter.run(translationHistory()));
 
@@ -188,13 +195,18 @@ test('anthropic adapter: translates history + tools into the request', async () 
   assert.equal(messages[0]?.content, 'Write hello to a.txt');
 
   assert.equal(messages[1]?.role, 'assistant');
-  const assistantBlocks = messages[1]?.content as Array<Record<string, unknown>>;
-  assert.deepEqual(assistantBlocks[0], { type: 'text', text: 'Writing the file.' });
+  const assistantBlocks = messages[1]?.content as Array<
+    Record<string, unknown>
+  >;
+  assert.deepEqual(assistantBlocks[0], {
+    type: 'text',
+    text: 'Writing the file.',
+  });
   assert.deepEqual(assistantBlocks[1], {
     type: 'tool_use',
     id: 'call-1',
     name: 'Write',
-    input: { path: 'a.txt' }
+    input: { path: 'a.txt' },
   });
 
   assert.equal(messages[2]?.role, 'user');
@@ -202,7 +214,7 @@ test('anthropic adapter: translates history + tools into the request', async () 
   assert.deepEqual(resultBlocks[0], {
     type: 'tool_result',
     tool_use_id: 'call-1',
-    content: 'wrote a.txt'
+    content: 'wrote a.txt',
   });
 
   const tools = params.tools as Array<Record<string, unknown>>;
@@ -212,8 +224,85 @@ test('anthropic adapter: translates history + tools into the request', async () 
   assert.deepEqual(tools[0]?.input_schema, {
     type: 'object',
     properties: { path: { type: 'string' } },
-    required: ['path']
+    required: ['path'],
   });
+});
+
+test('anthropic adapter: translates user content blocks into multimodal message blocks', async () => {
+  const { client, calls } = fakeAnthropicClient([{ type: 'message_stop' }]);
+  const adapter = new AnthropicModelClient({ client, model: 'claude-test' });
+
+  await collect(
+    adapter.run({
+      history: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Describe this image.' },
+            { type: 'image', mediaType: 'image/png', data: 'aW1hZ2U=' },
+          ],
+        },
+      ],
+      tools: [],
+      signal: NEVER_ABORT,
+    }),
+  );
+
+  const params = calls[0] as Record<string, unknown>;
+  const messages = params.messages as Array<Record<string, unknown>>;
+  assert.deepEqual(messages[0], {
+    role: 'user',
+    content: [
+      { type: 'text', text: 'Describe this image.' },
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: 'image/png',
+          data: 'aW1hZ2U=',
+        },
+      },
+    ],
+  });
+});
+
+test('anthropic adapter: retries a transient request failure before any output', async () => {
+  let attempts = 0;
+  const client: AnthropicStreamClient = {
+    messages: {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      stream(): any {
+        attempts += 1;
+        if (attempts === 1) {
+          const error = new Error('rate limited') as Error & {
+            status?: number;
+          };
+          error.status = 429;
+          throw error;
+        }
+        return (async function* () {
+          yield {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text: 'recovered' },
+          };
+          yield { type: 'message_stop' };
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        })() as any;
+      },
+    },
+  };
+
+  const adapter = new AnthropicModelClient({ client, model: 'claude-test' });
+  const events = await collect(
+    adapter.run({ history: [], tools: [], signal: NEVER_ABORT }),
+  );
+
+  assert.equal(attempts, 2);
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ['text', 'end'],
+  );
 });
 
 // ------------------------------ OpenAI ------------------------------------
@@ -237,20 +326,26 @@ function fakeOpenAIClient(chunks: unknown[]): {
                 yield chunk;
               }
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            })() as any
+            })() as any,
           );
-        }
-      }
-    }
+        },
+      },
+    },
   };
   return { client, calls };
 }
 
 test('openai adapter: content deltas, accumulated tool_use, single end', async () => {
   const { client } = fakeOpenAIClient([
-    { choices: [{ index: 0, delta: { content: 'Writing ' }, finish_reason: null }] },
     {
-      choices: [{ index: 0, delta: { content: 'the file.' }, finish_reason: null }]
+      choices: [
+        { index: 0, delta: { content: 'Writing ' }, finish_reason: null },
+      ],
+    },
+    {
+      choices: [
+        { index: 0, delta: { content: 'the file.' }, finish_reason: null },
+      ],
     },
     {
       choices: [
@@ -262,43 +357,43 @@ test('openai adapter: content deltas, accumulated tool_use, single end', async (
                 index: 0,
                 id: 'call-1',
                 type: 'function',
-                function: { name: 'Write', arguments: '{"pa' }
-              }
-            ]
+                function: { name: 'Write', arguments: '{"pa' },
+              },
+            ],
           },
-          finish_reason: null
-        }
-      ]
+          finish_reason: null,
+        },
+      ],
     },
     {
       choices: [
         {
           index: 0,
           delta: {
-            tool_calls: [
-              { index: 0, function: { arguments: 'th":"a.txt"}' } }
-            ]
+            tool_calls: [{ index: 0, function: { arguments: 'th":"a.txt"}' } }],
           },
-          finish_reason: null
-        }
-      ]
+          finish_reason: null,
+        },
+      ],
     },
-    { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }
+    { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] },
   ]);
 
   const adapter = new OpenAIModelClient({ client, model: 'gpt-test' });
   const events = await collect(
-    adapter.run({ history: [], tools: [], signal: NEVER_ABORT })
+    adapter.run({ history: [], tools: [], signal: NEVER_ABORT }),
   );
 
   const texts = events
-    .filter((e): e is Extract<ModelTurnEvent, { type: 'text' }> => e.type === 'text')
+    .filter(
+      (e): e is Extract<ModelTurnEvent, { type: 'text' }> => e.type === 'text',
+    )
     .map((e) => e.text);
   assert.deepEqual(texts, ['Writing ', 'the file.']);
 
   const toolUses = events.filter(
     (e): e is Extract<ModelTurnEvent, { type: 'tool_use' }> =>
-      e.type === 'tool_use'
+      e.type === 'tool_use',
   );
   assert.equal(toolUses.length, 1, 'exactly one tool_use');
   assert.equal(toolUses[0]?.toolUseId, 'call-1');
@@ -312,12 +407,12 @@ test('openai adapter: content deltas, accumulated tool_use, single end', async (
 
 test('openai adapter: translates history + tools into the request', async () => {
   const { client, calls } = fakeOpenAIClient([
-    { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
+    { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
   ]);
   const adapter = new OpenAIModelClient({
     client,
     model: 'gpt-test',
-    maxTokens: 555
+    maxTokens: 555,
   });
   await collect(adapter.run(translationHistory()));
 
@@ -332,11 +427,11 @@ test('openai adapter: translates history + tools into the request', async () => 
   assert.equal(messages.length, 4);
   assert.deepEqual(messages[0], {
     role: 'system',
-    content: 'You are a helpful agent.'
+    content: 'You are a helpful agent.',
   });
   assert.deepEqual(messages[1], {
     role: 'user',
-    content: 'Write hello to a.txt'
+    content: 'Write hello to a.txt',
   });
 
   assert.equal(messages[2]?.role, 'assistant');
@@ -347,13 +442,13 @@ test('openai adapter: translates history + tools into the request', async () => 
   assert.equal(toolCalls[0]?.type, 'function');
   assert.deepEqual(toolCalls[0]?.function, {
     name: 'Write',
-    arguments: JSON.stringify({ path: 'a.txt' })
+    arguments: JSON.stringify({ path: 'a.txt' }),
   });
 
   assert.deepEqual(messages[3], {
     role: 'tool',
     tool_call_id: 'call-1',
-    content: 'wrote a.txt'
+    content: 'wrote a.txt',
   });
 
   const tools = body.tools as Array<Record<string, unknown>>;
@@ -365,6 +460,89 @@ test('openai adapter: translates history + tools into the request', async () => 
   assert.deepEqual(fn.parameters, {
     type: 'object',
     properties: { path: { type: 'string' } },
-    required: ['path']
+    required: ['path'],
   });
+});
+
+test('openai adapter: translates user content blocks into multimodal message parts', async () => {
+  const { client, calls } = fakeOpenAIClient([
+    { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+  ]);
+  const adapter = new OpenAIModelClient({ client, model: 'gpt-test' });
+
+  await collect(
+    adapter.run({
+      history: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Describe this image.' },
+            { type: 'image', mediaType: 'image/png', data: 'aW1hZ2U=' },
+          ],
+        },
+      ],
+      tools: [],
+      signal: NEVER_ABORT,
+    }),
+  );
+
+  const body = calls[0] as Record<string, unknown>;
+  const messages = body.messages as Array<Record<string, unknown>>;
+  assert.deepEqual(messages[0], {
+    role: 'user',
+    content: [
+      { type: 'text', text: 'Describe this image.' },
+      {
+        type: 'image_url',
+        image_url: { url: 'data:image/png;base64,aW1hZ2U=' },
+      },
+    ],
+  });
+});
+
+test('openai adapter: retries a transient request failure before any output', async () => {
+  let attempts = 0;
+  const client: OpenAIStreamClient = {
+    chat: {
+      completions: {
+        create(): Promise<AsyncIterable<unknown>> {
+          attempts += 1;
+          if (attempts === 1) {
+            const error = new Error('provider unavailable') as Error & {
+              status?: number;
+            };
+            error.status = 503;
+            return Promise.reject(error);
+          }
+          return Promise.resolve(
+            (async function* () {
+              yield {
+                choices: [
+                  {
+                    index: 0,
+                    delta: { content: 'recovered' },
+                    finish_reason: 'stop',
+                  },
+                ],
+              };
+            })(),
+          );
+        },
+      },
+    },
+  };
+
+  const adapter = new OpenAIModelClient({
+    client: client as OpenAIStreamClient,
+    model: 'gpt-test',
+  });
+  const events = await collect(
+    adapter.run({ history: [], tools: [], signal: NEVER_ABORT }),
+  );
+
+  assert.equal(attempts, 2);
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ['text', 'end'],
+  );
 });

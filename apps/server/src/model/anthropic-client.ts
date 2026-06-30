@@ -5,8 +5,11 @@ import type {
   ModelClient,
   ModelTurnEvent,
   ModelTurnInput,
-  ToolDescriptor
+  ToolDescriptor,
+  MessageContent,
 } from '@colorful-code/tool-runtime';
+import { contentBlocks, contentToText } from '@colorful-code/tool-runtime';
+import { runWithProviderRetry } from './retry';
 
 // Provider request/stream types, taken from the SDK's `Anthropic` namespace so a
 // single import covers them (they are not re-exported as flat module members).
@@ -27,7 +30,7 @@ export interface AnthropicStreamClient {
   messages: {
     stream(
       params: MessageStreamParams,
-      options?: { signal?: AbortSignal }
+      options?: { signal?: AbortSignal },
     ): AsyncIterable<RawMessageStreamEvent>;
   };
 }
@@ -76,13 +79,21 @@ export class AnthropicModelClient implements ModelClient {
       // text surfaces. Requires a 4.6+ Claude model; those reject `temperature`,
       // so don't combine the two (disable thinking + use an older model instead).
       ...(this.adaptiveThinking ? { thinking: { type: 'adaptive' } } : {}),
-      ...(this.temperature !== undefined ? { temperature: this.temperature } : {}),
-      ...(input.tools.length > 0 ? { tools: toAnthropicTools(input.tools) } : {})
+      ...(this.temperature !== undefined
+        ? { temperature: this.temperature }
+        : {}),
+      ...(input.tools.length > 0
+        ? { tools: toAnthropicTools(input.tools) }
+        : {}),
     };
 
-    const stream = this.client.messages.stream(params, {
-      signal: input.signal
-    });
+    const stream = runWithProviderRetry(
+      () =>
+        this.client.messages.stream(params, {
+          signal: input.signal,
+        }),
+      { signal: input.signal },
+    );
 
     // Per-content-block accumulators for in-flight tool_use blocks, keyed by the
     // streamed block index. Anthropic streams a tool call's input as a sequence
@@ -118,7 +129,7 @@ export class AnthropicModelClient implements ModelClient {
             toolBlocks.set(event.index, {
               id: event.content_block.id,
               name: event.content_block.name,
-              argsJson: ''
+              argsJson: '',
             });
           }
           break;
@@ -142,7 +153,7 @@ export class AnthropicModelClient implements ModelClient {
               type: 'tool_use',
               toolUseId: block.id,
               name: block.name,
-              input: parseToolInput(block.argsJson)
+              input: parseToolInput(block.argsJson),
             };
           }
           break;
@@ -169,7 +180,7 @@ export class AnthropicModelClient implements ModelClient {
 // nothing otherwise (so a stream with no usage data stays silent on usage).
 function* emitUsage(
   inputTokens: number | undefined,
-  outputTokens: number | undefined
+  outputTokens: number | undefined,
 ): Generator<ModelTurnEvent> {
   if (inputTokens === undefined && outputTokens === undefined) {
     return;
@@ -177,7 +188,7 @@ function* emitUsage(
   yield {
     type: 'usage',
     ...(inputTokens !== undefined ? { inputTokens } : {}),
-    ...(outputTokens !== undefined ? { outputTokens } : {})
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
   };
 }
 
@@ -200,22 +211,23 @@ function parseToolInput(json: string): JsonObject {
 // set as the request's top-level `system` field. Every `user` entry becomes a
 // user message.
 export function toAnthropicMessages(
-  history: ConversationEntry[]
+  history: ConversationEntry[],
 ): MessageParam[] {
   const messages: MessageParam[] = [];
 
   for (const entry of history) {
     if (entry.role === 'assistant') {
       const blocks: MessageParam['content'] = [];
-      if (entry.content.length > 0) {
-        blocks.push({ type: 'text', text: entry.content });
+      const text = contentToText(entry.content);
+      if (text.length > 0) {
+        blocks.push({ type: 'text', text });
       }
       for (const call of entry.toolCalls ?? []) {
         blocks.push({
           type: 'tool_use',
           id: call.toolUseId,
           name: call.name,
-          input: call.input
+          input: call.input,
         });
       }
       messages.push({ role: 'assistant', content: blocks });
@@ -228,18 +240,37 @@ export function toAnthropicMessages(
         content: (entry.toolResults ?? []).map((result) => ({
           type: 'tool_result',
           tool_use_id: result.toolUseId,
-          content: result.content,
-          ...(result.isError ? { is_error: true } : {})
-        }))
+          content: contentToText(result.content),
+          ...(result.isError ? { is_error: true } : {}),
+        })),
       });
       continue;
     }
 
     // role === 'user'.
-    messages.push({ role: 'user', content: entry.content });
+    messages.push({ role: 'user', content: toAnthropicContent(entry.content) });
   }
 
   return messages;
+}
+
+function toAnthropicContent(content: MessageContent): MessageParam['content'] {
+  if (typeof content === 'string') {
+    return content;
+  }
+  return contentBlocks(content).map((block) => {
+    if (block.type === 'text') {
+      return { type: 'text', text: block.text };
+    }
+    return {
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: block.mediaType,
+        data: block.data,
+      },
+    };
+  }) as MessageParam['content'];
 }
 
 // Maps Pillar 1 tool descriptors to Anthropic tool definitions. The descriptor's
@@ -248,7 +279,7 @@ export function toAnthropicTools(tools: ToolDescriptor[]): AnthropicTool[] {
   return tools.map((tool) => ({
     name: tool.name,
     description: tool.description,
-    input_schema: tool.inputSchema as Anthropic.Tool.InputSchema
+    input_schema: tool.inputSchema as Anthropic.Tool.InputSchema,
   }));
 }
 

@@ -35,35 +35,38 @@ const EXPECTED_TOOL_NAMES = [
   'TaskGet',
   'TaskUpdate',
   'TaskList',
-  'LSP',
   'EnterWorktree',
   'ExitWorktree',
   'SendMessage',
   'TeamCreate',
   'TeamDelete',
   'VerifyPlanExecution',
-  'REPL',
-  'Workflow',
   'Sleep',
   'CronCreate',
   'CronDelete',
   'CronList',
-  'RemoteTrigger',
-  'Monitor',
   'SendUserMessage',
-  'SendUserFile',
-  'PushNotification',
-  'SubscribePR',
   'PowerShell',
   'Snip',
-  'TestingPermission',
   'ListMcpResourcesTool',
   'ReadMcpResourceTool',
   'ToolSearch',
   'StructuredOutput',
   'McpAuth',
-  'TerminalCapture',
   'WebBrowser',
+];
+
+const STUB_TOOL_NAMES = [
+  'LSP',
+  'REPL',
+  'Workflow',
+  'RemoteTrigger',
+  'Monitor',
+  'PushNotification',
+  'SubscribePR',
+  'SendUserFile',
+  'TestingPermission',
+  'TerminalCapture',
   'CtxInspect',
   'ListPeers',
   'SuggestBackgroundPR',
@@ -84,6 +87,13 @@ test('createBuiltinTools registers runnable clean-room versions of the built-in 
   const registry = new ToolRegistry(createBuiltinTools());
   for (const name of EXPECTED_TOOL_NAMES) {
     assert.ok(registry.get(name), 'missing tool ' + name);
+  }
+});
+
+test('createBuiltinTools does not expose placeholder stub tools to the model', () => {
+  const registry = new ToolRegistry(createBuiltinTools());
+  for (const name of STUB_TOOL_NAMES) {
+    assert.equal(registry.get(name), undefined, 'stub tool registered: ' + name);
   }
 });
 

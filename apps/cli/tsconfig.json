@@ -1,0 +1,9 @@
+{
+  "extends": "../../tooling/typescript-config/package-library.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "typeRoots": ["../server/node_modules/@types"],
+    "types": ["bun", "node"]
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

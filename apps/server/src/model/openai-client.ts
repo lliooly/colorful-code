@@ -1,9 +1,10 @@
 import type OpenAI from 'openai';
 import type {
   ChatCompletionChunk,
+  ChatCompletionContentPart,
   ChatCompletionCreateParamsStreaming,
   ChatCompletionMessageParam,
-  ChatCompletionTool
+  ChatCompletionTool,
 } from 'openai/resources/chat/completions';
 import type {
   ConversationEntry,
@@ -11,8 +12,11 @@ import type {
   ModelClient,
   ModelTurnEvent,
   ModelTurnInput,
-  ToolDescriptor
+  ToolDescriptor,
+  MessageContent,
 } from '@colorful-code/tool-runtime';
+import { contentBlocks, contentToText } from '@colorful-code/tool-runtime';
+import { runWithProviderRetry } from './retry';
 
 // OpenAI Chat Completions protocol adapter. Covers GPT, DeepSeek, and any
 // OpenAI-compatible endpoint (selected via the config's baseURL). One `run` call
@@ -28,7 +32,7 @@ export interface OpenAIStreamClient {
     completions: {
       create(
         body: ChatCompletionCreateParamsStreaming,
-        options?: { signal?: AbortSignal }
+        options?: { signal?: AbortSignal },
       ): Promise<AsyncIterable<ChatCompletionChunk>>;
     };
   };
@@ -63,17 +67,23 @@ export class OpenAIModelClient implements ModelClient {
       // compatibility: DeepSeek and most OpenAI-compatible endpoints accept it,
       // and the official OpenAI host still honours it (deprecated but valid).
       ...(this.maxTokens !== undefined ? { max_tokens: this.maxTokens } : {}),
-      ...(this.temperature !== undefined ? { temperature: this.temperature } : {}),
+      ...(this.temperature !== undefined
+        ? { temperature: this.temperature }
+        : {}),
       // Ask for a terminal usage chunk (OpenAI and DeepSeek both honour this).
       // Endpoints that ignore it simply never report usage; the adapter stays
       // silent on usage in that case rather than failing.
       stream_options: { include_usage: true },
-      ...(input.tools.length > 0 ? { tools: toOpenAITools(input.tools) } : {})
+      ...(input.tools.length > 0 ? { tools: toOpenAITools(input.tools) } : {}),
     };
 
-    const stream = await this.client.chat.completions.create(body, {
-      signal: input.signal
-    });
+    const stream = runWithProviderRetry(
+      () =>
+        this.client.chat.completions.create(body, {
+          signal: input.signal,
+        }),
+      { signal: input.signal },
+    );
 
     // Per-index accumulators for in-flight tool calls. Fragments arrive keyed by
     // `.index`; `.id` and `.function.name` appear (usually on the first fragment)
@@ -113,7 +123,7 @@ export class OpenAIModelClient implements ModelClient {
         const slot = toolCalls.get(fragment.index) ?? {
           id: '',
           name: '',
-          argsJson: ''
+          argsJson: '',
         };
         if (typeof fragment.id === 'string' && fragment.id.length > 0) {
           slot.id = fragment.id;
@@ -145,7 +155,7 @@ export class OpenAIModelClient implements ModelClient {
       yield {
         type: 'usage',
         ...(inputTokens !== undefined ? { inputTokens } : {}),
-        ...(outputTokens !== undefined ? { outputTokens } : {})
+        ...(outputTokens !== undefined ? { outputTokens } : {}),
       };
     }
     yield { type: 'end' };
@@ -155,14 +165,14 @@ export class OpenAIModelClient implements ModelClient {
 // Emits one `tool_use` per accumulated tool call and clears the map so a later
 // flush at stream end does not double-emit.
 function* flushToolCalls(
-  toolCalls: Map<number, { id: string; name: string; argsJson: string }>
+  toolCalls: Map<number, { id: string; name: string; argsJson: string }>,
 ): Iterable<ModelTurnEvent> {
   for (const slot of toolCalls.values()) {
     yield {
       type: 'tool_use',
       toolUseId: slot.id,
       name: slot.name,
-      input: parseToolInput(slot.argsJson)
+      input: parseToolInput(slot.argsJson),
     };
   }
   toolCalls.clear();
@@ -189,7 +199,7 @@ function parseToolInput(json: string): JsonObject {
 // (each keyed by `tool_call_id`); every `user` entry becomes a user message.
 export function toOpenAIMessages(
   history: ConversationEntry[],
-  system?: string
+  system?: string,
 ): ChatCompletionMessageParam[] {
   const messages: ChatCompletionMessageParam[] = [];
 
@@ -204,13 +214,13 @@ export function toOpenAIMessages(
         type: 'function' as const,
         function: {
           name: call.name,
-          arguments: JSON.stringify(call.input)
-        }
+          arguments: JSON.stringify(call.input),
+        },
       }));
       messages.push({
         role: 'assistant',
-        content: entry.content,
-        ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {})
+        content: contentToText(entry.content),
+        ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       });
       continue;
     }
@@ -220,17 +230,39 @@ export function toOpenAIMessages(
         messages.push({
           role: 'tool',
           tool_call_id: result.toolUseId,
-          content: result.content
+          content: contentToText(result.content),
         });
       }
       continue;
     }
 
     // role === 'user'.
-    messages.push({ role: 'user', content: entry.content });
+    messages.push({
+      role: 'user',
+      content: toOpenAIUserContent(entry.content),
+    });
   }
 
   return messages;
+}
+
+function toOpenAIUserContent(
+  content: MessageContent,
+): string | ChatCompletionContentPart[] {
+  if (typeof content === 'string') {
+    return content;
+  }
+  return contentBlocks(content).map((block) => {
+    if (block.type === 'text') {
+      return { type: 'text' as const, text: block.text };
+    }
+    return {
+      type: 'image_url' as const,
+      image_url: {
+        url: 'data:' + block.mediaType + ';base64,' + block.data,
+      },
+    };
+  });
 }
 
 // Maps Pillar 1 tool descriptors to OpenAI function-tool definitions. The
@@ -241,8 +273,8 @@ export function toOpenAITools(tools: ToolDescriptor[]): ChatCompletionTool[] {
     function: {
       name: tool.name,
       description: tool.description,
-      parameters: tool.inputSchema as Record<string, unknown>
-    }
+      parameters: tool.inputSchema as Record<string, unknown>,
+    },
   }));
 }
 

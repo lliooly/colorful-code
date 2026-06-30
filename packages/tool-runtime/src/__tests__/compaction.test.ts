@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   Session,
+  contentToText,
   estimatePromptTokens,
   selectCompactionBoundary,
   shouldCompact,
@@ -31,7 +32,11 @@ test('estimatePromptTokens folds tool calls and results into the estimate', () =
       content: 'go',
       toolCalls: [{ toolUseId: 't1', name: 'Read', input: { path: 'a' } }],
     },
-    { role: 'tool', content: '', toolResults: [{ toolUseId: 't1', content: 'data' }] },
+    {
+      role: 'tool',
+      content: '',
+      toolResults: [{ toolUseId: 't1', content: 'data' }],
+    },
   ];
   // Larger than just the visible `content` because the call name + serialized
   // input and the result content also travel to the provider.
@@ -119,7 +124,11 @@ test('a session auto-compacts older history once the estimate crosses the thresh
     SessionEvent,
     { type: 'context_compacted' }
   >;
-  assert.equal(event.entriesSummarized, 2, 'user1 + assistant1 were summarized');
+  assert.equal(
+    event.entriesSummarized,
+    2,
+    'user1 + assistant1 were summarized',
+  );
   assert.ok(
     event.tokensAfter < event.tokensBefore,
     'compaction shrank the prompt estimate',
@@ -129,8 +138,12 @@ test('a session auto-compacts older history once the estimate crosses the thresh
   const history = session.snapshot().history;
   assert.equal(history.length, 2);
   assert.equal(history[0]?.role, 'user');
-  assert.match(history[0]?.content ?? '', /SUMMARY/);
-  assert.match(history[0]?.content ?? '', /second/, 'recent request preserved');
+  assert.match(contentToText(history[0]?.content ?? ''), /SUMMARY/);
+  assert.match(
+    contentToText(history[0]?.content ?? ''),
+    /second/,
+    'recent request preserved',
+  );
   assert.equal(history[1]?.role, 'assistant');
   assert.equal(history[1]?.content, 'ok');
 });
@@ -192,8 +205,6 @@ test('a usage event from the model surfaces on the session stream without ending
   // finalizes and the run completes.
   assert.equal((events.at(-1) as { status?: string }).status, 'completed');
   assert.ok(
-    events.some(
-      (event) => event.type === 'message' && event.content === 'hi',
-    ),
+    events.some((event) => event.type === 'message' && event.content === 'hi'),
   );
 });

@@ -6,12 +6,10 @@ import { buildTool, type RuntimeContext, type Tool } from "../core/tool.js";
 export const BUILTIN_TOOL_NAMES = [
   "Agent", "TaskOutput", "Bash", "Glob", "Grep", "ExitPlanMode", "Read", "Edit", "Write", "NotebookEdit",
   "WebFetch", "TodoWrite", "WebSearch", "TaskStop", "AskUserQuestion", "Skill", "EnterPlanMode", "Config",
-  "TaskCreate", "TaskGet", "TaskUpdate", "TaskList", "LSP", "EnterWorktree", "ExitWorktree", "SendMessage",
-  "TeamCreate", "TeamDelete", "VerifyPlanExecution", "REPL", "Workflow", "Sleep", "CronCreate", "CronDelete",
-  "CronList", "RemoteTrigger", "Monitor", "SendUserMessage", "SendUserFile", "PushNotification", "SubscribePR",
-  "PowerShell", "Snip", "TestingPermission", "ListMcpResourcesTool", "ReadMcpResourceTool", "ToolSearch",
-  "StructuredOutput", "McpAuth", "TerminalCapture", "WebBrowser", "CtxInspect", "ListPeers", "SuggestBackgroundPR",
-  "OverflowTestTool", "Tungsten",
+  "TaskCreate", "TaskGet", "TaskUpdate", "TaskList", "EnterWorktree", "ExitWorktree", "SendMessage",
+  "TeamCreate", "TeamDelete", "VerifyPlanExecution", "Sleep", "CronCreate", "CronDelete",
+  "CronList", "SendUserMessage", "PowerShell", "Snip", "ListMcpResourcesTool", "ReadMcpResourceTool", "ToolSearch",
+  "StructuredOutput", "McpAuth", "WebBrowser",
 ] as const;
 
 function result(toolUseId: string, content: string, isError?: boolean) {
@@ -274,21 +272,6 @@ export function createMiscTools(): Tool[] {
     ToolSearchTool,
     PowerShellTool,
     SleepTool,
-    RemoteTriggerTool,
-    MonitorTool,
-    SendUserFileTool,
-    PushNotificationTool,
-    SubscribePRTool,
     SnipTool,
-    TestingPermissionTool,
-    TerminalCaptureTool,
-    CtxInspectTool,
-    ListPeersTool,
-    SuggestBackgroundPRTool,
-    OverflowTestTool,
-    TungstenTool,
-    REPLTool,
-    WorkflowTool,
-    LSPTool,
   ];
 }

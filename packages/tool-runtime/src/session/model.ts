@@ -1,5 +1,6 @@
-import type { JsonObject } from "../core/tool.js";
-import type { ToolDescriptor } from "../core/descriptor.js";
+import type { JsonObject } from '../core/tool.js';
+import type { ToolDescriptor } from '../core/descriptor.js';
+import type { MessageContent } from './content.js';
 
 // One entry in the conversation history. Tool calls/results are attached to the
 // turn that produced them so a model client can reconstruct the exchange. The
@@ -18,8 +19,8 @@ export type ConversationToolResult = {
 };
 
 export type ConversationEntry = {
-  role: "user" | "assistant" | "tool";
-  content: string;
+  role: 'user' | 'assistant' | 'tool';
+  content: MessageContent;
   toolCalls?: ConversationToolCall[];
   toolResults?: ConversationToolResult[];
 };
@@ -44,10 +45,10 @@ export type ModelTurnInput = {
 // re-invocation: after running the collected tools it issues a fresh `run` for
 // the next completion.
 export type ModelTurnEvent =
-  | { type: "text"; text: string }
-  | { type: "tool_use"; toolUseId: string; name: string; input: JsonObject }
-  | { type: "usage"; inputTokens?: number; outputTokens?: number }
-  | { type: "end" };
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; toolUseId: string; name: string; input: JsonObject }
+  | { type: 'usage'; inputTokens?: number; outputTokens?: number }
+  | { type: 'end' };
 
 // The injected model boundary. One `run` call yields exactly one completion;
 // real providers end a completion at the tool call (`stop_reason: tool_use` /
@@ -72,7 +73,9 @@ export type ScriptedRound = ModelTurnEvent[];
 //      { type: "tool_use", toolUseId: "c1", name: "TaskList", input: {} }],
 //     [{ type: "text", text: "Done." }],
 //   ]);
-export function createScriptedModelClient(rounds: ScriptedRound[]): ModelClient {
+export function createScriptedModelClient(
+  rounds: ScriptedRound[],
+): ModelClient {
   let index = 0;
   return {
     run(input: ModelTurnInput): AsyncIterable<ModelTurnEvent> {
@@ -92,12 +95,12 @@ async function* scriptedCompletion(
     if (signal.aborted) {
       return;
     }
-    if (event.type === "end") {
+    if (event.type === 'end') {
       sawEnd = true;
     }
     yield event;
   }
   if (!sawEnd && !signal.aborted) {
-    yield { type: "end" };
+    yield { type: 'end' };
   }
 }
