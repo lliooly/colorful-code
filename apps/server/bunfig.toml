@@ -1,0 +1,4 @@
+# Force legacy decorator emit for NestJS compatibility.
+# Bun >=1.3 defaults to the TC39 stage-3 transform; NestJS 11.x source still
+# expects the legacy (target, key, descriptor) signature.
+transform.decorators = "legacy"

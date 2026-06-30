@@ -3,6 +3,11 @@
 How to exercise every critical path of the Colorful Code agent pipeline before
 building the frontend or sub-agent system.
 
+Use this guide together with
+[`verification-matrix.md`](./verification-matrix.md): run the automated checks
+for the files you changed first, then use this guide for the manual provider,
+approval, failure-recovery, and restore drills.
+
 ## Prerequisites
 
 ```bash
@@ -21,7 +26,69 @@ bun run apps/server/src/main.ts
 
 # 3. CLI alias
 alias colorful='bun run /Users/shishishi/Desktop/colorful-code/apps/cli/src/main.ts'
+# Or from the repo root:
+pnpm agent:cli -- --help
 ```
+
+## Run metadata
+
+Record this before each manual pass:
+
+```text
+Commit:
+Server command:
+Provider/model:
+Permission mode:
+Session id:
+Database path:
+CLI or Debug UI:
+```
+
+## Baseline automated checks
+
+Run these before starting a real provider dogfood pass:
+
+```bash
+pnpm --filter @colorful-code/tool-runtime test
+pnpm --filter @colorful-code/server test
+```
+
+Add the web checks when using the Debug UI:
+
+```bash
+pnpm --filter @colorful-code/web typecheck
+pnpm --filter @colorful-code/web build
+```
+
+Expected evidence:
+
+- [ ] Runtime tests pass
+- [ ] Server tests pass, including `golden path: approval round-trip over REST + SSE`
+- [ ] Web typecheck/build pass when Debug UI is in scope
+
+## Provider setup matrix
+
+| Provider                    | CLI mode                                                  | Required env or flags                       | First check                                      |
+| --------------------------- | --------------------------------------------------------- | ------------------------------------------- | ------------------------------------------------ |
+| Claude                      | `--preset claude`                                         | `ANTHROPIC_API_KEY` in `apps/server/.env`   | Text plus one read-only tool reaches `completed` |
+| OpenAI                      | `--preset openai`                                         | `OPENAI_API_KEY` in `apps/server/.env`      | Text plus one read-only tool reaches `completed` |
+| DeepSeek                    | `--preset deepseek`                                       | `DEEPSEEK_API_KEY` in `apps/server/.env`    | Text plus one read-only tool reaches `completed` |
+| Custom OpenAI-compatible    | `--api-key`, `--protocol openai`, `--model`, `--base-url` | No server env key required for that session | BYO key is not returned in snapshot or logs      |
+| Custom Anthropic-compatible | `--api-key`, `--protocol anthropic`, `--model`            | No server env key required for that session | BYO key is not returned in snapshot or logs      |
+
+Missing-key recovery check:
+
+```bash
+colorful --preset claude \
+  --cwd /Users/shishishi/Desktop/colorful-code \
+  --prompt "Say hello."
+```
+
+Checklist when the key is intentionally absent:
+
+- [ ] Session creation fails with a 400-class message
+- [ ] Error text does not print the key value
+- [ ] Starting a later session with a configured provider still works
 
 ---
 
@@ -38,6 +105,7 @@ colorful --preset claude \
 ```
 
 Checklist:
+
 - [ ] `session xxx` printed to stderr
 - [ ] Text streams character-by-character to stdout
 - [ ] Ends with `run completed` (not `error` / `cancelled`)
@@ -51,6 +119,7 @@ colorful --preset claude \
 ```
 
 Checklist:
+
 - [ ] `> Read ...` appears in stderr (tool_call event)
 - [ ] `< ...` appears in stderr (tool_result event)
 - [ ] stdout describes `.env.example` contents correctly
@@ -65,6 +134,7 @@ colorful --preset claude \
 ```
 
 Checklist:
+
 - [ ] Uses Bash or Glob tool
 - [ ] Output matches actual project structure
 
@@ -83,6 +153,7 @@ colorful --preset claude \
 ```
 
 Checklist:
+
 - [ ] Two distinct tool calls in stderr (Glob/Bash then Read)
 - [ ] Second tool call uses results from the first
 - [ ] Final answer references actual file contents, not hallucinated
@@ -96,10 +167,12 @@ colorful --preset claude \
 ```
 
 Checklist:
+
 - [ ] `approval required for Write` appears in stderr
-- [ ] Typing `y` → tool executes, file created with correct content
-- [ ] Typing `n` → tool denied, stderr shows deny reason
-- [ ] (Re-run and try both paths)
+- [ ] Allow path: typing `y` makes the tool execute and creates the file with correct content
+- [ ] Deny path: typing `n` denies the tool, stderr shows a deny reason, and the file is not created
+- [ ] Re-run and try both paths; each path gets a fresh session id
+- [ ] `GET /sessions/<session-id>/audit` records the matching `allow` or `deny` decision
 
 ### Test 6: Destructive Bash approval
 
@@ -110,9 +183,22 @@ colorful --preset claude \
 ```
 
 Checklist:
+
 - [ ] `rm` triggers approval (destructive command)
-- [ ] Allow → file deleted
-- [ ] Deny → file preserved
+- [ ] Allow path: file is deleted
+- [ ] Deny path: file is preserved
+- [ ] Denying `rm` does not poison a later allowed tool call in the same provider/server run
+
+### Test 6b: Approval while using Debug UI
+
+Use `http://localhost:3000/agent` with the same prompt from Test 5.
+
+Checklist:
+
+- [ ] `approval_required` card/modal shows the tool name and input
+- [ ] Approve sends `approval_response` and the run reaches `completed`
+- [ ] Deny sends `approval_response` with `behavior: deny`
+- [ ] Raw event log contains `approval_required`, `permission_decision`, and the terminal `run_status`
 
 ---
 
@@ -138,6 +224,7 @@ colorful --preset claude \
 ```
 
 Checklist:
+
 - [ ] At least 8 tool calls execute
 - [ ] **Critical:** no context-window errors (compaction should trigger before overflow)
 - [ ] Architecture summary references actual file contents, not hallucinated
@@ -152,9 +239,11 @@ colorful --preset claude \
 ```
 
 Checklist:
+
 - [ ] Bash tool times out (default 30s), result has `isError: true`
 - [ ] Agent handles the error gracefully — does not crash
 - [ ] Agent reports the timeout; does not claim success
+- [ ] A follow-up session can still complete a simple read-only prompt
 
 ### Test 9: Cross-provider
 
@@ -177,9 +266,25 @@ colorful --api-key sk-your-key --protocol openai --model gpt-4o \
 ```
 
 Checklist:
+
 - [ ] Each provider completes at least one round of tool use
 - [ ] Anthropic adapter emits `usage` events with token counts
 - [ ] OpenAI-compatible adapter emits `usage` (if provider supports `stream_options.include_usage`)
+
+### Test 9b: Failure recovery after bad model config
+
+```bash
+colorful --api-key fake-key --protocol openai --model missing-model \
+  --base-url https://api.invalid/v1 \
+  --cwd /Users/shishishi/Desktop/colorful-code \
+  --prompt "Say hello."
+```
+
+Checklist:
+
+- [ ] The run fails without hanging the CLI
+- [ ] The error does not expose provider secrets
+- [ ] Re-running Test 1 with a valid provider works without restarting the server
 
 ---
 
@@ -194,6 +299,7 @@ colorful --preset claude \
 ```
 
 Checklist:
+
 - [ ] Read result is truncated (truncation footer present)
 - [ ] Agent acknowledges the truncation; does not pretend it read the whole file
 
@@ -206,6 +312,7 @@ colorful --preset claude \
 ```
 
 Checklist:
+
 - [ ] Each Write triggers its own approval (in `default` mode)
 - [ ] All three files created with correct content
 - [ ] Denying one does not affect the others
@@ -221,6 +328,7 @@ colorful --preset claude \
 ```
 
 Checklist:
+
 - [ ] Ctrl+C exits the CLI cleanly — no hang
 - [ ] Server-side session is disposed (not leaking memory)
 
@@ -236,6 +344,7 @@ bun run dev
 ```
 
 Manual checklist:
+
 - [ ] Select preset → Create session → "stream connected" indicator shows
 - [ ] Send a message → streaming text appears in real time
 - [ ] Send a tool-requiring instruction → tool_call + tool_result cards render correctly
@@ -257,6 +366,7 @@ curl -s http://127.0.0.1:3001/sessions/<session-id>/snapshot | jq .
 ```
 
 Checklist:
+
 - [ ] Response contains `history`, `permissionMode`, `workspaceRoots`, `todos`
 - [ ] `history` has `user` / `assistant` / `tool` entries
 - [ ] No `apiKey` anywhere in the snapshot
@@ -267,9 +377,39 @@ curl -s http://127.0.0.1:3001/sessions/<session-id>/audit | jq .
 ```
 
 Checklist:
+
 - [ ] One audit entry per tool call
 - [ ] `behavior` field is correct (`allow` / `deny` / `ask`)
 - [ ] `reason` field is populated
+
+### Test 15: Session restore drill
+
+Use a persistent `DATABASE_PATH` rather than `:memory:`. Start the server, run a
+session that reaches `completed`, then restore it through the HTTP API.
+
+```bash
+# 1. Capture a session id from the CLI stderr: "session <session-id>"
+SESSION_ID=<session-id>
+
+# 2. Confirm the snapshot exists.
+curl -s http://127.0.0.1:3001/sessions/$SESSION_ID/snapshot | jq .
+
+# 3. Restart the server, then restore the session.
+curl -s -X POST http://127.0.0.1:3001/sessions/$SESSION_ID/restore | jq .
+
+# 4. Continue the restored session.
+curl -s -X POST http://127.0.0.1:3001/sessions/$SESSION_ID/messages \
+  -H 'content-type: application/json' \
+  -d '{"text":"Continue from the restored history and summarize what we did."}'
+```
+
+Checklist:
+
+- [ ] Snapshot exists before restart
+- [ ] Snapshot contains no `apiKey`
+- [ ] `POST /restore` returns the same session id
+- [ ] A later message produces live stream events after restore
+- [ ] Restore of an already-live session is idempotent
 
 ---
 
@@ -280,6 +420,8 @@ Copy this for each test run:
 ```
 Test #: ___
 Provider: claude / openai / deepseek / custom
+Model: ___
+Session id: ___
 Prompt: ___
 Result: PASS / FAIL
 Issue: (if any) ___
@@ -289,15 +431,16 @@ Issue: (if any) ___
 
 ## Troubleshooting
 
-| Symptom | Likely cause |
-|---|---|
-| `Failed to create session: 400` | API key missing or malformed |
-| `Failed to create session: 404` | Server not started |
-| Streaming stops with no error | SSE connection dropped; check server logs |
-| Tool call with no follow-up | Approval stuck — CLI waiting for `y/n` input |
-| `run_status: error` | Model returned malformed tool-call JSON |
-| Compaction never triggers | Token threshold too high, or estimate function underestimating |
-| `Failed to open event stream` | CORS misconfiguration or wrong `--api-base` |
+| Symptom                         | Likely cause                                                                 |
+| ------------------------------- | ---------------------------------------------------------------------------- |
+| `Failed to create session: 400` | API key missing or malformed                                                 |
+| `Failed to create session: 404` | Server not started                                                           |
+| Streaming stops with no error   | SSE connection dropped; check server logs                                    |
+| Tool call with no follow-up     | Approval stuck — CLI waiting for `y/n` input                                 |
+| `run_status: error`             | Model returned malformed tool-call JSON                                      |
+| Restore returns 404             | Session never reached a persisted terminal state, or `DATABASE_PATH` changed |
+| Compaction never triggers       | Token threshold too high, or estimate function underestimating               |
+| `Failed to open event stream`   | CORS misconfiguration or wrong `--api-base`                                  |
 
 ---
 
