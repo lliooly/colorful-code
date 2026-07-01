@@ -137,6 +137,42 @@ test('evaluatePermission: default mode asks before running a non-read-only Bash 
   assert.equal(result.reason?.type, 'destructive');
 });
 
+test('evaluatePermission: destructive Bash commands ask even when an allow rule matches', () => {
+  const permissionContext: PermissionContext = {
+    mode: 'default',
+    workspaceRoots: [],
+    rules: [{ source: 'session', behavior: 'allow', toolName: 'Bash' }],
+  };
+  const context: RuntimeContext = createRuntimeContext({ permissionContext });
+  const input = BashTool.inputSchema.parse({ command: 'rm -rf tmp' });
+
+  const result = evaluatePermission(BashTool, input, context);
+
+  assert.equal(result.behavior, 'ask');
+  assert.equal(result.reason?.type, 'destructive');
+});
+
+test('evaluatePermission: workspaceWrite denies file writes outside workspace roots before allow rules', async () => {
+  await withTempDir(async (dir) => {
+    const tool = mutatingTool('Write');
+    const permissionContext: PermissionContext = {
+      mode: 'workspaceWrite',
+      workspaceRoots: [dir],
+      rules: [{ source: 'session', behavior: 'allow', toolName: 'Write' }],
+    };
+    const context: RuntimeContext = createRuntimeContext({ permissionContext });
+
+    const result = evaluatePermission(
+      tool,
+      { path: join(dir, '..', 'outside.txt'), value: 'x' },
+      context,
+    );
+
+    assert.equal(result.behavior, 'deny');
+    assert.equal(result.reason?.type, 'workspaceRoot');
+  });
+});
+
 test('evaluatePermission: MCP trust drives allow/deny/ask', () => {
   const mcpTool = buildTool({
     name: 'mcp__docs__search',
@@ -357,6 +393,78 @@ test('ToolRunner: a valid approval updatedInput is applied to the tool call', as
   assert.equal(result.content, 'rewritten');
 });
 
+test('ToolRunner: approval updatedInput is rechecked before the tool runs', async () => {
+  let called = false;
+  const asking = buildTool({
+    name: 'Touchy',
+    inputSchema: objectSchema({ value: stringField() }),
+    isDestructive: () => true,
+    async checkPermissions(input) {
+      return input.value === 'original'
+        ? { behavior: 'ask', message: 'please confirm' }
+        : { behavior: 'allow' };
+    },
+    async call(input) {
+      called = true;
+      return { data: input.value };
+    },
+    mapResult(data, toolUseId) {
+      return { toolUseId, content: data };
+    },
+  });
+
+  const audit: PermissionAuditEntry[] = [];
+  const context = createRuntimeContext({
+    requestApproval: async () => ({
+      behavior: 'allow',
+      updatedInput: { value: 'blocked' },
+    }),
+    permissionAudit: audit,
+    permissionPolicy: (_tool, input) =>
+      input.value === 'blocked'
+        ? { behavior: 'deny', message: 'updated input denied' }
+        : { behavior: 'allow' },
+  });
+  const runner = new ToolRunner(new ToolRegistry([asking]), context);
+
+  const result = await runner.run({
+    id: 't1',
+    name: 'Touchy',
+    input: { value: 'original' },
+  });
+
+  assert.equal(called, false);
+  assert.equal(result.isError, true);
+  assert.match(result.content, /updated input denied/);
+  assert.equal(audit.at(-1)?.behavior, 'deny');
+});
+
+test('ToolRunner: approval updatedInput audit records the final Bash command', async () => {
+  const audit: PermissionAuditEntry[] = [];
+  const context = createRuntimeContext({
+    requestApproval: async () => ({
+      behavior: 'allow',
+      updatedInput: { command: 'pwd' },
+    }),
+    permissionContext: {
+      mode: 'default',
+      workspaceRoots: [],
+      rules: [],
+    },
+    permissionAudit: audit,
+  });
+  const runner = new ToolRunner(new ToolRegistry([BashTool]), context);
+
+  const result = await runner.run({
+    id: 'bash-updated',
+    name: 'Bash',
+    input: { command: 'echo hi > out.txt' },
+  });
+
+  assert.equal(result.isError, false);
+  assert.equal(audit.at(-1)?.commandClassification?.command, 'pwd');
+});
+
 test('ToolRunner: a schema-invalid approval updatedInput is rejected before tool.call', async () => {
   let called = false;
   const asking = buildTool({
@@ -498,5 +606,42 @@ test('ToolRunner: bypass mode allows everything regardless of disposition', asyn
     assert.equal(result.isError, undefined);
     assert.equal(audit.at(-1)?.behavior, 'allow');
     assert.deepEqual(audit.at(-1)?.reason, { type: 'mode', mode: 'bypass' });
+  });
+});
+
+test('ToolRunner: audit records resolved path and command classification', async () => {
+  await withTempDir(async (dir) => {
+    const audit: PermissionAuditEntry[] = [];
+    const context = createRuntimeContext({
+      cwd: dir,
+      permissionContext: {
+        mode: 'workspaceWrite',
+        workspaceRoots: [dir],
+        rules: [],
+      },
+      permissionAudit: audit,
+      requestApproval: async () => ({ behavior: 'allow' }),
+    });
+    const { createBuiltinTools } = await import('../index.js');
+    const runner = new ToolRunner(
+      new ToolRegistry(createBuiltinTools()),
+      context,
+    );
+
+    await runner.run({
+      id: 'write-audit',
+      name: 'Write',
+      input: { path: 'note.txt', content: 'hello' },
+    });
+    await runner.run({
+      id: 'bash-audit',
+      name: 'Bash',
+      input: { command: 'FOO=bar echo hi | cat' },
+    });
+
+    assert.equal(audit[0]?.resolvedPath, join(dir, 'note.txt'));
+    assert.equal(audit[1]?.commandClassification?.hasPipe, true);
+    assert.equal(audit[1]?.commandClassification?.hasEnvAssignment, true);
+    assert.equal(audit[1]?.commandClassification?.isDestructive, true);
   });
 });

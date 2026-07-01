@@ -1,21 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   BashTool,
+  BashListTool,
+  BashStopTool,
   ToolRegistry,
   ToolRunner,
   createBuiltinTools,
   createRuntimeContext,
+  classifyBashCommand,
 } from '../index.js';
 
 const EXPECTED_TOOL_NAMES = [
   'Agent',
   'TaskOutput',
   'Bash',
+  'BashList',
+  'BashStop',
   'Glob',
   'Grep',
   'ExitPlanMode',
@@ -119,6 +124,76 @@ test('Bash marks non-read-only commands as destructive for default approval', ()
   assert.equal(BashTool.isDestructive(input), true);
 });
 
+test('Bash asks for redirects, pipes, and env assignments with clear classification', () => {
+  const cases = [
+    ['git status > status.txt', 'hasRedirect'],
+    ['git status | cat', 'hasPipe'],
+    ['FOO=bar git status', 'hasEnvAssignment'],
+  ] as const;
+
+  for (const [command, key] of cases) {
+    const input = BashTool.inputSchema.parse({ command });
+    assert.equal(BashTool.isReadOnly(input), false, command);
+    assert.equal(BashTool.isDestructive(input), true, command);
+    assert.equal(classifyBashCommand(input.command)[key], true, command);
+  }
+});
+
+test('Bash rejects cwd outside workspace roots', async () => {
+  await withTempDir(async (dir) => {
+    const workspace = join(dir, 'workspace');
+    const outside = join(dir, 'outside');
+    await Promise.all([mkdir(workspace), mkdir(outside)]);
+    const runner = new ToolRunner(
+      new ToolRegistry(createBuiltinTools()),
+      createRuntimeContext({
+        cwd: outside,
+        permissionContext: {
+          mode: 'default',
+          workspaceRoots: [workspace],
+          rules: [],
+        },
+      }),
+    );
+
+    const result = await runner.run({
+      id: 'bash-cwd',
+      name: 'Bash',
+      input: { command: 'pwd' },
+    });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content, /cwd is outside the workspace roots/i);
+  });
+});
+
+test('Bash allows cwd inside workspace roots', async () => {
+  await withTempDir(async (dir) => {
+    const workspace = join(dir, 'workspace');
+    await mkdir(workspace);
+    const runner = new ToolRunner(
+      new ToolRegistry(createBuiltinTools()),
+      createRuntimeContext({
+        cwd: workspace,
+        permissionContext: {
+          mode: 'default',
+          workspaceRoots: [workspace],
+          rules: [],
+        },
+      }),
+    );
+
+    const result = await runner.run({
+      id: 'bash-cwd-inside',
+      name: 'Bash',
+      input: { command: 'pwd' },
+    });
+
+    assert.equal(result.isError, false);
+    assert.match(result.content, /workspace/);
+  });
+});
+
 test('Bash keeps captured stdout bounded while a command is running', async () => {
   const input = BashTool.inputSchema.parse({
     command: 'node -e "process.stdout.write(\'x\'.repeat(50000))"',
@@ -153,6 +228,25 @@ test('Bash can start a long-running command in the background', async () => {
     assert.doesNotMatch(mapped.content, /Exit code null/);
     assert.equal(context.backgroundProcesses?.size, 1);
   });
+});
+
+test('BashList and BashStop can inspect and stop background processes', async () => {
+  const context = createRuntimeContext();
+  await BashTool.call(
+    BashTool.inputSchema.parse({
+      command: 'node -e "setTimeout(() => {}, 1000)"',
+      run_in_background: true,
+    }),
+    context,
+  );
+
+  const listed = await BashListTool.call({}, context);
+  const stopped = await BashStopTool.call({ id: 'bash-1' }, context);
+  await delay(50);
+
+  assert.match(listed.data, /bash-1/);
+  assert.match(stopped.data, /Stopped background process bash-1/);
+  assert.equal(context.backgroundProcesses?.get('bash-1')?.status, 'exited');
 });
 
 test('Bash records a notification when a background command completes', async () => {

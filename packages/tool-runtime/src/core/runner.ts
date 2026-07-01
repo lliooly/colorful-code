@@ -18,6 +18,9 @@ import {
 } from './permissions.js';
 import type { ToolRegistry } from './registry.js';
 import { runHooks } from './hooks.js';
+import { classifyBashCommand } from '../tools/bash.js';
+import { networkTargetForTool } from '../tools/network.js';
+import { resolvePathForPermission } from './permissions.js';
 
 export type ToolUseRequest = {
   id: string;
@@ -78,6 +81,7 @@ export class ToolRunner {
   private recordAudit(
     context: RuntimeContext,
     toolUse: ToolUseRequest,
+    input: JsonObject,
     behavior: PermissionBehavior,
     reason?: PermissionDecisionReason,
   ): void {
@@ -89,9 +93,59 @@ export class ToolRunner {
       toolName: toolUse.name,
       behavior,
       ...(reason ? { reason } : {}),
+      ...this.auditMetadata(context, toolUse.name, input),
       at: Date.now(),
     };
     context.permissionAudit.push(entry);
+  }
+
+  private auditMetadata(
+    context: RuntimeContext,
+    toolName: string,
+    input: JsonObject,
+  ): Partial<PermissionAuditEntry> {
+    const resolvedPath = resolvePathForPermission(input, context.cwd);
+    if (toolName === 'Bash' && typeof input.command === 'string') {
+      return {
+        ...(resolvedPath ? { resolvedPath } : {}),
+        commandClassification: classifyBashCommand(input.command),
+      };
+    }
+    if (
+      toolName === 'WebFetch' ||
+      toolName === 'WebBrowser' ||
+      toolName === 'WebSearch'
+    ) {
+      return {
+        ...(resolvedPath ? { resolvedPath } : {}),
+        networkTarget: networkTargetForTool(toolName, input, context),
+      };
+    }
+    return resolvedPath ? { resolvedPath } : {};
+  }
+
+  private async recheckApprovedInput(
+    tool: Tool<JsonObject, unknown>,
+    input: JsonObject,
+    context: RuntimeContext,
+  ): Promise<MergedDecision> {
+    let rechecked: MergedDecision = {
+      behavior: 'allow',
+      input,
+    };
+    if (context.permissionContext) {
+      rechecked = mergeDecision(
+        rechecked,
+        evaluatePermission(tool, rechecked.input, context),
+      );
+    }
+    if (context.permissionPolicy) {
+      rechecked = mergeDecision(
+        rechecked,
+        await context.permissionPolicy(tool, rechecked.input, context),
+      );
+    }
+    return rechecked;
   }
 
   canRunConcurrently(toolUse: ToolUseRequest): boolean {
@@ -155,7 +209,7 @@ export class ToolRunner {
       }
     }
     if (preHook.action === 'deny') {
-      this.recordAudit(runtimeContext, toolUse, 'deny', {
+      this.recordAudit(runtimeContext, toolUse, parsedInput, 'deny', {
         type: 'hook',
         reason: preHook.message ?? 'preToolUse hook denied the tool.',
       });
@@ -165,7 +219,7 @@ export class ToolRunner {
       );
     }
     if (preHook.action === 'ask') {
-      this.recordAudit(runtimeContext, toolUse, 'ask', {
+      this.recordAudit(runtimeContext, toolUse, parsedInput, 'ask', {
         type: 'hook',
         reason: preHook.message ?? 'preToolUse hook requested approval.',
       });
@@ -216,7 +270,7 @@ export class ToolRunner {
     parsedInput = merged.input;
 
     if (merged.behavior === 'deny') {
-      this.recordAudit(runtimeContext, toolUse, 'deny', merged.reason);
+      this.recordAudit(runtimeContext, toolUse, parsedInput, 'deny', merged.reason);
       return errorResult(
         toolUse.id,
         merged.message ?? "Tool '" + tool.name + "' was denied by policy.",
@@ -227,7 +281,7 @@ export class ToolRunner {
       if (!runtimeContext.requestApproval) {
         // Headless: no approval port, so an `ask` cannot be satisfied. Deny with
         // a clear message and record the decision as a deny.
-        this.recordAudit(runtimeContext, toolUse, 'deny', merged.reason);
+        this.recordAudit(runtimeContext, toolUse, parsedInput, 'deny', merged.reason);
         return errorResult(
           toolUse.id,
           (merged.message ?? "Tool '" + tool.name + "' requires approval") +
@@ -253,7 +307,7 @@ export class ToolRunner {
         }
       }
       if (approvalHook.action === 'deny') {
-        this.recordAudit(runtimeContext, toolUse, 'deny', {
+        this.recordAudit(runtimeContext, toolUse, parsedInput, 'deny', {
           type: 'hook',
           reason:
             approvalHook.message ?? 'onApprovalRequired hook denied the tool.',
@@ -264,7 +318,7 @@ export class ToolRunner {
         );
       }
       if (approvalHook.ran && approvalHook.action === 'allow') {
-        this.recordAudit(runtimeContext, toolUse, 'allow', {
+        this.recordAudit(runtimeContext, toolUse, parsedInput, 'allow', {
           type: 'hook',
           reason:
             approvalHook.message ??
@@ -281,13 +335,12 @@ export class ToolRunner {
           ...(merged.suggestions ? { suggestions: merged.suggestions } : {}),
         });
         if (response.behavior === 'deny') {
-          this.recordAudit(runtimeContext, toolUse, 'deny', merged.reason);
+          this.recordAudit(runtimeContext, toolUse, parsedInput, 'deny', merged.reason);
           return errorResult(
             toolUse.id,
             response.message ?? "Tool '" + tool.name + "' was not approved.",
           );
         }
-        this.recordAudit(runtimeContext, toolUse, 'allow', merged.reason);
         if (response.updatedInput !== undefined) {
           // An approval may rewrite the tool input (e.g. an interactive client
           // edits it before approving). That rewrite never passed the initial
@@ -303,10 +356,60 @@ export class ToolRunner {
                 : 'Invalid updated input';
             return errorResult(toolUse.id, message);
           }
+          const finalDecision = await this.recheckApprovedInput(
+            tool as Tool,
+            parsedInput,
+            runtimeContext,
+          );
+          parsedInput = finalDecision.input;
+          if (finalDecision.behavior === 'deny') {
+            this.recordAudit(
+              runtimeContext,
+              toolUse,
+              parsedInput,
+              'deny',
+              finalDecision.reason ?? merged.reason,
+            );
+            return errorResult(
+              toolUse.id,
+              finalDecision.message ??
+                "Tool '" + tool.name + "' was denied after approval update.",
+            );
+          }
+          if (finalDecision.behavior === 'ask') {
+            this.recordAudit(
+              runtimeContext,
+              toolUse,
+              parsedInput,
+              'deny',
+              finalDecision.reason ?? merged.reason,
+            );
+            return errorResult(
+              toolUse.id,
+              (finalDecision.message ??
+                "Tool '" + tool.name + "' requires additional approval") +
+                ' after approval update.',
+            );
+          }
+          this.recordAudit(
+            runtimeContext,
+            toolUse,
+            parsedInput,
+            'allow',
+            finalDecision.reason ?? merged.reason,
+          );
+        } else {
+          this.recordAudit(
+            runtimeContext,
+            toolUse,
+            parsedInput,
+            'allow',
+            merged.reason,
+          );
         }
       }
     } else {
-      this.recordAudit(runtimeContext, toolUse, 'allow', merged.reason);
+      this.recordAudit(runtimeContext, toolUse, parsedInput, 'allow', merged.reason);
     }
 
     try {

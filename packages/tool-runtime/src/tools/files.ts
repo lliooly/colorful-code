@@ -1,7 +1,20 @@
 import { createReadStream } from 'node:fs';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { dirname, relative, resolve } from 'node:path';
+import {
+  lstat,
+  mkdir,
+  readFile,
+  readlink,
+  realpath,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { createInterface } from 'node:readline';
-import { dirname, resolve } from 'node:path';
+import {
+  isPathInsideWorkspaceRoots,
+  type PermissionAuditEntry,
+  type PermissionMode,
+} from '../core/permissions.js';
 import {
   objectSchema,
   optionalField,
@@ -25,6 +38,123 @@ const MAX_COMPLETE_READ_BYTES = 1_000_000;
 
 function absolutePath(filePath: string, context: RuntimeContext): string {
   return resolve(context.cwd ?? process.cwd(), filePath);
+}
+
+async function nearestExistingPath(filePath: string): Promise<string> {
+  let candidate = filePath;
+  for (;;) {
+    try {
+      await stat(candidate);
+      return candidate;
+    } catch {
+      const parent = dirname(candidate);
+      if (parent === candidate) {
+        return candidate;
+      }
+      candidate = parent;
+    }
+  }
+}
+
+async function realSandboxPath(filePath: string, depth = 0): Promise<string> {
+  if (depth > 40) {
+    throw new Error('Too many symbolic links while resolving ' + filePath);
+  }
+  try {
+    const entry = await lstat(filePath);
+    if (entry.isSymbolicLink()) {
+      const target = await readlink(filePath);
+      return await realSandboxPath(resolve(dirname(filePath), target), depth + 1);
+    }
+  } catch {
+    // Missing paths are handled below as prospective new files.
+  }
+
+  try {
+    return await realpath(filePath);
+  } catch {
+    const existing = await nearestExistingPath(dirname(filePath));
+    const realExisting = await realpath(existing);
+    return resolve(realExisting, relative(existing, filePath));
+  }
+}
+
+async function realWorkspaceRoots(
+  roots: string[],
+  context: RuntimeContext,
+): Promise<string[]> {
+  const base = context.cwd ?? process.cwd();
+  return await Promise.all(
+    roots.map(async (root) => {
+      const absoluteRoot = resolve(base, root);
+      try {
+        return await realpath(absoluteRoot);
+      } catch {
+        return absoluteRoot;
+      }
+    }),
+  );
+}
+
+async function enforceFileSandbox(
+  filePath: string,
+  context: RuntimeContext,
+  access: 'read' | 'write',
+): Promise<string> {
+  const permissionContext = context.permissionContext;
+  if (!permissionContext || permissionContext.mode === 'bypass') {
+    return filePath;
+  }
+  const shouldRestrict =
+    (access === 'write' &&
+      (permissionContext.mode === 'workspaceWrite' ||
+        permissionContext.mode === 'acceptEdits')) ||
+    permissionContext.mode === 'workspaceWrite' ||
+    permissionContext.restrictReadToWorkspace === true;
+  if (!shouldRestrict) {
+    return filePath;
+  }
+
+  const resolved = await realSandboxPath(filePath);
+  const roots = await realWorkspaceRoots(
+    permissionContext.workspaceRoots,
+    context,
+  );
+  if (
+    !isPathInsideWorkspaceRoots(
+      resolved,
+      roots,
+      context.cwd,
+    )
+  ) {
+    const mode: PermissionMode = permissionContext.mode;
+    throw new Error(
+      access[0]!.toUpperCase() +
+        access.slice(1) +
+        ' targets a path outside the workspace roots in ' +
+        mode +
+        ' mode: ' +
+        resolved,
+    );
+  }
+  return resolved;
+}
+
+function pushApplyEditAudit(
+  context: RuntimeContext,
+  proposal: EditProposal,
+  behavior: PermissionAuditEntry['behavior'],
+  resolvedPath: string,
+  reason: string,
+): void {
+  context.permissionAudit?.push({
+    toolUseId: proposal.toolUseId,
+    toolName: 'ApplyEdit',
+    behavior,
+    reason: { type: 'workspaceRoot', reason },
+    resolvedPath,
+    at: Date.now(),
+  });
 }
 
 function requireFileState(context: RuntimeContext) {
@@ -386,13 +516,30 @@ async function applyProposal(
   proposal: EditProposal,
   context: RuntimeContext,
 ): Promise<void> {
+  const files = [];
   for (const file of proposal.files) {
-    const current = await readFile(file.path, 'utf8');
+    let filePath: string;
+    try {
+      filePath = await enforceFileSandbox(file.path, context, 'write');
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      pushApplyEditAudit(context, proposal, 'deny', file.path, reason);
+      throw error;
+    }
+    pushApplyEditAudit(
+      context,
+      proposal,
+      'allow',
+      filePath,
+      'ApplyEdit target passed the current filesystem sandbox.',
+    );
+    files.push({ ...file, path: filePath });
+    const current = await readFile(filePath, 'utf8');
     if (file.requireUnchanged && current !== file.before) {
       throw new Error('File changed since the edit was proposed.');
     }
   }
-  for (const file of proposal.files) {
+  for (const file of files) {
     await mkdir(dirname(file.path), { recursive: true });
     await writeFile(file.path, file.after, 'utf8');
     const stats = await stat(file.path);
@@ -419,7 +566,11 @@ export const ReadTool = buildTool<ReadInput, ReadOutput>({
   isReadOnly: () => true,
   isConcurrencySafe: () => true,
   async call(input, context) {
-    const filePath = absolutePath(input.path, context);
+    const filePath = await enforceFileSandbox(
+      absolutePath(input.path, context),
+      context,
+      'read',
+    );
     const offset = positiveInteger(input.offset ?? 1, 'offset');
     const requestedLimit = positiveInteger(
       input.limit ?? DEFAULT_READ_LIMIT_LINES,
@@ -466,7 +617,11 @@ export const WriteTool = buildTool<WriteInput, WriteOutput>({
   inputSchema: writeInputSchema,
   isDestructive: () => true,
   async call(input, context) {
-    const filePath = absolutePath(input.path, context);
+    const filePath = await enforceFileSandbox(
+      absolutePath(input.path, context),
+      context,
+      'write',
+    );
     let before = '';
     try {
       before = await readFile(filePath, 'utf8');
@@ -528,7 +683,11 @@ export const EditTool = buildTool<EditInput, EditOutput>({
     return { ok: true };
   },
   async call(input, context) {
-    const filePath = absolutePath(input.path, context);
+    const filePath = await enforceFileSandbox(
+      absolutePath(input.path, context),
+      context,
+      'write',
+    );
     const snapshot = requireFileState(context).get(filePath);
     if (!snapshot?.complete) {
       throw new Error(
@@ -588,7 +747,11 @@ export const ProposeEditTool = buildTool<EditInput, ProposeEditOutput>({
   },
   validateInput: EditTool.validateInput,
   async call(input, context) {
-    const filePath = absolutePath(input.path, context);
+    const filePath = await enforceFileSandbox(
+      absolutePath(input.path, context),
+      context,
+      'write',
+    );
     const snapshot = requireFileState(context).get(filePath);
     if (!snapshot?.complete) {
       throw new Error(

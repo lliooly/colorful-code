@@ -1,4 +1,4 @@
-import { resolve } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
 import type {
   JsonObject,
   RuntimeContext,
@@ -15,6 +15,7 @@ export type PermissionMode =
   | 'default' // ask for anything not pre-approved
   | 'plan' // read-only; mutations denied
   | 'acceptEdits' // auto-allow file edits inside workspace roots
+  | 'workspaceWrite' // writes must stay inside workspace roots
   | 'readOnly' // only read-only tools allowed
   | 'bypass'; // allow everything (explicit opt-in)
 
@@ -43,6 +44,31 @@ export type PermissionDecisionReason =
   | { type: 'mcpTrust'; server: string; trust: McpTrustLevel }
   | { type: 'hook'; hookId?: string; reason: string }
   | { type: 'policy'; reason: string };
+
+export type BashCommandClassification = {
+  command: string;
+  segments: string[];
+  firstCommand: string;
+  isReadOnly: boolean;
+  isDestructive: boolean;
+  hasPipe: boolean;
+  hasRedirect: boolean;
+  hasEnvAssignment: boolean;
+  hasBackgroundOperator: boolean;
+  hasCommandSubstitution: boolean;
+  hasCommandSeparator: boolean;
+  hasComplexShellSyntax: boolean;
+  destructiveReason?: string;
+};
+
+export type NetworkTarget = {
+  provider: string;
+  url?: string;
+  host?: string;
+  scheme?: string;
+};
+
+export type NetworkProviderBehavior = 'allow' | 'ask' | 'deny';
 
 // Suggestions the UI can persist after an `ask` ("always allow Bash(git *)").
 export type PermissionRuleUpdate = {
@@ -73,6 +99,9 @@ export type PermissionContext = {
   rules: PermissionRule[];
   mcpTrust?: Map<string, McpTrustLevel>;
   allowNetwork?: boolean;
+  restrictReadToWorkspace?: boolean;
+  hostAllowlist?: string[];
+  networkProviders?: Record<string, NetworkProviderBehavior>;
 };
 
 export type PermissionAuditEntry = {
@@ -80,6 +109,9 @@ export type PermissionAuditEntry = {
   toolName: string;
   behavior: PermissionBehavior;
   reason?: PermissionDecisionReason;
+  resolvedPath?: string;
+  commandClassification?: BashCommandClassification;
+  networkTarget?: NetworkTarget;
   at: number;
 };
 
@@ -135,7 +167,7 @@ function globMatches(pattern: string, value: string): boolean {
 // A tool may expose a permission string the rules glob against. We look for a
 // conventional `path` or `command` field on the input; absent that there is no
 // arg string to match and `argPattern` rules will not apply.
-function permissionString(input: JsonObject): string | undefined {
+export function permissionString(input: JsonObject): string | undefined {
   for (const key of ['command', 'path', 'url']) {
     const value = input[key];
     if (typeof value === 'string') {
@@ -184,6 +216,41 @@ function isFileEdit(tool: Tool, input: JsonObject): boolean {
   return !tool.isReadOnly(input) && typeof input.path === 'string';
 }
 
+function isFileRead(tool: Tool, input: JsonObject): boolean {
+  return tool.isReadOnly(input) && typeof input.path === 'string';
+}
+
+export function resolvePathForPermission(
+  input: JsonObject,
+  cwd: string | undefined,
+): string | undefined {
+  const rawPath = input.path;
+  if (typeof rawPath !== 'string') {
+    return undefined;
+  }
+  return resolve(cwd ?? process.cwd(), rawPath);
+}
+
+export function normalizeWorkspaceRoots(
+  roots: string[],
+  cwd: string | undefined,
+): string[] {
+  const base = cwd ?? process.cwd();
+  return roots.map((root) => resolve(base, root));
+}
+
+export function isPathInsideWorkspaceRoots(
+  absolutePath: string,
+  roots: string[],
+  cwd: string | undefined,
+): boolean {
+  const absoluteRoots = normalizeWorkspaceRoots(roots, cwd);
+  return absoluteRoots.some((root) => {
+    const rel = relative(root, absolutePath);
+    return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel));
+  });
+}
+
 // Returns true when the resolved file path lives inside one of the workspace
 // roots. Roots and the path are both resolved to absolute form first so that
 // relative roots, `..` segments, and trailing slashes compare consistently.
@@ -192,19 +259,11 @@ function isInsideWorkspaceRoots(
   roots: string[],
   cwd: string | undefined,
 ): boolean {
-  const rawPath = input.path;
-  if (typeof rawPath !== 'string') {
-    return false;
-  }
-  const base = cwd ?? process.cwd();
-  const absolutePath = resolve(base, rawPath);
-  return roots.some((root) => {
-    const absoluteRoot = resolve(base, root);
-    return (
-      absolutePath === absoluteRoot ||
-      absolutePath.startsWith(absoluteRoot + '/')
-    );
-  });
+  const absolutePath = resolvePathForPermission(input, cwd);
+  return (
+    absolutePath !== undefined &&
+    isPathInsideWorkspaceRoots(absolutePath, roots, cwd)
+  );
 }
 
 // Pure, fully unit-testable default policy. Reads `context.permissionContext`
@@ -253,6 +312,58 @@ export function evaluatePermission(
         mode +
         "' mode.",
       reason: { type: 'mode', mode },
+    };
+  }
+
+  if (tool.name === 'Bash' && tool.isDestructive(input)) {
+    return {
+      behavior: 'ask',
+      message: "Tool '" + tool.name + "' is destructive and requires approval.",
+      reason: {
+        type: 'destructive',
+        reason: 'Destructive Bash commands always require approval.',
+      },
+    };
+  }
+
+  if (mode === 'workspaceWrite' && isFileEdit(tool, input)) {
+    if (
+      isInsideWorkspaceRoots(
+        input,
+        permissionContext.workspaceRoots,
+        context.cwd,
+      )
+    ) {
+      return {
+        behavior: 'allow',
+        reason: {
+          type: 'workspaceRoot',
+          reason: 'Write inside a workspace root is allowed in workspaceWrite mode.',
+        },
+      };
+    }
+    return {
+      behavior: 'deny',
+      message: 'Write targets a path outside the workspace roots.',
+      reason: {
+        type: 'workspaceRoot',
+        reason: 'workspaceWrite mode forbids writes outside workspace roots.',
+      },
+    };
+  }
+
+  if (
+    permissionContext.restrictReadToWorkspace === true &&
+    isFileRead(tool, input) &&
+    !isInsideWorkspaceRoots(input, permissionContext.workspaceRoots, context.cwd)
+  ) {
+    return {
+      behavior: 'deny',
+      message: 'Read targets a path outside the workspace roots.',
+      reason: {
+        type: 'workspaceRoot',
+        reason: 'Reads outside workspace roots are disabled by policy.',
+      },
     };
   }
 

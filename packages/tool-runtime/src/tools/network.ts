@@ -1,25 +1,110 @@
 import { objectSchema, stringField } from "../core/schema.js";
 import { buildTool, type RuntimeContext, type Tool } from "../core/tool.js";
 import type { PermissionResult } from "../core/permissions.js";
+import type { JsonObject } from "../core/tool.js";
 
 const fetchSchema = objectSchema({ url: stringField() });
 const searchSchema = objectSchema({ query: stringField() });
-type FetchInput = ReturnType<typeof fetchSchema.parse>;
+type SearchInput = ReturnType<typeof searchSchema.parse>;
 
-function checkNetworkPermission(
-  input: FetchInput,
+function parseNetworkUrl(url: string | undefined): URL | undefined {
+  if (!url) return undefined;
+  try {
+    return new URL(url);
+  } catch {
+    return undefined;
+  }
+}
+
+function searchEndpoint(context: RuntimeContext): string {
+  return context.webSearchEndpoint ?? "https://duckduckgo.com/html/?q={query}";
+}
+
+function hostAllowed(host: string | undefined, allowlist: string[]): boolean {
+  if (!host) return false;
+  return allowlist.some((entry) => {
+    const normalized = entry.toLowerCase();
+    const target = host.toLowerCase();
+    if (normalized.startsWith("*.")) {
+      const suffix = normalized.slice(1);
+      return target.endsWith(suffix);
+    }
+    return target === normalized;
+  });
+}
+
+export function networkTargetForTool(
+  provider: string,
+  input: JsonObject,
   context: RuntimeContext,
-): PermissionResult<FetchInput> {
+) {
+  const rawUrl =
+    typeof input.url === "string"
+      ? input.url
+      : provider === "WebSearch"
+        ? searchEndpoint(context)
+        : undefined;
+  const parsed = parseNetworkUrl(rawUrl);
+  return {
+    provider,
+    ...(rawUrl ? { url: rawUrl } : {}),
+    ...(parsed
+      ? { host: parsed.hostname, scheme: parsed.protocol.replace(/:$/, "") }
+      : {}),
+  };
+}
+
+function checkNetworkPermission<Input extends JsonObject>(
+  provider: string,
+  input: Input,
+  context: RuntimeContext,
+): PermissionResult<Input> {
   const permissionContext = context.permissionContext;
   if (!permissionContext) return { behavior: "allow" };
-  if (permissionContext.mode !== "default") return { behavior: "allow" };
+  if (permissionContext.mode === "bypass") return { behavior: "allow" };
+
+  const providerPolicy = permissionContext.networkProviders?.[provider];
+  const target = networkTargetForTool(provider, input, context);
+  if (providerPolicy === "deny") {
+    return {
+      behavior: "deny",
+      message: provider + " is denied by network provider policy.",
+      reason: {
+        type: "policy",
+        reason: provider + " denied by network provider policy.",
+      },
+    };
+  }
+  if (providerPolicy === "allow") return { behavior: "allow" };
+  if (providerPolicy === "ask") {
+    return {
+      behavior: "ask",
+      message: provider + " requires network approval.",
+      reason: {
+        type: "policy",
+        reason: provider + " requires approval by network provider policy.",
+      },
+    };
+  }
+
   if (permissionContext.allowNetwork === true) return { behavior: "allow" };
+  if (
+    target.host &&
+    hostAllowed(target.host, permissionContext.hostAllowlist ?? [])
+  ) {
+    return { behavior: "allow" };
+  }
   return {
     behavior: "ask",
-    message: "WebFetch requires network access to " + input.url + ".",
+    message:
+      provider +
+      " requires network access" +
+      (target.url ? " to " + target.url : "") +
+      ".",
     reason: {
       type: "policy",
-      reason: "Network access requires explicit allowNetwork in default mode.",
+      reason:
+        "Network access requires allowNetwork, host allowlist, or provider policy.",
     },
   };
 }
@@ -27,7 +112,9 @@ function checkNetworkPermission(
 export const WebFetchTool = buildTool({
   name: "WebFetch",
   inputSchema: fetchSchema,
-  checkPermissions: checkNetworkPermission,
+  checkPermissions(input, context) {
+    return checkNetworkPermission("WebFetch", input, context);
+  },
   isReadOnly: () => true,
   isConcurrencySafe: () => true,
   async call(input, context) {
@@ -44,6 +131,9 @@ export const WebFetchTool = buildTool({
 export const WebSearchTool = buildTool({
   name: "WebSearch",
   inputSchema: searchSchema,
+  checkPermissions(input: SearchInput, context) {
+    return checkNetworkPermission("WebSearch", input, context);
+  },
   isReadOnly: () => true,
   isConcurrencySafe: () => true,
   async call(input, context) {
@@ -58,6 +148,9 @@ export const WebSearchTool = buildTool({
 export const WebBrowserTool = buildTool({
   name: "WebBrowser",
   inputSchema: fetchSchema,
+  checkPermissions(input, context) {
+    return checkNetworkPermission("WebBrowser", input, context);
+  },
   isReadOnly: () => true,
   isConcurrencySafe: () => true,
   async call(input, context) {

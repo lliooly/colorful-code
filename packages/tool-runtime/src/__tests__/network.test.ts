@@ -14,6 +14,7 @@ import {
   WebSearchTool,
   type ApprovalRequest,
   type ApprovalResponse,
+  type PermissionAuditEntry,
 } from "../index.js";
 
 function networkRunner(context = createRuntimeContext()) {
@@ -284,4 +285,77 @@ test("WebFetch proceeds without approval when allowNetwork is true", async () =>
   assert.equal(called, true);
   assert.equal(result.isError, undefined);
   assert.equal(result.content, "allowed:https://example.com");
+});
+
+test("network tools honor host allowlist without global allowNetwork", async () => {
+  const context = createRuntimeContext({
+    permissionContext: {
+      mode: "default",
+      workspaceRoots: [],
+      rules: [],
+      hostAllowlist: ["example.com"],
+    },
+    webBrowserProvider: async (url) => "browser:" + url,
+  });
+
+  const allowed = await networkRunner(context).run({
+    id: "browser-allow-host",
+    name: "WebBrowser",
+    input: { url: "https://example.com/page" },
+  });
+  const denied = await networkRunner(context).run({
+    id: "browser-deny-host",
+    name: "WebBrowser",
+    input: { url: "https://blocked.example/page" },
+  });
+
+  assert.equal(allowed.isError, undefined);
+  assert.equal(allowed.content, "browser:https://example.com/page");
+  assert.equal(denied.isError, true);
+  assert.match(denied.content, /requires network access/i);
+});
+
+test("network tools honor per-provider policy", async () => {
+  const context = createRuntimeContext({
+    permissionContext: {
+      mode: "default",
+      workspaceRoots: [],
+      rules: [],
+      networkProviders: { WebSearch: "deny" },
+      allowNetwork: true,
+    },
+    webSearchProvider: async () => ["unreachable"],
+  });
+
+  const result = await networkRunner(context).run({
+    id: "search-provider-deny",
+    name: "WebSearch",
+    input: { query: "runtime" },
+  });
+
+  assert.equal(result.isError, true);
+  assert.match(result.content, /denied by network provider policy/i);
+});
+
+test("network audit records the target host", async () => {
+  const audit: PermissionAuditEntry[] = [];
+  const context = createRuntimeContext({
+    permissionContext: {
+      mode: "default",
+      workspaceRoots: [],
+      rules: [],
+      allowNetwork: true,
+    },
+    permissionAudit: audit,
+    webFetchProvider: async () => "ok",
+  });
+
+  await networkRunner(context).run({
+    id: "fetch-audit-target",
+    name: "WebFetch",
+    input: { url: "https://example.com/page" },
+  });
+
+  assert.equal(audit.at(-1)?.networkTarget?.host, "example.com");
+  assert.equal(audit.at(-1)?.networkTarget?.url, "https://example.com/page");
 });

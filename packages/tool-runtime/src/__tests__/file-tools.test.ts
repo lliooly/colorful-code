@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -8,6 +16,8 @@ import {
   ToolRunner,
   createBuiltinTools,
   createRuntimeContext,
+  applyEditProposal,
+  type EditProposal,
 } from '../index.js';
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
@@ -355,5 +365,180 @@ test('Edit rejects files changed since the last Read', async () => {
 
     assert.equal(edit.isError, true);
     assert.match(edit.content, /changed since it was read/i);
+  });
+});
+
+test('filesystem sandbox rejects lexical traversal outside workspace roots', async () => {
+  await withTempDir(async (dir) => {
+    const workspace = join(dir, 'workspace');
+    await mkdir(workspace);
+    const context = createRuntimeContext({
+      cwd: workspace,
+      permissionContext: {
+        mode: 'workspaceWrite',
+        workspaceRoots: [workspace],
+        rules: [],
+      },
+    });
+    const runner = new ToolRunner(
+      new ToolRegistry(createBuiltinTools()),
+      context,
+    );
+
+    const result = await runner.run({
+      id: 'write-traversal',
+      name: 'Write',
+      input: { path: '../outside.txt', content: 'nope' },
+    });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content, /outside the workspace roots/i);
+  });
+});
+
+test('filesystem sandbox rejects symlinks that point outside workspace roots', async () => {
+  await withTempDir(async (dir) => {
+    const workspace = join(dir, 'workspace');
+    const outside = join(dir, 'outside');
+    await mkdir(workspace);
+    await mkdir(outside);
+    const outsideFile = join(outside, 'secret.txt');
+    await writeFile(outsideFile, 'secret', 'utf8');
+    const link = join(workspace, 'link.txt');
+    await symlink(outsideFile, link);
+
+    const context = createRuntimeContext({
+      cwd: workspace,
+      permissionContext: {
+        mode: 'workspaceWrite',
+        workspaceRoots: [workspace],
+        rules: [],
+      },
+    });
+    const runner = new ToolRunner(
+      new ToolRegistry(createBuiltinTools()),
+      context,
+    );
+
+    const read = await runner.run({
+      id: 'read-symlink',
+      name: 'Read',
+      input: { path: link },
+    });
+    const write = await runner.run({
+      id: 'write-symlink',
+      name: 'Write',
+      input: { path: link, content: 'changed' },
+    });
+
+    assert.equal(read.isError, true);
+    assert.match(read.content, /outside the workspace roots/i);
+    assert.equal(write.isError, true);
+    assert.match(write.content, /outside the workspace roots/i);
+    assert.equal(await readFile(outsideFile, 'utf8'), 'secret');
+  });
+});
+
+test('filesystem sandbox rejects dangling symlink writes outside workspace roots', async () => {
+  await withTempDir(async (dir) => {
+    const workspace = join(dir, 'workspace');
+    const outside = join(dir, 'outside');
+    await mkdir(workspace);
+    await mkdir(outside);
+    const outsideFile = join(outside, 'created.txt');
+    const link = join(workspace, 'dangling.txt');
+    await symlink(outsideFile, link);
+
+    const context = createRuntimeContext({
+      cwd: workspace,
+      permissionContext: {
+        mode: 'workspaceWrite',
+        workspaceRoots: [workspace],
+        rules: [],
+      },
+    });
+    const runner = new ToolRunner(
+      new ToolRegistry(createBuiltinTools()),
+      context,
+    );
+
+    const result = await runner.run({
+      id: 'write-dangling-symlink',
+      name: 'Write',
+      input: { path: link, content: 'nope' },
+    });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content, /outside the workspace roots/i);
+    await assert.rejects(() => stat(outsideFile));
+  });
+});
+
+test('ApplyEdit rechecks the current filesystem sandbox before writing', async () => {
+  await withTempDir(async (dir) => {
+    const workspace = join(dir, 'workspace');
+    const outside = join(dir, 'outside.txt');
+    await mkdir(workspace);
+    await writeFile(outside, 'before', 'utf8');
+    const proposal: EditProposal = {
+      id: 'proposal-outside',
+      toolUseId: 'propose-outside',
+      createdAt: Date.now(),
+      patches: [],
+      files: [
+        {
+          path: outside,
+          before: 'before',
+          after: 'after',
+          requireUnchanged: true,
+        },
+      ],
+      status: 'approved',
+    };
+    const context = createRuntimeContext({
+      cwd: workspace,
+      permissionContext: {
+        mode: 'workspaceWrite',
+        workspaceRoots: [workspace],
+        rules: [],
+      },
+    });
+
+    await assert.rejects(
+      () => applyEditProposal(proposal, context),
+      /outside the workspace roots/i,
+    );
+    assert.equal(await readFile(outside, 'utf8'), 'before');
+  });
+});
+
+test('filesystem sandbox can optionally reject reads outside workspace roots', async () => {
+  await withTempDir(async (dir) => {
+    const workspace = join(dir, 'workspace');
+    const outside = join(dir, 'outside.txt');
+    await mkdir(workspace);
+    await writeFile(outside, 'secret', 'utf8');
+    const context = createRuntimeContext({
+      cwd: workspace,
+      permissionContext: {
+        mode: 'default',
+        workspaceRoots: [workspace],
+        rules: [],
+        restrictReadToWorkspace: true,
+      },
+    });
+    const runner = new ToolRunner(
+      new ToolRegistry(createBuiltinTools()),
+      context,
+    );
+
+    const result = await runner.run({
+      id: 'read-outside',
+      name: 'Read',
+      input: { path: outside },
+    });
+
+    assert.equal(result.isError, true);
+    assert.match(result.content, /outside the workspace roots/i);
   });
 });
