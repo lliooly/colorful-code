@@ -74,6 +74,14 @@ type ConversationItem =
 
 type LoggedEvent = { seq: number; event: SessionEvent };
 
+type HookWarning = {
+  seq: number;
+  hookId: string;
+  hookEvent: string;
+  message: string;
+  policy: string;
+};
+
 type ApprovalState = {
   requestId: string;
   toolUseId: string;
@@ -225,6 +233,7 @@ export default function AgentDebugPage(): ReactNode {
   // Conversation + raw log + approvals derived from the SSE stream.
   const [items, setItems] = useState<ConversationItem[]>([]);
   const [log, setLog] = useState<LoggedEvent[]>([]);
+  const [hookWarnings, setHookWarnings] = useState<HookWarning[]>([]);
   const [approval, setApproval] = useState<ApprovalState | null>(null);
   const [editProposals, setEditProposals] = useState<EditProposalRecord[]>([]);
   const [selectedProposalId, setSelectedProposalId] = useState<string | null>(
@@ -247,6 +256,19 @@ export default function AgentDebugPage(): ReactNode {
     [presetId],
   );
   const isCustom = preset.id === 'custom';
+  const hookAndFileEvents = useMemo(
+    () =>
+      log.filter((entry) =>
+        [
+          'hook_event',
+          'hook_failure',
+          'file_created',
+          'file_changed',
+          'file_deleted',
+        ].includes(entry.event.type),
+      ),
+    [log],
+  );
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -256,6 +278,7 @@ export default function AgentDebugPage(): ReactNode {
     (seedItems: ConversationItem[] = []) => {
       setItems(seedItems);
       setLog([]);
+      setHookWarnings([]);
       setApproval(null);
       setEditProposals([]);
       setSelectedProposalId(null);
@@ -333,6 +356,18 @@ export default function AgentDebugPage(): ReactNode {
             message: event.message,
             ...(event.source ? { source: event.source } : {}),
           });
+          break;
+        case 'hook_failure':
+          setHookWarnings((prev) => [
+            ...prev.slice(-4),
+            {
+              seq,
+              hookId: event.hookId,
+              hookEvent: event.hookEvent,
+              message: event.message,
+              policy: event.policy,
+            },
+          ]);
           break;
         case 'edit_proposed':
         case 'edit_approved':
@@ -450,6 +485,7 @@ export default function AgentDebugPage(): ReactNode {
       const id = await createSession({
         permissionMode,
         model: buildModelConfig(),
+        watchWorkspace: true,
       });
       // Reset derived state for the fresh session.
       resetSessionDerivedState();
@@ -660,6 +696,27 @@ export default function AgentDebugPage(): ReactNode {
         {error ? (
           <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
             {error}
+          </div>
+        ) : null}
+
+        {hookWarnings.length > 0 ? (
+          <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-foreground">
+            <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              Hook warnings
+            </p>
+            <div className="grid gap-2">
+              {hookWarnings.map((warning) => (
+                <div key={warning.seq} className="flex flex-wrap gap-2">
+                  <span className="font-mono text-xs text-muted-foreground">
+                    {warning.hookId} · {warning.hookEvent}
+                  </span>
+                  <span>{warning.message}</span>
+                  <span className="font-mono text-xs text-muted-foreground">
+                    {warning.policy}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
         ) : null}
 
@@ -1201,6 +1258,58 @@ export default function AgentDebugPage(): ReactNode {
             )}
           </section>
         ) : null}
+
+        <section className={panelClass}>
+          <div className="flex items-center justify-between gap-2 pb-3">
+            <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              Runtime events
+            </h2>
+            <span className="text-xs text-muted-foreground">
+              {hookAndFileEvents.length} events
+            </span>
+          </div>
+          {hookAndFileEvents.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Hook and file events will appear here.
+            </p>
+          ) : (
+            <div className="grid max-h-48 gap-2 overflow-y-auto">
+              {hookAndFileEvents.map((entry) => (
+                <div
+                  key={entry.seq}
+                  className="rounded-lg border border-border/60 bg-background/60 px-3 py-2"
+                >
+                  <p className="font-mono text-[11px] text-muted-foreground">
+                    #{entry.seq} · {entry.event.type}
+                  </p>
+                  {entry.event.type === 'hook_event' ? (
+                    <p className="mt-1 text-sm">
+                      {entry.event.entry.hookId} · {entry.event.entry.event} ·{' '}
+                      {entry.event.entry.action}
+                      {entry.event.entry.message
+                        ? ` · ${entry.event.entry.message}`
+                        : ''}
+                      {entry.event.entry.error
+                        ? ` · ${entry.event.entry.error}`
+                        : ''}
+                    </p>
+                  ) : entry.event.type === 'file_created' ||
+                    entry.event.type === 'file_changed' ||
+                    entry.event.type === 'file_deleted' ? (
+                    <p className="mt-1 break-all font-mono text-xs text-foreground/85">
+                      {entry.event.path}
+                    </p>
+                  ) : entry.event.type === 'hook_failure' ? (
+                    <p className="mt-1 text-sm">
+                      {entry.event.hookId} · {entry.event.hookEvent} ·{' '}
+                      {entry.event.message}
+                    </p>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
 
         {/* Live view + raw log */}
         <section className="grid min-h-0 gap-5 lg:grid-cols-2">

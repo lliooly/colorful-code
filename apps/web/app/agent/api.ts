@@ -43,6 +43,7 @@ async function getJson(path: string): Promise<Response> {
 
 export type CreateSessionRequest = {
   permissionMode?: PermissionMode;
+  watchWorkspace?: boolean;
   // The apiKey, if any, lives only inside `model` and is sent once here. It is
   // never persisted client-side or logged.
   model?: ModelConfig;

@@ -41,6 +41,7 @@ export type PermissionDecisionReason =
   | { type: 'workspaceRoot'; reason: string }
   | { type: 'destructive'; reason: string }
   | { type: 'mcpTrust'; server: string; trust: McpTrustLevel }
+  | { type: 'hook'; hookId?: string; reason: string }
   | { type: 'policy'; reason: string };
 
 // Suggestions the UI can persist after an `ask` ("always allow Bash(git *)").

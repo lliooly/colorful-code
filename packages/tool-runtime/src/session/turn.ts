@@ -17,6 +17,7 @@ import {
   shouldCompact,
   type CompactionConfig,
 } from './compaction.js';
+import { runHooks } from '../core/hooks.js';
 import type { SessionEvent } from './events.js';
 import type {
   ConversationEntry,
@@ -151,13 +152,26 @@ export async function runTurn(deps: TurnDeps): Promise<void> {
         }
       }
 
+      const beforeModel = await runHooks(deps.context, {
+        event: 'beforeModelRun',
+        runId: deps.runId,
+      });
+      if (beforeModel.action === 'deny') {
+        throw new Error(
+          beforeModel.message ?? 'beforeModelRun hook denied the model run.',
+        );
+      }
+      const appendedContext = beforeModel.appendedContext.join('\n\n');
+      const system =
+        appendedContext.length > 0
+          ? [deps.systemPrompt, appendedContext].filter(Boolean).join('\n\n')
+          : deps.systemPrompt;
+
       const stream = deps.model.run({
         history: deps.history,
         tools,
         signal: deps.signal,
-        ...(deps.systemPrompt !== undefined
-          ? { system: deps.systemPrompt }
-          : {}),
+        ...(system !== undefined ? { system } : {}),
       });
 
       // Consume exactly one completion: accumulate text and collect tool uses;
@@ -213,6 +227,10 @@ export async function runTurn(deps: TurnDeps): Promise<void> {
         });
         return;
       }
+      await runHooks(deps.context, {
+        event: 'afterModelRun',
+        runId: deps.runId,
+      });
 
       // History ordering: the assistant turn (text + its tool calls) is appended
       // BEFORE any tool results so the transcript reads assistant-then-tool.

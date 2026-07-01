@@ -5,6 +5,7 @@ export * from './core/descriptor.js';
 export * from './core/registry.js';
 export * from './core/runner.js';
 export * from './core/scheduler.js';
+export * from './core/hooks.js';
 export * from './mcp/types.js';
 export * from './mcp/name.js';
 export * from './mcp/adapter.js';
@@ -19,6 +20,7 @@ export * from './tools/mcp.js';
 export * from './tools/network.js';
 export * from './tools/misc.js';
 export * from './session/index.js';
+export * from './session/file-watcher.js';
 
 import type { Tool } from './core/tool.js';
 import { createBashTools } from './tools/bash.js';

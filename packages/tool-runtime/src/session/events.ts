@@ -8,6 +8,7 @@ import type {
   PermissionAuditEntry,
   PermissionRuleUpdate,
 } from '../core/permissions.js';
+import type { HookAuditEntry, HookFailurePolicy } from '../core/hooks.js';
 
 export type McpServerStatus = {
   name: string;
@@ -34,6 +35,25 @@ export type McpServerStatus = {
 // awaits a correlated control response (`approval_response`) keyed by `requestId`.
 export type SessionEvent =
   | { type: 'mcp_status'; servers: McpServerStatus[] }
+  | {
+      type: 'hook_event';
+      runId: string;
+      entry: HookAuditEntry;
+    }
+  | {
+      type: 'hook_failure';
+      runId: string;
+      hookId: string;
+      hookEvent: string;
+      message: string;
+      policy: HookFailurePolicy;
+    }
+  | {
+      type: 'file_created' | 'file_changed' | 'file_deleted';
+      runId: string;
+      path: string;
+      at: number;
+    }
   | {
       type: 'run_status';
       status: 'running' | 'completed' | 'cancelled' | 'error';

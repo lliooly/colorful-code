@@ -511,6 +511,12 @@ export const EditTool = buildTool<EditInput, EditOutput>({
     }
     const filePath = absolutePath(input.path, context);
     const snapshot = context.fileState?.get(filePath);
+    if (snapshot?.stale) {
+      return {
+        ok: false,
+        message: 'File changed since it was read. Read it again before editing.',
+      };
+    }
     if (!snapshot?.complete) {
       return {
         ok: false,

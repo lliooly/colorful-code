@@ -28,6 +28,7 @@ import {
   type SessionEvent,
   type McpServerStatus,
   type SessionSnapshot,
+  type HookAuditEntry,
 } from '@colorful-code/tool-runtime';
 import {
   buildSystemPromptSync,
@@ -61,11 +62,13 @@ export type CreateSessionOptions = {
   cwd?: string;
   model?: ModelSelection;
   mcpServers?: McpServersConfig;
+  watchWorkspace?: boolean;
 };
 
 export type RestoreSessionOptions = {
   model?: ModelSelection;
   mcpServers?: McpServersConfig;
+  watchWorkspace?: boolean;
 };
 
 // What the service tracks per live session: the engine `Session`, an append-only
@@ -192,6 +195,34 @@ const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
   'cancelled',
   'error',
 ]);
+
+function hookAuditBehavior(
+  entry: HookAuditEntry,
+): PermissionAuditEntry['behavior'] {
+  if (entry.action === 'deny' || entry.action === 'failure') {
+    return 'deny';
+  }
+  if (entry.action === 'ask') {
+    return 'ask';
+  }
+  return 'allow';
+}
+
+function hookAuditToPermissionEntry(
+  entry: HookAuditEntry,
+): PermissionAuditEntry {
+  return {
+    toolUseId: entry.hookId,
+    toolName: 'Hook:' + entry.event,
+    behavior: hookAuditBehavior(entry),
+    reason: {
+      type: 'hook',
+      hookId: entry.hookId,
+      reason: entry.error ?? entry.message ?? entry.action,
+    },
+    at: entry.at,
+  };
+}
 
 @Injectable()
 export class SessionsService implements OnModuleDestroy {
@@ -386,6 +417,8 @@ export class SessionsService implements OnModuleDestroy {
       // and flush a snapshot + the buffered audit whenever a run terminates.
       if (event.type === 'permission_decision') {
         pendingAudit.push(event.entry);
+      } else if (event.type === 'hook_event') {
+        pendingAudit.push(hookAuditToPermissionEntry(event.entry));
       } else if (
         event.type === 'run_status' &&
         TERMINAL_RUN_STATUSES.has(event.status)
@@ -435,6 +468,7 @@ export class SessionsService implements OnModuleDestroy {
         ...(options.cwd ? { cwd: options.cwd } : {}),
         permissionContext,
         ...(mcpManager ? { mcpManager } : {}),
+        ...(options.watchWorkspace ? { watchWorkspace: true } : {}),
       }),
       { ...(mcpManager ? { mcpManager } : {}), mcpConnections },
     );
@@ -479,6 +513,7 @@ export class SessionsService implements OnModuleDestroy {
         ),
         compaction: buildCompactionConfig(options.model),
         ...(mcpManager ? { mcpManager } : {}),
+        ...(options.watchWorkspace ? { watchWorkspace: true } : {}),
       }),
       { ...(mcpManager ? { mcpManager } : {}), mcpConnections },
     );
@@ -583,6 +618,7 @@ export class SessionsService implements OnModuleDestroy {
         ),
         compaction: buildCompactionConfig(options.model),
         ...(mcpManager ? { mcpManager } : {}),
+        ...(options.watchWorkspace ? { watchWorkspace: true } : {}),
       }),
       ...(mcpManager ? { mcpManager } : {}),
       mcpConnections,
@@ -759,6 +795,7 @@ export class SessionsService implements OnModuleDestroy {
     // Persist the final state (and flush any not-yet-flushed audit) before the
     // session leaves memory.
     this.persist(entry.session, entry.pendingAudit);
+    await entry.session.close();
     entry.unsubscribe();
     entry.listeners.clear();
     this.entries.delete(id);
@@ -803,6 +840,7 @@ export class SessionsService implements OnModuleDestroy {
     if (options.persist) {
       this.persist(entry.session, entry.pendingAudit);
     }
+    await entry.session.close();
     entry.unsubscribe();
     entry.listeners.clear();
     this.entries.delete(id);

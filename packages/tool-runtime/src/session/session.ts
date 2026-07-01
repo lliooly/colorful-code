@@ -26,6 +26,15 @@ import type { SessionEvent, SessionEventListener } from './events.js';
 import type { ConversationEntry, ModelClient } from './model.js';
 import { runTurn } from './turn.js';
 import { applyEditProposal } from '../tools/files.js';
+import {
+  runHooks,
+  type HookConfig,
+  type HookFailure,
+} from '../core/hooks.js';
+import {
+  createWorkspaceFileWatcher,
+  type WorkspaceFileWatcher,
+} from './file-watcher.js';
 
 // Dependencies injected when constructing or restoring a session. `tools` and
 // `model` are required; everything else has a sensible default.
@@ -46,6 +55,8 @@ export type SessionDeps = {
   // compaction.
   compaction?: CompactionConfig;
   mcpManager?: McpManager;
+  hooks?: HookConfig;
+  watchWorkspace?: boolean;
   // Maximum nested Agent depth. The default allows a parent session to run one
   // child agent, while preventing recursive agent spawning unless explicitly
   // widened by the caller later.
@@ -128,6 +139,7 @@ export class Session {
   private subagentCounter = 0;
   private activeRun: Promise<void> | undefined;
   private activeRunId: string | undefined;
+  private watcher: WorkspaceFileWatcher | undefined;
 
   constructor(deps: SessionDeps) {
     this.id = deps.id ?? nextSessionId();
@@ -145,6 +157,15 @@ export class Session {
       signal: this.abortController.signal,
       permissionContext: this.permissionContext,
       permissionAudit: [] as PermissionAuditEntry[],
+      hookAudit: [],
+      ...(deps.hooks ? { hookConfig: deps.hooks } : {}),
+      emitHookEvent: (entry) =>
+        this.emit({
+          type: 'hook_event',
+          runId: this.activeRunId ?? this.id,
+          entry,
+        }),
+      emitHookFailure: (failure) => this.emitHookFailure(failure),
       requestApproval: (request) => this.requestApproval(request),
       proposeEdit: (proposal, context) => this.proposeEdit(proposal, context),
       approveEdit: (proposal) => this.emitEditApproved(proposal),
@@ -161,11 +182,34 @@ export class Session {
 
     this.runner = new ToolRunner(this.registry, this.context);
     this.scheduler = new ToolScheduler(this.runner);
+
+    if (deps.watchWorkspace) {
+      this.watcher = createWorkspaceFileWatcher({
+        roots: this.permissionContext.workspaceRoots,
+        context: this.context,
+        onEvent: (event) =>
+          this.emit({
+            type: event.type,
+            runId: this.activeRunId ?? this.id,
+            path: event.path,
+            at: event.at,
+          }),
+      });
+    }
+
+    void this.runSessionHook('sessionStart');
   }
 
   // Registers an event listener; returns an unsubscribe function.
   subscribe(listener: SessionEventListener): () => void {
     this.listeners.add(listener);
+    for (const entry of this.context.hookAudit ?? []) {
+      listener({
+        type: 'hook_event',
+        runId: this.activeRunId ?? this.id,
+        entry,
+      });
+    }
     return () => {
       this.listeners.delete(listener);
     };
@@ -175,6 +219,21 @@ export class Session {
     for (const listener of this.listeners) {
       listener(event);
     }
+  }
+
+  private emitHookFailure(failure: HookFailure): void {
+    this.emit({
+      type: 'hook_failure',
+      runId: this.activeRunId ?? this.id,
+      hookId: failure.hookId,
+      hookEvent: failure.event,
+      message: failure.message,
+      policy: failure.policy,
+    });
+  }
+
+  private async runSessionHook(event: 'sessionStart' | 'sessionEnd') {
+    await runHooks(this.context, { event });
   }
 
   // Mints a requestId, emits the correlated `approval_required` event, and parks
@@ -315,6 +374,15 @@ export class Session {
       conflictEdit: (proposal, reason) =>
         this.emitEditConflict(proposal, reason),
       applyEditProposal,
+      hookConfig: parentContext.hookConfig,
+      hookAudit: this.context.hookAudit,
+      emitHookEvent: (entry) =>
+        this.emit({
+          type: 'hook_event',
+          runId,
+          entry,
+        }),
+      emitHookFailure: (failure) => this.emitHookFailure(failure),
       permissionPolicy: parentContext.permissionPolicy,
       subagentDepth: (parentContext.subagentDepth ?? 0) + 1,
       maxSubagentDepth:
@@ -419,6 +487,12 @@ export class Session {
     await run;
   }
 
+  async close(): Promise<void> {
+    await this.runSessionHook('sessionEnd');
+    await this.watcher?.close();
+    this.watcher = undefined;
+  }
+
   // Routes an inbound control message. `user_message` runs a turn in the
   // background (callers awaiting completion should use `submit`).
   send(message: ControlMessage): void {
@@ -492,6 +566,8 @@ export class Session {
       systemPrompt?: string;
       compaction?: CompactionConfig;
       mcpManager?: McpManager;
+      hooks?: HookConfig;
+      watchWorkspace?: boolean;
     },
   ): Session {
     const session = new Session({
@@ -504,6 +580,10 @@ export class Session {
         : {}),
       ...(deps.compaction !== undefined ? { compaction: deps.compaction } : {}),
       ...(deps.mcpManager !== undefined ? { mcpManager: deps.mcpManager } : {}),
+      ...(deps.hooks !== undefined ? { hooks: deps.hooks } : {}),
+      ...(deps.watchWorkspace !== undefined
+        ? { watchWorkspace: deps.watchWorkspace }
+        : {}),
       permissionContext: {
         mode: snapshot.permissionMode,
         workspaceRoots: [...snapshot.workspaceRoots],

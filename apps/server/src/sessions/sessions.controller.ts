@@ -45,11 +45,13 @@ type CreateSessionBody = {
   cwd?: unknown;
   model?: unknown;
   mcpServers?: unknown;
+  watchWorkspace?: unknown;
 };
 
 type RestoreSessionBody = {
   model?: unknown;
   mcpServers?: unknown;
+  watchWorkspace?: unknown;
 };
 
 type MessageBody = {
@@ -256,6 +258,16 @@ function validateMcpServers(value: unknown): McpServersConfig | undefined {
   }
 }
 
+function validateWatchWorkspace(value: unknown): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'boolean') {
+    throw new BadRequestException('`watchWorkspace` must be a boolean.');
+  }
+  return value;
+}
+
 // Validates and narrows an arbitrary control body into a ControlMessage. Throws
 // BadRequestException (400) on anything malformed so a bad client cannot push an
 // ill-formed message into the engine.
@@ -364,6 +376,7 @@ export class SessionsController {
     const rules = validateRules(body.rules);
     const model = validateModelSelection(body.model);
     const mcpServers = validateMcpServers(body.mcpServers);
+    const watchWorkspace = validateWatchWorkspace(body.watchWorkspace);
     const options: CreateSessionOptions = {
       ...(permissionMode !== undefined ? { permissionMode } : {}),
       ...(workspaceRoots !== undefined ? { workspaceRoots } : {}),
@@ -371,6 +384,7 @@ export class SessionsController {
       ...(typeof body.cwd === 'string' ? { cwd: body.cwd } : {}),
       ...(model !== undefined ? { model } : {}),
       ...(mcpServers !== undefined ? { mcpServers } : {}),
+      ...(watchWorkspace !== undefined ? { watchWorkspace } : {}),
     };
     return await this.sessions.create(options);
   }
@@ -386,9 +400,11 @@ export class SessionsController {
   ): Promise<{ id: string }> {
     const model = validateModelSelection(body.model);
     const mcpServers = validateMcpServers(body.mcpServers);
+    const watchWorkspace = validateWatchWorkspace(body.watchWorkspace);
     const options: RestoreSessionOptions = {
       ...(model !== undefined ? { model } : {}),
       ...(mcpServers !== undefined ? { mcpServers } : {}),
+      ...(watchWorkspace !== undefined ? { watchWorkspace } : {}),
     };
     return this.sessions.restore(id, options);
   }
@@ -474,9 +490,11 @@ export class SessionsController {
   ): Promise<{ id: string; checkpointId: string }> {
     const model = validateModelSelection(body.model);
     const mcpServers = validateMcpServers(body.mcpServers);
+    const watchWorkspace = validateWatchWorkspace(body.watchWorkspace);
     const options: RestoreSessionOptions = {
       ...(model !== undefined ? { model } : {}),
       ...(mcpServers !== undefined ? { mcpServers } : {}),
+      ...(watchWorkspace !== undefined ? { watchWorkspace } : {}),
     };
     return this.sessions.restoreCheckpoint(id, checkpointId, options);
   }
@@ -489,9 +507,11 @@ export class SessionsController {
   ): Promise<{ id: string; checkpointId: string }> {
     const model = validateModelSelection(body.model);
     const mcpServers = validateMcpServers(body.mcpServers);
+    const watchWorkspace = validateWatchWorkspace(body.watchWorkspace);
     const options: RestoreSessionOptions = {
       ...(model !== undefined ? { model } : {}),
       ...(mcpServers !== undefined ? { mcpServers } : {}),
+      ...(watchWorkspace !== undefined ? { watchWorkspace } : {}),
     };
     return this.sessions.forkCheckpoint(id, checkpointId, options);
   }

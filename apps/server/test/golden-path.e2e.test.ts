@@ -340,6 +340,59 @@ test('diff edit lifecycle streams over SSE and applies after REST approval', asy
   }
 });
 
+test('watchWorkspace streams external file changes over SSE', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'colorful-code-watch-sse-'));
+
+  try {
+    await boot();
+    assert.ok(app, 'app is initialized');
+    const fastify = app.getHttpAdapter().getInstance();
+    const controller = app.get(SessionsController);
+
+    const createRes = await fastify.inject({
+      method: 'POST',
+      url: '/sessions',
+      payload: { cwd: dir, workspaceRoots: [dir], watchWorkspace: true },
+    });
+    assert.equal(createRes.statusCode, 201, 'POST /sessions returns 201');
+    const { id } = jsonBody<{ id: string }>(createRes);
+    const seen: SessionEvent[] = [];
+    const subscription = controller.events(id).subscribe((message) => {
+      seen.push(message.data as SessionEvent);
+    });
+
+    async function until(
+      predicate: (event: SessionEvent) => boolean,
+    ): Promise<SessionEvent> {
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        const found = seen.find(predicate);
+        if (found) {
+          return found;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.fail('SSE stream did not emit the expected file event in time');
+    }
+
+    try {
+      const file = join(dir, 'outside.txt');
+      await writeFile(file, 'external', 'utf8');
+      const created = await until(
+        (event) => event.type === 'file_created' && event.path === file,
+      );
+      assert.equal(created.type, 'file_created');
+    } finally {
+      subscription.unsubscribe();
+      await fastify
+        .inject({ method: 'DELETE', url: `/sessions/${id}` })
+        .catch(() => undefined);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('rejects malformed create and control bodies with 400', async () => {
   await boot();
   assert.ok(app, 'app is initialized');
@@ -373,6 +426,9 @@ test('rejects malformed create and control bodies with 400', async () => {
   // (which would be less restrictive than the client asked for).
   const badMode = await postJson('/sessions', { permissionMode: 'readOnlyy' });
   assert.equal(badMode.statusCode, 400, 'misspelled permissionMode -> 400');
+
+  const badWatch = await postJson('/sessions', { watchWorkspace: 'yes' });
+  assert.equal(badWatch.statusCode, 400, 'non-boolean watchWorkspace -> 400');
 
   // A valid session for the control-body checks.
   const okRes = await postJson('/sessions', {});

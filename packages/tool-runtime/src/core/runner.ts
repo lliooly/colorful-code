@@ -17,6 +17,7 @@ import {
   type PermissionRuleUpdate,
 } from './permissions.js';
 import type { ToolRegistry } from './registry.js';
+import { runHooks } from './hooks.js';
 
 export type ToolUseRequest = {
   id: string;
@@ -136,6 +137,40 @@ export class ToolRunner {
       return errorResult(toolUse.id, message);
     }
 
+    const preHook = await runHooks(runtimeContext, {
+      event: 'preToolUse',
+      tool: tool as Tool,
+      toolUseId: toolUse.id,
+      input: parsedInput,
+    });
+    if (preHook.input) {
+      try {
+        parsedInput = tool.inputSchema.parse(preHook.input);
+      } catch (error) {
+        const message =
+          error instanceof SchemaValidationError
+            ? error.message
+            : 'Invalid hook-modified input';
+        return errorResult(toolUse.id, message);
+      }
+    }
+    if (preHook.action === 'deny') {
+      this.recordAudit(runtimeContext, toolUse, 'deny', {
+        type: 'hook',
+        reason: preHook.message ?? 'preToolUse hook denied the tool.',
+      });
+      return errorResult(
+        toolUse.id,
+        preHook.message ?? "Tool '" + tool.name + "' was denied by hook.",
+      );
+    }
+    if (preHook.action === 'ask') {
+      this.recordAudit(runtimeContext, toolUse, 'ask', {
+        type: 'hook',
+        reason: preHook.message ?? 'preToolUse hook requested approval.',
+      });
+    }
+
     const validation = await tool.validateInput?.(parsedInput, runtimeContext);
     if (validation && !validation.ok) {
       return errorResult(toolUse.id, validation.message);
@@ -200,37 +235,74 @@ export class ToolRunner {
         );
       }
       const source = toolInvocationSource(tool as Tool, parsedInput);
-      const response = await runtimeContext.requestApproval({
+      const approvalHook = await runHooks(runtimeContext, {
+        event: 'onApprovalRequired',
+        tool: tool as Tool,
         toolUseId: toolUse.id,
-        toolName: tool.name,
         input: parsedInput,
-        message:
-          merged.message ?? "Tool '" + tool.name + "' requires approval.",
-        ...(source ? { source } : {}),
-        ...(merged.suggestions ? { suggestions: merged.suggestions } : {}),
       });
-      if (response.behavior === 'deny') {
-        this.recordAudit(runtimeContext, toolUse, 'deny', merged.reason);
-        return errorResult(
-          toolUse.id,
-          response.message ?? "Tool '" + tool.name + "' was not approved.",
-        );
-      }
-      this.recordAudit(runtimeContext, toolUse, 'allow', merged.reason);
-      if (response.updatedInput !== undefined) {
-        // An approval may rewrite the tool input (e.g. an interactive client
-        // edits it before approving). That rewrite never passed the initial
-        // schema parse, so re-validate it here against the tool schema: an
-        // object-shaped but malformed input (missing or wrong-typed fields)
-        // must not reach `tool.call`.
+      if (approvalHook.input) {
         try {
-          parsedInput = tool.inputSchema.parse(response.updatedInput);
+          parsedInput = tool.inputSchema.parse(approvalHook.input);
         } catch (error) {
           const message =
             error instanceof SchemaValidationError
               ? error.message
-              : 'Invalid updated input';
+              : 'Invalid hook-modified input';
           return errorResult(toolUse.id, message);
+        }
+      }
+      if (approvalHook.action === 'deny') {
+        this.recordAudit(runtimeContext, toolUse, 'deny', {
+          type: 'hook',
+          reason:
+            approvalHook.message ?? 'onApprovalRequired hook denied the tool.',
+        });
+        return errorResult(
+          toolUse.id,
+          approvalHook.message ?? "Tool '" + tool.name + "' was denied by hook.",
+        );
+      }
+      if (approvalHook.ran && approvalHook.action === 'allow') {
+        this.recordAudit(runtimeContext, toolUse, 'allow', {
+          type: 'hook',
+          reason:
+            approvalHook.message ??
+            'onApprovalRequired hook approved the tool.',
+        });
+      } else {
+        const response = await runtimeContext.requestApproval({
+          toolUseId: toolUse.id,
+          toolName: tool.name,
+          input: parsedInput,
+          message:
+            merged.message ?? "Tool '" + tool.name + "' requires approval.",
+          ...(source ? { source } : {}),
+          ...(merged.suggestions ? { suggestions: merged.suggestions } : {}),
+        });
+        if (response.behavior === 'deny') {
+          this.recordAudit(runtimeContext, toolUse, 'deny', merged.reason);
+          return errorResult(
+            toolUse.id,
+            response.message ?? "Tool '" + tool.name + "' was not approved.",
+          );
+        }
+        this.recordAudit(runtimeContext, toolUse, 'allow', merged.reason);
+        if (response.updatedInput !== undefined) {
+          // An approval may rewrite the tool input (e.g. an interactive client
+          // edits it before approving). That rewrite never passed the initial
+          // schema parse, so re-validate it here against the tool schema: an
+          // object-shaped but malformed input (missing or wrong-typed fields)
+          // must not reach `tool.call`.
+          try {
+            parsedInput = tool.inputSchema.parse(response.updatedInput);
+          } catch (error) {
+            const message =
+              error instanceof SchemaValidationError
+                ? error.message
+                : 'Invalid updated input';
+            return errorResult(toolUse.id, message);
+          }
         }
       }
     } else {
@@ -239,6 +311,13 @@ export class ToolRunner {
 
     try {
       const result = await tool.call(parsedInput, runtimeContext);
+      await runHooks(runtimeContext, {
+        event: 'postToolUse',
+        tool: tool as Tool,
+        toolUseId: toolUse.id,
+        input: parsedInput,
+        result: result.data,
+      });
       return tool.mapResult(result.data, toolUse.id);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

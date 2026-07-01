@@ -1,5 +1,6 @@
 import type { Schema, ToolInputJSONSchema } from './schema.js';
 import type { McpManager } from '../mcp/types.js';
+import type { HookAuditEntry, HookConfig, HookFailure } from './hooks.js';
 import type {
   PermissionAuditEntry,
   PermissionContext,
@@ -45,6 +46,7 @@ export type FileReadSnapshot = {
   content: string;
   mtimeMs: number;
   complete: boolean;
+  stale?: boolean;
 };
 
 export type PatchLineKind = 'context' | 'added' | 'removed';
@@ -205,6 +207,10 @@ export type RuntimeContext = {
     input: JsonObject,
     context: RuntimeContext,
   ) => Promise<PermissionResult> | PermissionResult;
+  hookConfig?: HookConfig;
+  hookAudit?: HookAuditEntry[];
+  emitHookEvent?: (entry: HookAuditEntry, context: RuntimeContext) => void;
+  emitHookFailure?: (failure: HookFailure, context: RuntimeContext) => void;
   webFetchProvider?: (url: string) => Promise<string>;
   webSearchProvider?: (query: string) => Promise<string[]>;
   webBrowserProvider?: (url: string) => Promise<string>;

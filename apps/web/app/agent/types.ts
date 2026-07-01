@@ -156,10 +156,37 @@ export type McpServerStatus = {
   error?: string;
 };
 
+export type HookFailurePolicy = 'fail-open' | 'fail-closed';
+
+export type HookAuditEntry = {
+  hookId: string;
+  event: string;
+  action: string;
+  at: number;
+  message?: string;
+  durationMs?: number;
+  error?: string;
+};
+
 // The full SessionEvent union streamed over SSE. Each event's SSE `event:` name
 // equals its `type`; `data` is the JSON-encoded event below.
 export type SessionEvent =
   | { type: 'mcp_status'; servers: McpServerStatus[] }
+  | { type: 'hook_event'; runId: string; entry: HookAuditEntry }
+  | {
+      type: 'hook_failure';
+      runId: string;
+      hookId: string;
+      hookEvent: string;
+      message: string;
+      policy: HookFailurePolicy;
+    }
+  | {
+      type: 'file_created' | 'file_changed' | 'file_deleted';
+      runId: string;
+      path: string;
+      at: number;
+    }
   | { type: 'run_status'; status: RunStatus; runId: string }
   | { type: 'message_delta'; runId: string; text: string }
   | { type: 'message'; runId: string; role: 'assistant'; content: string }
@@ -250,6 +277,11 @@ export type SessionEventType = SessionEvent['type'];
 // `onmessage` never fires because the server names every event).
 export const SESSION_EVENT_TYPES: readonly SessionEventType[] = [
   'mcp_status',
+  'hook_event',
+  'hook_failure',
+  'file_created',
+  'file_changed',
+  'file_deleted',
   'run_status',
   'message_delta',
   'message',
