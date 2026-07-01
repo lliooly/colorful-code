@@ -33,6 +33,10 @@ import {
   validateMcpServersConfig,
   type McpServersConfig,
 } from '../config/mcp-config';
+import {
+  validateLspServersConfig,
+  type LspServersConfig,
+} from '../config/lsp-config';
 
 // ---- Request body shapes (validated by hand to avoid a validation dep) ----
 
@@ -45,12 +49,14 @@ type CreateSessionBody = {
   cwd?: unknown;
   model?: unknown;
   mcpServers?: unknown;
+  lspServers?: unknown;
   watchWorkspace?: unknown;
 };
 
 type RestoreSessionBody = {
   model?: unknown;
   mcpServers?: unknown;
+  lspServers?: unknown;
   watchWorkspace?: unknown;
 };
 
@@ -258,6 +264,18 @@ function validateMcpServers(value: unknown): McpServersConfig | undefined {
   }
 }
 
+function validateLspServers(value: unknown): LspServersConfig | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  try {
+    return validateLspServersConfig(value);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new BadRequestException(message);
+  }
+}
+
 function validateWatchWorkspace(value: unknown): boolean | undefined {
   if (value === undefined) {
     return undefined;
@@ -376,6 +394,7 @@ export class SessionsController {
     const rules = validateRules(body.rules);
     const model = validateModelSelection(body.model);
     const mcpServers = validateMcpServers(body.mcpServers);
+    const lspServers = validateLspServers(body.lspServers);
     const watchWorkspace = validateWatchWorkspace(body.watchWorkspace);
     const options: CreateSessionOptions = {
       ...(permissionMode !== undefined ? { permissionMode } : {}),
@@ -384,6 +403,7 @@ export class SessionsController {
       ...(typeof body.cwd === 'string' ? { cwd: body.cwd } : {}),
       ...(model !== undefined ? { model } : {}),
       ...(mcpServers !== undefined ? { mcpServers } : {}),
+      ...(lspServers !== undefined ? { lspServers } : {}),
       ...(watchWorkspace !== undefined ? { watchWorkspace } : {}),
     };
     return await this.sessions.create(options);
@@ -400,10 +420,12 @@ export class SessionsController {
   ): Promise<{ id: string }> {
     const model = validateModelSelection(body.model);
     const mcpServers = validateMcpServers(body.mcpServers);
+    const lspServers = validateLspServers(body.lspServers);
     const watchWorkspace = validateWatchWorkspace(body.watchWorkspace);
     const options: RestoreSessionOptions = {
       ...(model !== undefined ? { model } : {}),
       ...(mcpServers !== undefined ? { mcpServers } : {}),
+      ...(lspServers !== undefined ? { lspServers } : {}),
       ...(watchWorkspace !== undefined ? { watchWorkspace } : {}),
     };
     return this.sessions.restore(id, options);
@@ -490,10 +512,12 @@ export class SessionsController {
   ): Promise<{ id: string; checkpointId: string }> {
     const model = validateModelSelection(body.model);
     const mcpServers = validateMcpServers(body.mcpServers);
+    const lspServers = validateLspServers(body.lspServers);
     const watchWorkspace = validateWatchWorkspace(body.watchWorkspace);
     const options: RestoreSessionOptions = {
       ...(model !== undefined ? { model } : {}),
       ...(mcpServers !== undefined ? { mcpServers } : {}),
+      ...(lspServers !== undefined ? { lspServers } : {}),
       ...(watchWorkspace !== undefined ? { watchWorkspace } : {}),
     };
     return this.sessions.restoreCheckpoint(id, checkpointId, options);
@@ -507,10 +531,12 @@ export class SessionsController {
   ): Promise<{ id: string; checkpointId: string }> {
     const model = validateModelSelection(body.model);
     const mcpServers = validateMcpServers(body.mcpServers);
+    const lspServers = validateLspServers(body.lspServers);
     const watchWorkspace = validateWatchWorkspace(body.watchWorkspace);
     const options: RestoreSessionOptions = {
       ...(model !== undefined ? { model } : {}),
       ...(mcpServers !== undefined ? { mcpServers } : {}),
+      ...(lspServers !== undefined ? { lspServers } : {}),
       ...(watchWorkspace !== undefined ? { watchWorkspace } : {}),
     };
     return this.sessions.forkCheckpoint(id, checkpointId, options);

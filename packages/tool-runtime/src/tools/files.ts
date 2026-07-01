@@ -401,6 +401,7 @@ async function applyProposal(
       mtimeMs: stats.mtimeMs,
       complete: true,
     });
+    void context.lspManager?.didChange(file.path, file.after).catch(() => {});
   }
 }
 
@@ -480,6 +481,7 @@ export const WriteTool = buildTool<WriteInput, WriteOutput>({
       mtimeMs: stats.mtimeMs,
       complete: true,
     });
+    void context.lspManager?.didChange(filePath, input.content).catch(() => {});
     return {
       data: {
         path: filePath,
@@ -551,6 +553,7 @@ export const EditTool = buildTool<EditInput, EditOutput>({
       mtimeMs: updatedStats.mtimeMs,
       complete: true,
     });
+    void context.lspManager?.didChange(filePath, updated).catch(() => {});
     return {
       data: {
         path: filePath,

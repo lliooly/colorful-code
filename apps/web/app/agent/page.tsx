@@ -28,6 +28,7 @@ import {
   type ConversationEntry,
   type MessageContent,
   type JsonObject,
+  type LspServerStatus,
   type McpServerStatus,
   type ModelConfig,
   type ModelProtocol,
@@ -201,6 +202,21 @@ function lineTone(
   }
 }
 
+function formatToolSourceLabel(
+  source: ToolInvocationSource | undefined,
+): string | null {
+  if (!source) {
+    return null;
+  }
+  if (source.type === 'mcp') {
+    return `mcp:${source.server}`;
+  }
+  if (source.type === 'lsp') {
+    return 'lsp';
+  }
+  return null;
+}
+
 // ---- Page ----------------------------------------------------------------
 
 export default function AgentDebugPage(): ReactNode {
@@ -220,6 +236,7 @@ export default function AgentDebugPage(): ReactNode {
   const [runStatus, setRunStatus] = useState<RunStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mcpServers, setMcpServers] = useState<McpServerStatus[]>([]);
+  const [lspServers, setLspServers] = useState<LspServerStatus[]>([]);
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
   const [currentCheckpointId, setCurrentCheckpointId] = useState<string | null>(
     null,
@@ -285,6 +302,7 @@ export default function AgentDebugPage(): ReactNode {
       setSelectedPatchPath(null);
       setRunStatus(null);
       setMcpServers([]);
+      setLspServers([]);
       seqRef.current = 0;
     },
     [],
@@ -313,6 +331,9 @@ export default function AgentDebugPage(): ReactNode {
       switch (event.type) {
         case 'mcp_status':
           setMcpServers(event.servers);
+          break;
+        case 'lsp_status':
+          setLspServers(event.servers);
           break;
         case 'run_status':
           setRunStatus(event.status);
@@ -922,6 +943,59 @@ export default function AgentDebugPage(): ReactNode {
           </section>
         ) : null}
 
+        {/* LSP status */}
+        {hasSession ? (
+          <section className={panelClass}>
+            <div className="flex items-center justify-between gap-2 pb-3">
+              <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                LSP servers
+              </h2>
+              <span className="text-xs text-muted-foreground">
+                {lspServers.length} configured
+              </span>
+            </div>
+            {lspServers.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No LSP servers for this session.
+              </p>
+            ) : (
+              <div className="grid gap-3 md:grid-cols-2">
+                {lspServers.map((server) => (
+                  <div
+                    key={server.name}
+                    className="rounded-xl border border-border/70 bg-background/70 px-3 py-2"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="font-mono text-sm text-foreground">
+                          {server.name}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {server.language} · {server.fileExtensions.join(', ')}
+                        </p>
+                      </div>
+                      <span
+                        className={
+                          server.status === 'connected'
+                            ? 'rounded-full border border-primary/40 px-2 py-0.5 text-xs text-foreground'
+                            : 'rounded-full border border-destructive/40 px-2 py-0.5 text-xs text-destructive'
+                        }
+                      >
+                        {server.status}
+                      </span>
+                    </div>
+                    {server.error ? (
+                      <p className="mt-2 text-xs text-destructive">
+                        {server.error}
+                      </p>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        ) : null}
+
         {/* Checkpoints */}
         {hasSession ? (
           <section className={panelClass}>
@@ -1365,9 +1439,9 @@ export default function AgentDebugPage(): ReactNode {
                     >
                       <p className="mb-1 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                         tool · {item.name}
-                        {item.source?.type === 'mcp' ? (
+                        {formatToolSourceLabel(item.source) ? (
                           <span className="text-foreground/60">
-                            mcp:{item.source.server}
+                            {formatToolSourceLabel(item.source)}
                           </span>
                         ) : null}
                         {item.result ? (
@@ -1456,9 +1530,9 @@ export default function AgentDebugPage(): ReactNode {
             <h2 className="mt-2 text-lg font-semibold tracking-tight">
               {approval.name}
             </h2>
-            {approval.source?.type === 'mcp' ? (
+            {formatToolSourceLabel(approval.source) ? (
               <p className="mt-1 font-mono text-xs text-muted-foreground">
-                mcp:{approval.source.server}
+                {formatToolSourceLabel(approval.source)}
               </p>
             ) : null}
             <p className="mt-2 text-sm text-muted-foreground">

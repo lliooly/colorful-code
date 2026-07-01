@@ -78,6 +78,9 @@ async function handleEvent(
   },
 ): Promise<void> {
   switch (event.type) {
+    case 'lsp_status':
+      process.stderr.write(formatLspStatus(event) + '\n');
+      return;
     case 'message_delta':
       process.stdout.write(String(event.text ?? ''));
       return;
@@ -211,6 +214,13 @@ function formatToolLabel(event: SessionEvent): string {
   ) {
     return `mcp:${(source as { server: string }).server} ${name}`;
   }
+  if (
+    source &&
+    typeof source === 'object' &&
+    (source as { type?: unknown }).type === 'lsp'
+  ) {
+    return `lsp ${name}`;
+  }
   return name;
 }
 
@@ -226,5 +236,41 @@ function formatToolResultLabel(event: SessionEvent): string {
       event.toolUseId ?? 'tool',
     )}`;
   }
+  if (
+    source &&
+    typeof source === 'object' &&
+    (source as { type?: unknown }).type === 'lsp'
+  ) {
+    return `lsp ${String(event.toolUseId ?? 'tool')}`;
+  }
   return String(event.toolUseId ?? 'tool');
+}
+
+function formatLspStatus(event: SessionEvent): string {
+  const servers = Array.isArray(event.servers) ? event.servers : [];
+  if (servers.length === 0) {
+    return 'lsp: no servers configured';
+  }
+  const summary = servers
+    .map((server) => {
+      if (!server || typeof server !== 'object') {
+        return 'unknown';
+      }
+      const value = server as {
+        name?: unknown;
+        language?: unknown;
+        status?: unknown;
+        error?: unknown;
+      };
+      return [
+        String(value.name ?? 'unknown'),
+        String(value.language ?? 'unknown'),
+        String(value.status ?? 'unknown'),
+        typeof value.error === 'string' ? value.error : undefined,
+      ]
+        .filter(Boolean)
+        .join(':');
+    })
+    .join(', ');
+  return `lsp: ${summary}`;
 }

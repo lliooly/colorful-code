@@ -10,7 +10,9 @@ import { dirname, join, resolve } from 'node:path';
 import { Observable } from 'rxjs';
 import {
   createBuiltinTools,
+  createLspRuntimeTools,
   createMcpRuntimeTools,
+  SdkLspManager,
   SdkMcpManager,
   Session,
   buildMcpToolName,
@@ -21,12 +23,15 @@ import {
   type ConversationEntry,
   type McpManager,
   type McpServerConnection,
+  type LspManager,
+  type LspServerConnection,
   type PermissionAuditEntry,
   type PermissionContext,
   type PermissionMode,
   type PermissionRule,
   type SessionEvent,
   type McpServerStatus,
+  type LspServerStatus,
   type SessionSnapshot,
   type HookAuditEntry,
 } from '@colorful-code/tool-runtime';
@@ -50,6 +55,12 @@ import {
   mergeMcpServers,
   type McpServersConfig,
 } from '../config/mcp-config';
+import {
+  loadLspServersFromEnv,
+  loadProjectLspServers,
+  mergeLspServers,
+  type LspServersConfig,
+} from '../config/lsp-config';
 
 // Options accepted by `POST /sessions` to seed a session's PermissionContext and
 // (optionally) choose the model. `model` is the validated per-request selection;
@@ -62,12 +73,14 @@ export type CreateSessionOptions = {
   cwd?: string;
   model?: ModelSelection;
   mcpServers?: McpServersConfig;
+  lspServers?: LspServersConfig;
   watchWorkspace?: boolean;
 };
 
 export type RestoreSessionOptions = {
   model?: ModelSelection;
   mcpServers?: McpServersConfig;
+  lspServers?: LspServersConfig;
   watchWorkspace?: boolean;
 };
 
@@ -82,6 +95,7 @@ type SessionEntry = {
   listeners: Set<(event: SessionEvent) => void>;
   unsubscribe: () => void;
   mcpManager?: McpManager;
+  lspManager?: LspManager;
   currentCheckpointId?: string;
   // Permission-audit entries observed since the last persistence flush. Drained
   // into the append-only audit table when a run reaches a terminal status (and
@@ -92,7 +106,9 @@ type SessionEntry = {
 type PreparedSession = {
   session: Session;
   mcpManager?: McpManager;
+  lspManager?: LspManager;
   mcpConnections: McpServerConnection[];
+  lspConnections: LspServerConnection[];
 };
 
 const PROJECT_MEMORY_FILE = 'CLAUDE.md';
@@ -311,6 +327,24 @@ export class SessionsService implements OnModuleDestroy {
     };
   }
 
+  private toLspServerStatus(connection: LspServerConnection): LspServerStatus {
+    if (connection.type === 'failed') {
+      return {
+        name: connection.name,
+        language: connection.language,
+        fileExtensions: [...connection.config.fileExtensions],
+        status: 'failed',
+        error: connection.error,
+      };
+    }
+    return {
+      name: connection.name,
+      language: connection.language,
+      fileExtensions: [...connection.config.fileExtensions],
+      status: 'connected',
+    };
+  }
+
   private resolveMcpServers(
     cwd: string | undefined,
     requestMcpServers: McpServersConfig | undefined,
@@ -327,31 +361,69 @@ export class SessionsService implements OnModuleDestroy {
     }
   }
 
-  private async buildToolsAndMcp(mcpServers: McpServersConfig): Promise<{
+  private resolveLspServers(
+    cwd: string | undefined,
+    requestLspServers: LspServersConfig | undefined,
+  ): LspServersConfig {
+    try {
+      return mergeLspServers(
+        loadProjectLspServers(cwd),
+        loadLspServersFromEnv(process.env),
+        requestLspServers,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new BadRequestException(message);
+    }
+  }
+
+  private async buildToolsMcpAndLsp(
+    cwd: string | undefined,
+    mcpServers: McpServersConfig,
+    lspServers: LspServersConfig,
+  ): Promise<{
     tools: ReturnType<typeof createBuiltinTools>;
     mcpManager?: McpManager;
     mcpConnections: McpServerConnection[];
+    lspManager?: LspManager;
+    lspConnections: LspServerConnection[];
   }> {
+    let tools = createBuiltinTools();
+    let mcpManager: McpManager | undefined;
+    let lspManager: LspManager | undefined;
+    let mcpConnections: McpServerConnection[] = [];
+    let lspConnections: LspServerConnection[] = [];
+
     if (Object.keys(mcpServers).length === 0) {
-      return { tools: createBuiltinTools(), mcpConnections: [] };
+      mcpConnections = [];
+    } else {
+      const manager = new SdkMcpManager(mcpServers);
+      const mcpTools = await createMcpRuntimeTools(manager);
+      const mcpBuiltinNames = new Set([
+        'MCPTool',
+        'McpAuth',
+        'ListMcpResourcesTool',
+        'ReadMcpResourceTool',
+      ]);
+      tools = tools.filter((tool) => !mcpBuiltinNames.has(tool.name));
+      mcpConnections = await manager.connectAll();
+      tools = [...tools, ...mcpTools];
+      mcpManager = manager;
     }
 
-    const manager = new SdkMcpManager(mcpServers);
-    const mcpTools = await createMcpRuntimeTools(manager);
-    const mcpBuiltinNames = new Set([
-      'MCPTool',
-      'McpAuth',
-      'ListMcpResourcesTool',
-      'ReadMcpResourceTool',
-    ]);
-    const builtinTools = createBuiltinTools().filter(
-      (tool) => !mcpBuiltinNames.has(tool.name),
-    );
-    const mcpConnections = await manager.connectAll();
+    if (Object.keys(lspServers).length > 0) {
+      const manager = new SdkLspManager(lspServers);
+      lspConnections = await manager.initialize(cwd ?? process.cwd());
+      tools = [...tools, ...(await createLspRuntimeTools())];
+      lspManager = manager;
+    }
+
     return {
-      tools: [...builtinTools, ...mcpTools],
-      mcpManager: manager,
+      tools,
+      ...(mcpManager ? { mcpManager } : {}),
       mcpConnections,
+      ...(lspManager ? { lspManager } : {}),
+      lspConnections,
     };
   }
 
@@ -389,6 +461,8 @@ export class SessionsService implements OnModuleDestroy {
     options: {
       mcpManager?: McpManager;
       mcpConnections?: McpServerConnection[];
+      lspManager?: LspManager;
+      lspConnections?: LspServerConnection[];
       currentCheckpointId?: string;
     } = {},
   ): { id: string } {
@@ -405,6 +479,7 @@ export class SessionsService implements OnModuleDestroy {
         ? { currentCheckpointId: options.currentCheckpointId }
         : {}),
       ...(options.mcpManager ? { mcpManager: options.mcpManager } : {}),
+      ...(options.lspManager ? { lspManager: options.lspManager } : {}),
     };
 
     entry.unsubscribe = session.subscribe((event) => {
@@ -436,6 +511,14 @@ export class SessionsService implements OnModuleDestroy {
         ),
       });
     }
+    if (options.lspConnections && options.lspConnections.length > 0) {
+      log.push({
+        type: 'lsp_status',
+        servers: options.lspConnections.map((connection) =>
+          this.toLspServerStatus(connection),
+        ),
+      });
+    }
 
     this.entries.set(session.id, entry);
     return { id: session.id };
@@ -446,6 +529,7 @@ export class SessionsService implements OnModuleDestroy {
   // injected factory; tools are the built-ins.
   async create(options: CreateSessionOptions = {}): Promise<{ id: string }> {
     const mcpServers = this.resolveMcpServers(options.cwd, options.mcpServers);
+    const lspServers = this.resolveLspServers(options.cwd, options.lspServers);
     const permissionContext = this.buildPermissionContext(options, mcpServers);
 
     // Mint the id up front so the factory can key on it if needed.
@@ -455,8 +539,8 @@ export class SessionsService implements OnModuleDestroy {
     // incomplete custom config) fails the create request with a 400 rather than
     // surfacing mid-turn. The apiKey lives only inside the built client.
     const model = this.buildModelClient(id, options.model);
-    const { tools, mcpManager, mcpConnections } =
-      await this.buildToolsAndMcp(mcpServers);
+    const { tools, mcpManager, mcpConnections, lspManager, lspConnections } =
+      await this.buildToolsMcpAndLsp(options.cwd, mcpServers, lspServers);
 
     return this.register(
       new Session({
@@ -468,9 +552,15 @@ export class SessionsService implements OnModuleDestroy {
         ...(options.cwd ? { cwd: options.cwd } : {}),
         permissionContext,
         ...(mcpManager ? { mcpManager } : {}),
+        ...(lspManager ? { lspManager } : {}),
         ...(options.watchWorkspace ? { watchWorkspace: true } : {}),
       }),
-      { ...(mcpManager ? { mcpManager } : {}), mcpConnections },
+      {
+        ...(mcpManager ? { mcpManager } : {}),
+        mcpConnections,
+        ...(lspManager ? { lspManager } : {}),
+        lspConnections,
+      },
     );
   }
 
@@ -492,6 +582,7 @@ export class SessionsService implements OnModuleDestroy {
     }
 
     const mcpServers = this.resolveMcpServers(snapshot.cwd, options.mcpServers);
+    const lspServers = this.resolveLspServers(snapshot.cwd, options.lspServers);
     const permissionContext = this.buildRestoredPermissionContext(
       snapshot,
       mcpServers,
@@ -501,8 +592,8 @@ export class SessionsService implements OnModuleDestroy {
       permissionMode: snapshot.permissionMode,
       workspaceRoots: [...snapshot.workspaceRoots],
     };
-    const { tools, mcpManager, mcpConnections } =
-      await this.buildToolsAndMcp(mcpServers);
+    const { tools, mcpManager, mcpConnections, lspManager, lspConnections } =
+      await this.buildToolsMcpAndLsp(snapshot.cwd, mcpServers, lspServers);
     return this.register(
       Session.restore(snapshot, {
         model: this.buildModelClient(id, options.model),
@@ -513,9 +604,15 @@ export class SessionsService implements OnModuleDestroy {
         ),
         compaction: buildCompactionConfig(options.model),
         ...(mcpManager ? { mcpManager } : {}),
+        ...(lspManager ? { lspManager } : {}),
         ...(options.watchWorkspace ? { watchWorkspace: true } : {}),
       }),
-      { ...(mcpManager ? { mcpManager } : {}), mcpConnections },
+      {
+        ...(mcpManager ? { mcpManager } : {}),
+        mcpConnections,
+        ...(lspManager ? { lspManager } : {}),
+        lspConnections,
+      },
     );
   }
 
@@ -597,6 +694,7 @@ export class SessionsService implements OnModuleDestroy {
     options: RestoreSessionOptions,
   ): Promise<PreparedSession> {
     const mcpServers = this.resolveMcpServers(snapshot.cwd, options.mcpServers);
+    const lspServers = this.resolveLspServers(snapshot.cwd, options.lspServers);
     const permissionContext = this.buildRestoredPermissionContext(
       snapshot,
       mcpServers,
@@ -606,8 +704,8 @@ export class SessionsService implements OnModuleDestroy {
       permissionMode: snapshot.permissionMode,
       workspaceRoots: [...snapshot.workspaceRoots],
     };
-    const { tools, mcpManager, mcpConnections } =
-      await this.buildToolsAndMcp(mcpServers);
+    const { tools, mcpManager, mcpConnections, lspManager, lspConnections } =
+      await this.buildToolsMcpAndLsp(snapshot.cwd, mcpServers, lspServers);
     return {
       session: Session.restore(snapshot, {
         model: this.buildModelClient(modelSessionId, options.model),
@@ -618,10 +716,13 @@ export class SessionsService implements OnModuleDestroy {
         ),
         compaction: buildCompactionConfig(options.model),
         ...(mcpManager ? { mcpManager } : {}),
+        ...(lspManager ? { lspManager } : {}),
         ...(options.watchWorkspace ? { watchWorkspace: true } : {}),
       }),
       ...(mcpManager ? { mcpManager } : {}),
+      ...(lspManager ? { lspManager } : {}),
       mcpConnections,
+      lspConnections,
     };
   }
 
@@ -635,6 +736,8 @@ export class SessionsService implements OnModuleDestroy {
         ...registerOptions,
         ...(prepared.mcpManager ? { mcpManager: prepared.mcpManager } : {}),
         mcpConnections: prepared.mcpConnections,
+        ...(prepared.lspManager ? { lspManager: prepared.lspManager } : {}),
+        lspConnections: prepared.lspConnections,
       },
     );
   }
@@ -800,6 +903,7 @@ export class SessionsService implements OnModuleDestroy {
     entry.listeners.clear();
     this.entries.delete(id);
     await entry.mcpManager?.close?.();
+    await entry.lspManager?.close?.();
     return true;
   }
 
@@ -845,6 +949,7 @@ export class SessionsService implements OnModuleDestroy {
     entry.listeners.clear();
     this.entries.delete(id);
     await entry.mcpManager?.close?.();
+    await entry.lspManager?.close?.();
     return true;
   }
 

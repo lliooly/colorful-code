@@ -1,5 +1,6 @@
 import type { Schema, ToolInputJSONSchema } from './schema.js';
 import type { McpManager } from '../mcp/types.js';
+import type { LspManager } from '../lsp/types.js';
 import type { HookAuditEntry, HookConfig, HookFailure } from './hooks.js';
 import type {
   PermissionAuditEntry,
@@ -179,6 +180,7 @@ export type RuntimeContext = {
   teams?: Map<string, { id: string; name: string; members: string[] }>;
   mcpResources?: Map<string, McpResource>;
   mcpManager?: McpManager;
+  lspManager?: LspManager;
   cronJobs?: Map<string, CronJob>;
   config?: Map<string, unknown>;
   skills?: Map<string, string>;
@@ -371,6 +373,9 @@ export function toolInvocationSource(
   }
   if (tool.source === 'mcp') {
     return { type: 'mcp', server: tool.name };
+  }
+  if (tool.source === 'lsp') {
+    return { type: 'lsp' };
   }
   return undefined;
 }

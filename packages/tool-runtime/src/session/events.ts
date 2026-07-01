@@ -29,12 +29,21 @@ export type McpServerStatus = {
   error?: string;
 };
 
+export type LspServerStatus = {
+  name: string;
+  language: string;
+  fileExtensions: string[];
+  status: 'connected' | 'failed';
+  error?: string;
+};
+
 // Output events flow server -> client over the session's event stream. Every
 // event carries the `runId` of the turn that produced it so a client can route
 // deltas to the right in-flight run. `approval_required` is the one event that
 // awaits a correlated control response (`approval_response`) keyed by `requestId`.
 export type SessionEvent =
   | { type: 'mcp_status'; servers: McpServerStatus[] }
+  | { type: 'lsp_status'; servers: LspServerStatus[] }
   | {
       type: 'hook_event';
       runId: string;

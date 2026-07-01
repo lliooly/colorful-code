@@ -19,6 +19,7 @@ import type {
   PermissionMode,
 } from '../core/permissions.js';
 import type { McpManager } from '../mcp/types.js';
+import type { LspManager } from '../lsp/types.js';
 import type { CompactionConfig } from './compaction.js';
 import type { ControlMessage } from './control.js';
 import { contentToText } from './content.js';
@@ -55,6 +56,7 @@ export type SessionDeps = {
   // compaction.
   compaction?: CompactionConfig;
   mcpManager?: McpManager;
+  lspManager?: LspManager;
   hooks?: HookConfig;
   watchWorkspace?: boolean;
   // Maximum nested Agent depth. The default allows a parent session to run one
@@ -175,6 +177,7 @@ export class Session {
         this.emitEditConflict(proposal, reason),
       applyEditProposal,
       ...(deps.mcpManager ? { mcpManager: deps.mcpManager } : {}),
+      ...(deps.lspManager ? { lspManager: deps.lspManager } : {}),
       subagentDepth: 0,
       maxSubagentDepth: deps.maxSubagentDepth ?? 1,
       runSubagent: (request, context) => this.runSubagent(request, context),
@@ -390,6 +393,7 @@ export class Session {
       runSubagent: (nestedRequest, nestedContext) =>
         this.runSubagent(nestedRequest, nestedContext),
       mcpManager: parentContext.mcpManager,
+      lspManager: parentContext.lspManager,
       mcpToolProvider: parentContext.mcpToolProvider,
       webFetchProvider: parentContext.webFetchProvider,
       webSearchProvider: parentContext.webSearchProvider,
@@ -566,6 +570,7 @@ export class Session {
       systemPrompt?: string;
       compaction?: CompactionConfig;
       mcpManager?: McpManager;
+      lspManager?: LspManager;
       hooks?: HookConfig;
       watchWorkspace?: boolean;
     },
@@ -580,6 +585,7 @@ export class Session {
         : {}),
       ...(deps.compaction !== undefined ? { compaction: deps.compaction } : {}),
       ...(deps.mcpManager !== undefined ? { mcpManager: deps.mcpManager } : {}),
+      ...(deps.lspManager !== undefined ? { lspManager: deps.lspManager } : {}),
       ...(deps.hooks !== undefined ? { hooks: deps.hooks } : {}),
       ...(deps.watchWorkspace !== undefined
         ? { watchWorkspace: deps.watchWorkspace }

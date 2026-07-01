@@ -156,6 +156,14 @@ export type McpServerStatus = {
   error?: string;
 };
 
+export type LspServerStatus = {
+  name: string;
+  language: string;
+  fileExtensions: string[];
+  status: 'connected' | 'failed';
+  error?: string;
+};
+
 export type HookFailurePolicy = 'fail-open' | 'fail-closed';
 
 export type HookAuditEntry = {
@@ -172,6 +180,7 @@ export type HookAuditEntry = {
 // equals its `type`; `data` is the JSON-encoded event below.
 export type SessionEvent =
   | { type: 'mcp_status'; servers: McpServerStatus[] }
+  | { type: 'lsp_status'; servers: LspServerStatus[] }
   | { type: 'hook_event'; runId: string; entry: HookAuditEntry }
   | {
       type: 'hook_failure';
@@ -277,6 +286,7 @@ export type SessionEventType = SessionEvent['type'];
 // `onmessage` never fires because the server names every event).
 export const SESSION_EVENT_TYPES: readonly SessionEventType[] = [
   'mcp_status',
+  'lsp_status',
   'hook_event',
   'hook_failure',
   'file_created',
