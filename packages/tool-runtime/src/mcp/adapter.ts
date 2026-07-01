@@ -75,6 +75,7 @@ export function createToolFromMcpMetadata(
   return buildTool({
     name: buildMcpToolName(metadata.server, metadata.name),
     source: 'mcp',
+    mcp: { server: metadata.server, tool: metadata.name },
     ...(metadata.description ? { description: metadata.description } : {}),
     ...(title ? { searchHint: title } : {}),
     inputSchema: passthroughObjectSchema(),

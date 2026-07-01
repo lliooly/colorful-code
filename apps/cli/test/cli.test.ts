@@ -1,9 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import {
-  buildCreateSessionBody,
-  parseCliArgs
-} from '../src/args';
+import { buildCreateSessionBody, parseCliArgs } from '../src/args';
 import { parseSseChunk } from '../src/sse';
 
 test('parseCliArgs accepts cwd, prompt, and a BYO provider key', () => {
@@ -18,9 +15,9 @@ test('parseCliArgs accepts cwd, prompt, and a BYO provider key', () => {
       '--protocol',
       'openai',
       '--model',
-      'gpt-test'
+      'gpt-test',
     ],
-    {}
+    {},
   );
 
   assert.deepEqual(options, {
@@ -29,7 +26,7 @@ test('parseCliArgs accepts cwd, prompt, and a BYO provider key', () => {
     cwd: '/tmp/project',
     prompt: 'list files',
     protocol: 'openai',
-    model: 'gpt-test'
+    model: 'gpt-test',
   });
 });
 
@@ -40,7 +37,7 @@ test('buildCreateSessionBody sends API keys through the custom model path', () =
     cwd: '/tmp/project',
     prompt: 'hello',
     protocol: 'anthropic',
-    model: 'claude-test'
+    model: 'claude-test',
   });
 
   assert.deepEqual(body, {
@@ -50,8 +47,43 @@ test('buildCreateSessionBody sends API keys through the custom model path', () =
       preset: 'custom',
       apiKey: 'sk-test',
       protocol: 'anthropic',
-      model: 'claude-test'
-    }
+      model: 'claude-test',
+    },
+  });
+});
+
+test('parseCliArgs accepts an MCP config path', () => {
+  const options = parseCliArgs(
+    ['--cwd', '/tmp/project', '--mcp-config', '/tmp/mcp.json', 'hello'],
+    {},
+  );
+
+  assert.equal(options.mcpConfigPath, '/tmp/mcp.json');
+  assert.equal(options.prompt, 'hello');
+});
+
+test('buildCreateSessionBody includes MCP servers when loaded by the CLI', () => {
+  const body = buildCreateSessionBody({
+    apiBaseUrl: 'http://127.0.0.1:3001',
+    cwd: '/tmp/project',
+    prompt: 'hello',
+    mcpServers: {
+      fixture: {
+        type: 'stdio',
+        command: 'node',
+        args: ['server.mjs'],
+        trust: 'ask',
+      },
+    },
+  });
+
+  assert.deepEqual(body.mcpServers, {
+    fixture: {
+      type: 'stdio',
+      command: 'node',
+      args: ['server.mjs'],
+      trust: 'ask',
+    },
   });
 });
 
@@ -62,7 +94,7 @@ test('parseSseChunk returns JSON data events and preserves incomplete frames', (
 
   const second = parseSseChunk(
     first.remainder,
-    'data: {"type":"message","content":"hi"}\n\n'
+    'data: {"type":"message","content":"hi"}\n\n',
   );
 
   assert.deepEqual(second.events, [{ type: 'message', content: 'hi' }]);

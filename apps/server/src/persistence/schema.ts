@@ -15,6 +15,25 @@ export const sessions = sqliteTable('sessions', {
   updatedAt: integer('updated_at').notNull()
 });
 
+export const checkpoints = sqliteTable(
+  'checkpoints',
+  {
+    id: text('id').primaryKey(),
+    sessionId: text('session_id').notNull(),
+    parentCheckpointId: text('parent_checkpoint_id'),
+    createdAt: integer('created_at').notNull(),
+    runId: text('run_id'),
+    label: text('label'),
+    summary: text('summary'),
+    snapshot: text('snapshot').notNull(),
+    fileChanges: text('file_changes')
+  },
+  (table) => [
+    index('checkpoints_session_id_idx').on(table.sessionId),
+    index('checkpoints_parent_checkpoint_id_idx').on(table.parentCheckpointId)
+  ]
+);
+
 // Append-only permission audit. One row per recorded decision; never updated or
 // deleted in normal operation. `reason` is the JSON of a
 // `PermissionDecisionReason` (nullable — a decision may carry no reason). Indexed
@@ -35,6 +54,7 @@ export const audit = sqliteTable(
 
 export type SessionRow = typeof sessions.$inferSelect;
 export type AuditRow = typeof audit.$inferSelect;
+export type CheckpointRow = typeof checkpoints.$inferSelect;
 
 // Idempotent DDL run on init. We do not pull in drizzle-kit / migration tooling
 // for now; `database.ts` execs this against the raw bun:sqlite handle so the
@@ -57,4 +77,17 @@ export const SCHEMA_DDL = `
     at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS audit_session_id_idx ON audit (session_id);
+  CREATE TABLE IF NOT EXISTS checkpoints (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    parent_checkpoint_id TEXT,
+    created_at INTEGER NOT NULL,
+    run_id TEXT,
+    label TEXT,
+    summary TEXT,
+    snapshot TEXT NOT NULL,
+    file_changes TEXT
+  );
+  CREATE INDEX IF NOT EXISTS checkpoints_session_id_idx ON checkpoints (session_id);
+  CREATE INDEX IF NOT EXISTS checkpoints_parent_checkpoint_id_idx ON checkpoints (parent_checkpoint_id);
 `;

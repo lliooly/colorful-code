@@ -1,6 +1,8 @@
 import { Inject, Injectable, OnModuleDestroy } from '@nestjs/common';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import type {
+  Checkpoint,
+  FileChangeMetadata,
   PermissionAuditEntry,
   PermissionDecisionReason,
   SessionSnapshot
@@ -8,7 +10,13 @@ import type {
 import { SERVER_ENV } from '../config/config.module';
 import type { ServerEnvironment } from '../config/environment';
 import { openDatabase, type PersistenceDatabase } from './database';
-import { audit, sessions, type AuditRow } from './schema';
+import {
+  audit,
+  checkpoints,
+  sessions,
+  type AuditRow,
+  type CheckpointRow
+} from './schema';
 
 // The persistence boundary over the drizzle/SQLite database. The session
 // snapshot is stored as one upserted JSON row; the permission audit is appended
@@ -74,6 +82,69 @@ export class SessionStore implements OnModuleDestroy {
     return JSON.parse(row.snapshot) as SessionSnapshot;
   }
 
+  saveCheckpoint(checkpoint: Checkpoint): void {
+    const row = {
+      id: checkpoint.id,
+      sessionId: checkpoint.sessionId,
+      parentCheckpointId: checkpoint.parentCheckpointId ?? null,
+      createdAt: checkpoint.createdAt,
+      runId: checkpoint.runId ?? null,
+      label: checkpoint.label ?? null,
+      summary: checkpoint.summary ?? null,
+      snapshot: JSON.stringify(checkpoint.snapshot),
+      fileChanges:
+        checkpoint.fileChanges === undefined
+          ? null
+          : JSON.stringify(checkpoint.fileChanges)
+    };
+    this.db
+      .insert(checkpoints)
+      .values(row)
+      .onConflictDoUpdate({
+        target: checkpoints.id,
+        set: {
+          sessionId: row.sessionId,
+          parentCheckpointId: row.parentCheckpointId,
+          createdAt: row.createdAt,
+          runId: row.runId,
+          label: row.label,
+          summary: row.summary,
+          snapshot: row.snapshot,
+          fileChanges: row.fileChanges
+        }
+      })
+      .run();
+  }
+
+  listCheckpoints(sessionId: string): Checkpoint[] {
+    const rows = this.db
+      .select()
+      .from(checkpoints)
+      .where(eq(checkpoints.sessionId, sessionId))
+      .orderBy(asc(checkpoints.createdAt), asc(checkpoints.id))
+      .all();
+    return rows.map((row) => this.toCheckpoint(row));
+  }
+
+  loadCheckpoint(
+    sessionId: string,
+    checkpointId: string
+  ): Checkpoint | undefined {
+    const rows = this.db
+      .select()
+      .from(checkpoints)
+      .where(
+        and(
+          eq(checkpoints.sessionId, sessionId),
+          eq(checkpoints.id, checkpointId)
+        )
+      )
+      .limit(1)
+      .all();
+    const row = rows[0];
+    return row ? this.toCheckpoint(row) : undefined;
+  }
+
   // Appends permission-audit entries for a session. Append-only: existing rows
   // are never touched. The `reason` is JSON-serialized (or NULL when absent). A
   // no-op for an empty batch.
@@ -115,6 +186,26 @@ export class SessionStore implements OnModuleDestroy {
       behavior: row.behavior as PermissionAuditEntry['behavior'],
       at: row.at,
       ...(reason !== undefined ? { reason } : {})
+    };
+  }
+
+  private toCheckpoint(row: CheckpointRow): Checkpoint {
+    const fileChanges =
+      row.fileChanges === null
+        ? undefined
+        : (JSON.parse(row.fileChanges) as FileChangeMetadata[]);
+    return {
+      id: row.id,
+      sessionId: row.sessionId,
+      ...(row.parentCheckpointId !== null
+        ? { parentCheckpointId: row.parentCheckpointId }
+        : {}),
+      createdAt: row.createdAt,
+      ...(row.runId !== null ? { runId: row.runId } : {}),
+      ...(row.label !== null ? { label: row.label } : {}),
+      ...(row.summary !== null ? { summary: row.summary } : {}),
+      snapshot: JSON.parse(row.snapshot) as SessionSnapshot,
+      ...(fileChanges !== undefined ? { fileChanges } : {})
     };
   }
 

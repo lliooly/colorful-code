@@ -1,11 +1,12 @@
-import { SchemaValidationError } from "./schema.js";
+import { SchemaValidationError } from './schema.js';
 import {
   createRuntimeContext,
+  toolInvocationSource,
   type JsonObject,
   type RuntimeContext,
   type Tool,
   type ToolResultBlock,
-} from "./tool.js";
+} from './tool.js';
 import {
   evaluatePermission,
   isMoreRestrictive,
@@ -14,8 +15,8 @@ import {
   type PermissionDecisionReason,
   type PermissionResult,
   type PermissionRuleUpdate,
-} from "./permissions.js";
-import type { ToolRegistry } from "./registry.js";
+} from './permissions.js';
+import type { ToolRegistry } from './registry.js';
 
 export type ToolUseRequest = {
   id: string;
@@ -48,13 +49,13 @@ function mergeDecision(
   next: PermissionResult,
 ): MergedDecision {
   const nextInput =
-    (next.behavior === "deny" ? undefined : next.updatedInput) ?? current.input;
+    (next.behavior === 'deny' ? undefined : next.updatedInput) ?? current.input;
   if (isMoreRestrictive(next.behavior, current.behavior)) {
     return {
       behavior: next.behavior,
-      message: next.behavior === "allow" ? undefined : next.message,
+      message: next.behavior === 'allow' ? undefined : next.message,
       reason: next.reason,
-      suggestions: next.behavior === "ask" ? next.suggestions : undefined,
+      suggestions: next.behavior === 'ask' ? next.suggestions : undefined,
       input: nextInput,
     };
   }
@@ -108,7 +109,7 @@ export class ToolRunner {
   async run(toolUse: ToolUseRequest): Promise<ToolResultBlock> {
     const tool = this.registry.get(toolUse.name);
     if (!tool || !tool.isEnabled()) {
-      return errorResult(toolUse.id, "No such tool available: " + toolUse.name);
+      return errorResult(toolUse.id, 'No such tool available: ' + toolUse.name);
     }
 
     // The runtime context is shared across calls so tools can persist session
@@ -119,14 +120,19 @@ export class ToolRunner {
     // ToolSearch reflect what is actually registered.
     const runtimeContext = this.baseContext;
     if (!runtimeContext.fileState) runtimeContext.fileState = new Map();
-    runtimeContext.toolNames = this.registry.list().map((registered) => registered.name);
+    runtimeContext.toolNames = this.registry
+      .list()
+      .map((registered) => registered.name);
     runtimeContext.toolUseId = toolUse.id;
 
     let parsedInput: JsonObject;
     try {
       parsedInput = tool.inputSchema.parse(toolUse.input);
     } catch (error) {
-      const message = error instanceof SchemaValidationError ? error.message : "Invalid input";
+      const message =
+        error instanceof SchemaValidationError
+          ? error.message
+          : 'Invalid input';
       return errorResult(toolUse.id, message);
     }
 
@@ -139,15 +145,19 @@ export class ToolRunner {
     // global `permissionContext` via `evaluatePermission` (if present), then the
     // caller-supplied `permissionPolicy` (if present). Merge most-restrictive-wins
     // (deny > ask > allow), carrying any rewritten input forward.
-    const toolDecision = await tool.checkPermissions(parsedInput, runtimeContext);
+    const toolDecision = await tool.checkPermissions(
+      parsedInput,
+      runtimeContext,
+    );
     let merged: MergedDecision = {
       behavior: toolDecision.behavior,
-      message: toolDecision.behavior === "allow" ? undefined : toolDecision.message,
+      message:
+        toolDecision.behavior === 'allow' ? undefined : toolDecision.message,
       reason: toolDecision.reason,
       suggestions:
-        toolDecision.behavior === "ask" ? toolDecision.suggestions : undefined,
+        toolDecision.behavior === 'ask' ? toolDecision.suggestions : undefined,
       input:
-        (toolDecision.behavior === "deny"
+        (toolDecision.behavior === 'deny'
           ? undefined
           : toolDecision.updatedInput) ?? parsedInput,
     };
@@ -170,41 +180,43 @@ export class ToolRunner {
 
     parsedInput = merged.input;
 
-    if (merged.behavior === "deny") {
-      this.recordAudit(runtimeContext, toolUse, "deny", merged.reason);
+    if (merged.behavior === 'deny') {
+      this.recordAudit(runtimeContext, toolUse, 'deny', merged.reason);
       return errorResult(
         toolUse.id,
         merged.message ?? "Tool '" + tool.name + "' was denied by policy.",
       );
     }
 
-    if (merged.behavior === "ask") {
+    if (merged.behavior === 'ask') {
       if (!runtimeContext.requestApproval) {
         // Headless: no approval port, so an `ask` cannot be satisfied. Deny with
         // a clear message and record the decision as a deny.
-        this.recordAudit(runtimeContext, toolUse, "deny", merged.reason);
+        this.recordAudit(runtimeContext, toolUse, 'deny', merged.reason);
         return errorResult(
           toolUse.id,
-          (merged.message ??
-            "Tool '" + tool.name + "' requires approval") +
-            " (no approval handler available; denied).",
+          (merged.message ?? "Tool '" + tool.name + "' requires approval") +
+            ' (no approval handler available; denied).',
         );
       }
+      const source = toolInvocationSource(tool as Tool, parsedInput);
       const response = await runtimeContext.requestApproval({
         toolUseId: toolUse.id,
         toolName: tool.name,
         input: parsedInput,
-        message: merged.message ?? "Tool '" + tool.name + "' requires approval.",
+        message:
+          merged.message ?? "Tool '" + tool.name + "' requires approval.",
+        ...(source ? { source } : {}),
         ...(merged.suggestions ? { suggestions: merged.suggestions } : {}),
       });
-      if (response.behavior === "deny") {
-        this.recordAudit(runtimeContext, toolUse, "deny", merged.reason);
+      if (response.behavior === 'deny') {
+        this.recordAudit(runtimeContext, toolUse, 'deny', merged.reason);
         return errorResult(
           toolUse.id,
           response.message ?? "Tool '" + tool.name + "' was not approved.",
         );
       }
-      this.recordAudit(runtimeContext, toolUse, "allow", merged.reason);
+      this.recordAudit(runtimeContext, toolUse, 'allow', merged.reason);
       if (response.updatedInput !== undefined) {
         // An approval may rewrite the tool input (e.g. an interactive client
         // edits it before approving). That rewrite never passed the initial
@@ -217,12 +229,12 @@ export class ToolRunner {
           const message =
             error instanceof SchemaValidationError
               ? error.message
-              : "Invalid updated input";
+              : 'Invalid updated input';
           return errorResult(toolUse.id, message);
         }
       }
     } else {
-      this.recordAudit(runtimeContext, toolUse, "allow", merged.reason);
+      this.recordAudit(runtimeContext, toolUse, 'allow', merged.reason);
     }
 
     try {

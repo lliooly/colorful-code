@@ -1,5 +1,8 @@
 import 'reflect-metadata';
 import { strict as assert } from 'node:assert';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
 import { Module, RequestMethod } from '@nestjs/common';
 import {
@@ -67,10 +70,49 @@ const scriptedFactory: ModelClientFactory = (): ModelClient =>
 class TestAppModule {}
 
 let app: NestFastifyApplication | undefined;
+let editTestFilePath = '';
+
+const editFactory: ModelClientFactory = (): ModelClient =>
+  createScriptedModelClient([
+    [
+      {
+        type: 'tool_use',
+        toolUseId: 'read-1',
+        name: 'Read',
+        input: { path: editTestFilePath },
+      },
+      {
+        type: 'tool_use',
+        toolUseId: 'propose-1',
+        name: 'ProposeEdit',
+        input: { path: editTestFilePath, oldText: 'hello', newText: 'hi' },
+      },
+    ],
+    [{ type: 'text', text: 'Patch proposed.' }],
+  ]);
+
+@Module({
+  controllers: [SessionsController],
+  providers: [
+    SessionsService,
+    { provide: MODEL_CLIENT_FACTORY, useValue: editFactory },
+    { provide: SessionStore, useValue: SessionStore.openAt(':memory:') },
+  ],
+})
+class EditFlowTestAppModule {}
 
 async function boot(): Promise<void> {
   app = await NestFactory.create<NestFastifyApplication>(
     TestAppModule,
+    new FastifyAdapter(),
+    { logger: false },
+  );
+  await app.init();
+}
+
+async function bootEditFlow(): Promise<void> {
+  app = await NestFactory.create<NestFastifyApplication>(
+    EditFlowTestAppModule,
     new FastifyAdapter(),
     { logger: false },
   );
@@ -214,6 +256,87 @@ test('golden path: approval round-trip over REST + SSE', async () => {
     await fastify
       .inject({ method: 'DELETE', url: `/sessions/${id}` })
       .catch(() => undefined);
+  }
+});
+
+test('diff edit lifecycle streams over SSE and applies after REST approval', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'colorful-code-edit-sse-'));
+  editTestFilePath = join(dir, 'note.txt');
+  await writeFile(editTestFilePath, 'hello world\n', 'utf8');
+
+  try {
+    await bootEditFlow();
+    assert.ok(app, 'app is initialized');
+    const fastify = app.getHttpAdapter().getInstance();
+    const controller = app.get(SessionsController);
+
+    const createRes = await fastify.inject({
+      method: 'POST',
+      url: '/sessions',
+      payload: { permissionMode: 'default' },
+    });
+    assert.equal(createRes.statusCode, 201, 'POST /sessions returns 201');
+    const { id } = jsonBody<{ id: string }>(createRes);
+    const seen: SessionEvent[] = [];
+    const subscription = controller.events(id).subscribe((message) => {
+      seen.push(message.data as SessionEvent);
+    });
+
+    let cursor = 0;
+    async function until(
+      predicate: (event: SessionEvent) => boolean,
+    ): Promise<SessionEvent> {
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        while (cursor < seen.length) {
+          const event = seen[cursor];
+          cursor += 1;
+          if (predicate(event)) {
+            return event;
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      assert.fail('SSE stream did not emit the expected edit event in time');
+    }
+
+    try {
+      const msgRes = await fastify.inject({
+        method: 'POST',
+        url: `/sessions/${id}/messages`,
+        payload: { text: 'Propose an edit.' },
+      });
+      assert.equal(msgRes.statusCode, 202, 'POST /messages acks with 202');
+
+      const proposed = await until((event) => event.type === 'edit_proposed');
+      assert.equal(await readFile(editTestFilePath, 'utf8'), 'hello world\n');
+      assert.equal(proposed.type, 'edit_proposed');
+      const proposalId =
+        proposed.type === 'edit_proposed' ? proposed.proposalId : '';
+
+      const controlRes = await fastify.inject({
+        method: 'POST',
+        url: `/sessions/${id}/control`,
+        payload: {
+          type: 'edit_decision',
+          proposalId,
+          decision: 'approve',
+        },
+      });
+      assert.equal(controlRes.statusCode, 202, 'POST /control acks with 202');
+
+      await until((event) => event.type === 'edit_approved');
+      await until((event) => event.type === 'edit_applied');
+      assert.equal(await readFile(editTestFilePath, 'utf8'), 'hi world\n');
+    } finally {
+      subscription.unsubscribe();
+      await fastify
+        .inject({ method: 'DELETE', url: `/sessions/${id}` })
+        .catch(() => undefined);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    editTestFilePath = '';
   }
 });
 

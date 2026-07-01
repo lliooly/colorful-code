@@ -10,13 +10,23 @@ import { dirname, join, resolve } from 'node:path';
 import { Observable } from 'rxjs';
 import {
   createBuiltinTools,
+  createMcpRuntimeTools,
+  SdkMcpManager,
   Session,
+  buildMcpToolName,
+  contentToText,
+  normalizeMcpName,
+  type Checkpoint,
   type ControlMessage,
+  type ConversationEntry,
+  type McpManager,
+  type McpServerConnection,
   type PermissionAuditEntry,
   type PermissionContext,
   type PermissionMode,
   type PermissionRule,
   type SessionEvent,
+  type McpServerStatus,
   type SessionSnapshot,
 } from '@colorful-code/tool-runtime';
 import {
@@ -33,6 +43,12 @@ import {
 } from './model-factory';
 import { buildCompactionConfig } from './compaction-config';
 import { SessionStore } from '../persistence/session-store';
+import {
+  loadMcpServersFromEnv,
+  loadProjectMcpServers,
+  mergeMcpServers,
+  type McpServersConfig,
+} from '../config/mcp-config';
 
 // Options accepted by `POST /sessions` to seed a session's PermissionContext and
 // (optionally) choose the model. `model` is the validated per-request selection;
@@ -44,10 +60,12 @@ export type CreateSessionOptions = {
   rules?: PermissionRule[];
   cwd?: string;
   model?: ModelSelection;
+  mcpServers?: McpServersConfig;
 };
 
 export type RestoreSessionOptions = {
   model?: ModelSelection;
+  mcpServers?: McpServersConfig;
 };
 
 // What the service tracks per live session: the engine `Session`, an append-only
@@ -60,10 +78,18 @@ type SessionEntry = {
   log: SessionEvent[];
   listeners: Set<(event: SessionEvent) => void>;
   unsubscribe: () => void;
+  mcpManager?: McpManager;
+  currentCheckpointId?: string;
   // Permission-audit entries observed since the last persistence flush. Drained
   // into the append-only audit table when a run reaches a terminal status (and
   // on dispose) so the table never holds duplicates of an already-flushed entry.
   pendingAudit: PermissionAuditEntry[];
+};
+
+type PreparedSession = {
+  session: Session;
+  mcpManager?: McpManager;
+  mcpConnections: McpServerConnection[];
 };
 
 const PROJECT_MEMORY_FILE = 'CLAUDE.md';
@@ -170,6 +196,8 @@ const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
 @Injectable()
 export class SessionsService implements OnModuleDestroy {
   private readonly entries = new Map<string, SessionEntry>();
+  private sessionOrdinal = 0;
+  private checkpointOrdinal = 0;
 
   constructor(
     @Inject(MODEL_CLIENT_FACTORY)
@@ -181,23 +209,118 @@ export class SessionsService implements OnModuleDestroy {
   // falls back to `[cwd]` when a cwd is supplied (mirrors the engine default).
   private buildPermissionContext(
     options: CreateSessionOptions,
+    mcpServers: McpServersConfig,
   ): PermissionContext {
     const workspaceRoots =
       options.workspaceRoots ?? (options.cwd ? [options.cwd] : []);
+    const mcpTrust = this.buildMcpTrust(mcpServers);
     return {
       mode: options.permissionMode ?? 'default',
       workspaceRoots: [...workspaceRoots],
       rules: options.rules ? [...options.rules] : [],
+      ...(mcpTrust.size > 0 ? { mcpTrust } : {}),
     };
   }
 
   private buildRestoredPermissionContext(
     snapshot: SessionSnapshot,
+    mcpServers: McpServersConfig,
   ): PermissionContext {
+    const mcpTrust = this.buildMcpTrust(mcpServers);
     return {
       mode: snapshot.permissionMode,
       workspaceRoots: [...snapshot.workspaceRoots],
       rules: [],
+      ...(mcpTrust.size > 0 ? { mcpTrust } : {}),
+    };
+  }
+
+  private buildMcpTrust(
+    mcpServers: McpServersConfig,
+  ): Map<string, 'trusted' | 'ask' | 'blocked'> {
+    const trust = new Map<string, 'trusted' | 'ask' | 'blocked'>();
+    for (const [name, config] of Object.entries(mcpServers)) {
+      const level = config.trust ?? 'ask';
+      trust.set(name, level);
+      trust.set(normalizeMcpName(name), level);
+    }
+    return trust;
+  }
+
+  private toMcpServerStatus(connection: McpServerConnection): McpServerStatus {
+    const transport = connection.config.type ?? 'stdio';
+    if (connection.type === 'failed') {
+      return {
+        name: connection.name,
+        status: 'failed',
+        transport,
+        tools: [],
+        resources: [],
+        error: connection.error,
+      };
+    }
+    return {
+      name: connection.name,
+      status: 'connected',
+      transport,
+      tools: connection.tools.map((tool) => ({
+        name: tool.name,
+        registeredName: buildMcpToolName(connection.name, tool.name),
+        ...(tool.description ? { description: tool.description } : {}),
+      })),
+      resources: connection.resources.map((resource) => ({
+        uri: resource.uri,
+        ...(resource.name ? { name: resource.name } : {}),
+        ...(resource.mimeType ? { mimeType: resource.mimeType } : {}),
+        ...(resource.description ? { description: resource.description } : {}),
+      })),
+      ...(connection.instructions
+        ? { instructions: connection.instructions }
+        : {}),
+    };
+  }
+
+  private resolveMcpServers(
+    cwd: string | undefined,
+    requestMcpServers: McpServersConfig | undefined,
+  ): McpServersConfig {
+    try {
+      return mergeMcpServers(
+        loadProjectMcpServers(cwd),
+        loadMcpServersFromEnv(process.env),
+        requestMcpServers,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new BadRequestException(message);
+    }
+  }
+
+  private async buildToolsAndMcp(mcpServers: McpServersConfig): Promise<{
+    tools: ReturnType<typeof createBuiltinTools>;
+    mcpManager?: McpManager;
+    mcpConnections: McpServerConnection[];
+  }> {
+    if (Object.keys(mcpServers).length === 0) {
+      return { tools: createBuiltinTools(), mcpConnections: [] };
+    }
+
+    const manager = new SdkMcpManager(mcpServers);
+    const mcpTools = await createMcpRuntimeTools(manager);
+    const mcpBuiltinNames = new Set([
+      'MCPTool',
+      'McpAuth',
+      'ListMcpResourcesTool',
+      'ReadMcpResourceTool',
+    ]);
+    const builtinTools = createBuiltinTools().filter(
+      (tool) => !mcpBuiltinNames.has(tool.name),
+    );
+    const mcpConnections = await manager.connectAll();
+    return {
+      tools: [...builtinTools, ...mcpTools],
+      mcpManager: manager,
+      mcpConnections,
     };
   }
 
@@ -215,15 +338,45 @@ export class SessionsService implements OnModuleDestroy {
     }
   }
 
+  private nextSessionId(): string {
+    this.sessionOrdinal += 1;
+    return `session-${String(Date.now())}-${String(this.sessionOrdinal)}`;
+  }
+
+  private nextCheckpointId(sessionId: string): string {
+    this.checkpointOrdinal += 1;
+    return `checkpoint-${sessionId}-${String(Date.now())}-${String(
+      this.checkpointOrdinal,
+    )}`;
+  }
+
   // Wires a live session to the replay buffer + live listeners and registers it.
   // Both create and restore use this so restored sessions persist, stream, and
   // dispose exactly like freshly created ones.
-  private register(session: Session): { id: string } {
+  private register(
+    session: Session,
+    options: {
+      mcpManager?: McpManager;
+      mcpConnections?: McpServerConnection[];
+      currentCheckpointId?: string;
+    } = {},
+  ): { id: string } {
     const log: SessionEvent[] = [];
     const listeners = new Set<(event: SessionEvent) => void>();
     const pendingAudit: PermissionAuditEntry[] = [];
+    const entry: SessionEntry = {
+      session,
+      log,
+      listeners,
+      unsubscribe: () => undefined,
+      pendingAudit,
+      ...(options.currentCheckpointId
+        ? { currentCheckpointId: options.currentCheckpointId }
+        : {}),
+      ...(options.mcpManager ? { mcpManager: options.mcpManager } : {}),
+    };
 
-    const unsubscribe = session.subscribe((event) => {
+    entry.unsubscribe = session.subscribe((event) => {
       // Buffer first (so late subscribers replay it), then fan out live.
       log.push(event);
       for (const listener of listeners) {
@@ -238,43 +391,52 @@ export class SessionsService implements OnModuleDestroy {
         TERMINAL_RUN_STATUSES.has(event.status)
       ) {
         this.persist(session, pendingAudit);
+        this.saveRunCheckpoint(entry, event);
       }
     });
 
-    this.entries.set(session.id, {
-      session,
-      log,
-      listeners,
-      unsubscribe,
-      pendingAudit,
-    });
+    if (options.mcpConnections && options.mcpConnections.length > 0) {
+      log.push({
+        type: 'mcp_status',
+        servers: options.mcpConnections.map((connection) =>
+          this.toMcpServerStatus(connection),
+        ),
+      });
+    }
+
+    this.entries.set(session.id, entry);
     return { id: session.id };
   }
 
   // Creates a session, wires its event subscription to the replay buffer + live
   // listeners, and registers it. The model client is built per session via the
   // injected factory; tools are the built-ins.
-  create(options: CreateSessionOptions = {}): { id: string } {
-    const permissionContext = this.buildPermissionContext(options);
+  async create(options: CreateSessionOptions = {}): Promise<{ id: string }> {
+    const mcpServers = this.resolveMcpServers(options.cwd, options.mcpServers);
+    const permissionContext = this.buildPermissionContext(options, mcpServers);
 
     // Mint the id up front so the factory can key on it if needed.
-    const id = `session-${String(Date.now())}-${String(this.entries.size + 1)}`;
+    const id = this.nextSessionId();
 
     // Build the model client now so a bad selection (missing provider key,
     // incomplete custom config) fails the create request with a 400 rather than
     // surfacing mid-turn. The apiKey lives only inside the built client.
     const model = this.buildModelClient(id, options.model);
+    const { tools, mcpManager, mcpConnections } =
+      await this.buildToolsAndMcp(mcpServers);
 
     return this.register(
       new Session({
         id,
         model,
-        tools: createBuiltinTools(),
+        tools,
         systemPrompt: buildSessionSystemPrompt(options, permissionContext),
         compaction: buildCompactionConfig(options.model),
         ...(options.cwd ? { cwd: options.cwd } : {}),
         permissionContext,
+        ...(mcpManager ? { mcpManager } : {}),
       }),
+      { ...(mcpManager ? { mcpManager } : {}), mcpConnections },
     );
   }
 
@@ -282,7 +444,10 @@ export class SessionsService implements OnModuleDestroy {
   // the model client, built-in tools, and current system prompt. If the session
   // is already live, the request is idempotent and returns that entry rather
   // than creating a duplicate live object for the same id.
-  restore(id: string, options: RestoreSessionOptions = {}): { id: string } {
+  async restore(
+    id: string,
+    options: RestoreSessionOptions = {},
+  ): Promise<{ id: string }> {
     if (this.entries.has(id)) {
       return { id };
     }
@@ -292,22 +457,149 @@ export class SessionsService implements OnModuleDestroy {
       throw new NotFoundException(`No persisted snapshot for session: ${id}`);
     }
 
-    const permissionContext = this.buildRestoredPermissionContext(snapshot);
+    const mcpServers = this.resolveMcpServers(snapshot.cwd, options.mcpServers);
+    const permissionContext = this.buildRestoredPermissionContext(
+      snapshot,
+      mcpServers,
+    );
     const createOptions: CreateSessionOptions = {
       ...(snapshot.cwd ? { cwd: snapshot.cwd } : {}),
       permissionMode: snapshot.permissionMode,
       workspaceRoots: [...snapshot.workspaceRoots],
     };
+    const { tools, mcpManager, mcpConnections } =
+      await this.buildToolsAndMcp(mcpServers);
     return this.register(
       Session.restore(snapshot, {
         model: this.buildModelClient(id, options.model),
-        tools: createBuiltinTools(),
+        tools,
         systemPrompt: buildSessionSystemPrompt(
           createOptions,
           permissionContext,
         ),
         compaction: buildCompactionConfig(options.model),
+        ...(mcpManager ? { mcpManager } : {}),
       }),
+      { ...(mcpManager ? { mcpManager } : {}), mcpConnections },
+    );
+  }
+
+  async restoreCheckpoint(
+    id: string,
+    checkpointId: string,
+    options: RestoreSessionOptions = {},
+  ): Promise<{ id: string; checkpointId: string }> {
+    const checkpoint = this.store.loadCheckpoint(id, checkpointId);
+    if (!checkpoint) {
+      throw new NotFoundException(
+        `No checkpoint ${checkpointId} for session: ${id}`,
+      );
+    }
+
+    const prepared = await this.prepareRestoredSession(
+      checkpoint.snapshot,
+      id,
+      options,
+    );
+    await this.unregister(id, { persist: false });
+    this.registerPreparedSession(prepared, {
+      currentCheckpointId: checkpoint.id,
+    });
+    this.store.saveSnapshot(prepared.session.snapshot());
+    return { id, checkpointId };
+  }
+
+  async forkCheckpoint(
+    id: string,
+    checkpointId: string,
+    options: RestoreSessionOptions = {},
+  ): Promise<{ id: string; checkpointId: string }> {
+    const checkpoint = this.store.loadCheckpoint(id, checkpointId);
+    if (!checkpoint) {
+      throw new NotFoundException(
+        `No checkpoint ${checkpointId} for session: ${id}`,
+      );
+    }
+
+    const forkId = this.nextSessionId();
+    const snapshot: SessionSnapshot = {
+      ...structuredClone(checkpoint.snapshot),
+      id: forkId,
+    };
+    const prepared = await this.prepareRestoredSession(snapshot, forkId, options);
+    this.registerPreparedSession(prepared, {
+      currentCheckpointId: checkpoint.id,
+    });
+    this.store.saveSnapshot(prepared.session.snapshot());
+    const forkCheckpoint = this.buildCheckpoint(snapshot, {
+      parentCheckpointId: checkpoint.id,
+      label: 'Fork created',
+      summary: checkpoint.summary ?? this.summarizeSnapshot(snapshot),
+    });
+    this.store.saveCheckpoint(forkCheckpoint);
+    const entry = this.entries.get(forkId);
+    if (entry) {
+      entry.currentCheckpointId = forkCheckpoint.id;
+    }
+    return { id: forkId, checkpointId };
+  }
+
+  private async registerRestoredSnapshot(
+    snapshot: SessionSnapshot,
+    modelSessionId: string,
+    options: RestoreSessionOptions,
+    registerOptions: { currentCheckpointId?: string } = {},
+  ): Promise<{ id: string }> {
+    return this.registerPreparedSession(
+      await this.prepareRestoredSession(snapshot, modelSessionId, options),
+      registerOptions,
+    );
+  }
+
+  private async prepareRestoredSession(
+    snapshot: SessionSnapshot,
+    modelSessionId: string,
+    options: RestoreSessionOptions,
+  ): Promise<PreparedSession> {
+    const mcpServers = this.resolveMcpServers(snapshot.cwd, options.mcpServers);
+    const permissionContext = this.buildRestoredPermissionContext(
+      snapshot,
+      mcpServers,
+    );
+    const createOptions: CreateSessionOptions = {
+      ...(snapshot.cwd ? { cwd: snapshot.cwd } : {}),
+      permissionMode: snapshot.permissionMode,
+      workspaceRoots: [...snapshot.workspaceRoots],
+    };
+    const { tools, mcpManager, mcpConnections } =
+      await this.buildToolsAndMcp(mcpServers);
+    return {
+      session: Session.restore(snapshot, {
+        model: this.buildModelClient(modelSessionId, options.model),
+        tools,
+        systemPrompt: buildSessionSystemPrompt(
+          createOptions,
+          permissionContext,
+        ),
+        compaction: buildCompactionConfig(options.model),
+        ...(mcpManager ? { mcpManager } : {}),
+      }),
+      ...(mcpManager ? { mcpManager } : {}),
+      mcpConnections,
+    };
+  }
+
+  private registerPreparedSession(
+    prepared: PreparedSession,
+    registerOptions: { currentCheckpointId?: string } = {},
+  ): { id: string } {
+    return this.register(
+      prepared.session,
+      {
+        ...registerOptions,
+        ...(prepared.mcpManager ? { mcpManager: prepared.mcpManager } : {}),
+        mcpConnections: prepared.mcpConnections,
+      },
     );
   }
 
@@ -331,6 +623,74 @@ export class SessionsService implements OnModuleDestroy {
     } catch {
       // Swallow: persistence is a side channel; never let it break a run.
     }
+  }
+
+  private saveRunCheckpoint(
+    entry: SessionEntry,
+    event: Extract<SessionEvent, { type: 'run_status' }>,
+  ): void {
+    try {
+      const checkpoint = this.buildCheckpoint(entry.session.snapshot(), {
+        parentCheckpointId: entry.currentCheckpointId,
+        runId: event.runId,
+      });
+      this.store.saveCheckpoint(checkpoint);
+      entry.currentCheckpointId = checkpoint.id;
+    } catch {
+      // Like snapshot persistence, checkpointing is a side channel and must not
+      // make a completed run appear failed.
+    }
+  }
+
+  private buildCheckpoint(
+    snapshot: SessionSnapshot,
+    options: {
+      parentCheckpointId?: string;
+      runId?: string;
+      label?: string;
+      summary?: string;
+    } = {},
+  ): Checkpoint {
+    const summary = options.summary ?? this.summarizeSnapshot(snapshot);
+    return {
+      id: this.nextCheckpointId(snapshot.id),
+      sessionId: snapshot.id,
+      ...(options.parentCheckpointId
+        ? { parentCheckpointId: options.parentCheckpointId }
+        : {}),
+      createdAt: Date.now(),
+      ...(options.runId ? { runId: options.runId } : {}),
+      label: options.label ?? this.labelForSnapshot(snapshot),
+      ...(summary ? { summary } : {}),
+      snapshot,
+    };
+  }
+
+  private labelForSnapshot(snapshot: SessionSnapshot): string {
+    const userMessages = snapshot.history.filter(
+      (entry) => entry.role === 'user',
+    );
+    return `Turn ${String(userMessages.length)}`;
+  }
+
+  private summarizeSnapshot(snapshot: SessionSnapshot): string {
+    const lastUser = this.lastText(snapshot.history, 'user');
+    const lastAssistant = this.lastText(snapshot.history, 'assistant');
+    if (lastUser && lastAssistant) {
+      return `User: ${lastUser}\nAssistant: ${lastAssistant}`;
+    }
+    return lastUser ? `User: ${lastUser}` : lastAssistant;
+  }
+
+  private lastText(
+    history: ConversationEntry[],
+    role: ConversationEntry['role'],
+  ): string {
+    const entry = [...history].reverse().find((item) => item.role === role);
+    if (!entry) {
+      return '';
+    }
+    return contentToText(entry.content).trim().slice(0, 500);
   }
 
   has(id: string): boolean {
@@ -390,7 +750,7 @@ export class SessionsService implements OnModuleDestroy {
 
   // Lifecycle: abort the run, drop the engine subscription, and remove the
   // entry. Returns false for an unknown id (idempotent dispose).
-  dispose(id: string): boolean {
+  async dispose(id: string): Promise<boolean> {
     const entry = this.entries.get(id);
     if (!entry) {
       return false;
@@ -402,6 +762,7 @@ export class SessionsService implements OnModuleDestroy {
     entry.unsubscribe();
     entry.listeners.clear();
     this.entries.delete(id);
+    await entry.mcpManager?.close?.();
     return true;
   }
 
@@ -417,10 +778,40 @@ export class SessionsService implements OnModuleDestroy {
     return this.store.listAudit(id);
   }
 
-  // Disposes every session so tests (and shutdown) do not leak runs/timers.
-  onModuleDestroy(): void {
-    for (const id of [...this.entries.keys()]) {
-      this.dispose(id);
+  listCheckpoints(id: string): {
+    checkpoints: Checkpoint[];
+    currentCheckpointId?: string;
+  } {
+    const checkpoints = this.store.listCheckpoints(id);
+    const currentCheckpointId =
+      this.entries.get(id)?.currentCheckpointId ?? checkpoints.at(-1)?.id;
+    return {
+      checkpoints,
+      ...(currentCheckpointId ? { currentCheckpointId } : {}),
+    };
+  }
+
+  private async unregister(
+    id: string,
+    options: { persist: boolean },
+  ): Promise<boolean> {
+    const entry = this.entries.get(id);
+    if (!entry) {
+      return false;
     }
+    entry.session.send({ type: 'cancel' });
+    if (options.persist) {
+      this.persist(entry.session, entry.pendingAudit);
+    }
+    entry.unsubscribe();
+    entry.listeners.clear();
+    this.entries.delete(id);
+    await entry.mcpManager?.close?.();
+    return true;
+  }
+
+  // Disposes every session so tests (and shutdown) do not leak runs/timers.
+  async onModuleDestroy(): Promise<void> {
+    await Promise.all([...this.entries.keys()].map((id) => this.dispose(id)));
   }
 }

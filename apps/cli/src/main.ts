@@ -1,24 +1,27 @@
 #!/usr/bin/env bun
+import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
-import {
-  buildCreateSessionBody,
-  CliUsageError,
-  parseCliArgs
-} from './args';
+import { buildCreateSessionBody, CliUsageError, parseCliArgs } from './args';
 import {
   createSession,
   sendControl,
   sendMessage,
   streamSessionEvents,
-  type SessionEvent
+  type SessionEvent,
 } from './api';
 
 async function main(): Promise<void> {
   const options = parseCliArgs(process.argv.slice(2));
+  const sessionOptions = options.mcpConfigPath
+    ? {
+        ...options,
+        mcpServers: loadMcpServersConfig(options.mcpConfigPath),
+      }
+    : options;
   const sessionId = await createSession(
     options.apiBaseUrl,
-    buildCreateSessionBody(options)
+    buildCreateSessionBody(sessionOptions),
   );
   console.error(`session ${sessionId}`);
 
@@ -30,7 +33,7 @@ async function main(): Promise<void> {
       sessionId,
       signal: abort.signal,
       rl,
-      onTerminal: () => abort.abort()
+      onTerminal: () => abort.abort(),
     });
     await sendMessage(options.apiBaseUrl, sessionId, options.prompt);
     await stream;
@@ -50,7 +53,7 @@ async function consumeEvents(args: {
     for await (const event of streamSessionEvents(
       args.apiBaseUrl,
       args.sessionId,
-      args.signal
+      args.signal,
     )) {
       await handleEvent(event, args);
       if (isTerminalRunStatus(event)) {
@@ -72,7 +75,7 @@ async function handleEvent(
     apiBaseUrl: string;
     sessionId: string;
     rl: ReturnType<typeof createInterface>;
-  }
+  },
 ): Promise<void> {
   switch (event.type) {
     case 'message_delta':
@@ -80,19 +83,21 @@ async function handleEvent(
       return;
     case 'tool_call':
       process.stderr.write(
-        `\n> ${String(event.name ?? 'tool')} ${JSON.stringify(event.input ?? {})}\n`
+        `\n> ${formatToolLabel(event)} ${JSON.stringify(event.input ?? {})}\n`,
       );
       return;
     case 'tool_result':
       process.stderr.write(
-        `< ${String(event.toolUseId ?? 'tool')} ${String(event.content ?? '')}\n`
+        `< ${formatToolResultLabel(event)} ${String(event.content ?? '')}\n`,
       );
       return;
     case 'approval_required':
       await answerApproval(event, args);
       return;
     case 'error':
-      process.stderr.write(`\nerror: ${String(event.message ?? 'unknown error')}\n`);
+      process.stderr.write(
+        `\nerror: ${String(event.message ?? 'unknown error')}\n`,
+      );
       return;
     case 'run_status':
       if (event.status === 'completed') {
@@ -112,7 +117,7 @@ async function answerApproval(
     apiBaseUrl: string;
     sessionId: string;
     rl: ReturnType<typeof createInterface>;
-  }
+  },
 ): Promise<void> {
   const requestId = event.requestId;
   if (typeof requestId !== 'string') {
@@ -121,11 +126,11 @@ async function answerApproval(
   }
 
   process.stderr.write(
-    `\napproval required for ${String(event.name ?? 'tool')}\n${JSON.stringify(
+    `\napproval required for ${formatToolLabel(event)}\n${JSON.stringify(
       event.input ?? {},
       null,
-      2
-    )}\n`
+      2,
+    )}\n`,
   );
   const answer = (await args.rl.question('allow? [y/N] ')).trim().toLowerCase();
   const allowed = answer === 'y' || answer === 'yes' || answer === 'a';
@@ -134,7 +139,7 @@ async function answerApproval(
     requestId,
     decision: allowed
       ? { behavior: 'allow' }
-      : { behavior: 'deny', message: 'Denied by CLI user.' }
+      : { behavior: 'deny', message: 'Denied by CLI user.' },
   });
 }
 
@@ -171,6 +176,55 @@ function usage(): string {
     '  --protocol <name>    anthropic | openai (default anthropic with --api-key)',
     '  --model <id>         Provider model id',
     '  --base-url <url>     Provider base URL for custom/OpenAI-compatible hosts',
-    '  --preset <id>        Server-side preset when no --api-key is supplied'
+    '  --preset <id>        Server-side preset when no --api-key is supplied',
+    '  --mcp-config <path>  JSON config containing an mcpServers object',
   ].join('\n');
+}
+
+function loadMcpServersConfig(path: string): Record<string, unknown> {
+  const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new CliUsageError('--mcp-config must point to a JSON object.');
+  }
+  if ('mcpServers' in parsed) {
+    const mcpServers = (parsed as { mcpServers?: unknown }).mcpServers;
+    if (
+      typeof mcpServers !== 'object' ||
+      mcpServers === null ||
+      Array.isArray(mcpServers)
+    ) {
+      throw new CliUsageError('mcpServers must be an object.');
+    }
+    return mcpServers as Record<string, unknown>;
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function formatToolLabel(event: SessionEvent): string {
+  const name = String(event.name ?? 'tool');
+  const source = event.source;
+  if (
+    source &&
+    typeof source === 'object' &&
+    (source as { type?: unknown }).type === 'mcp' &&
+    typeof (source as { server?: unknown }).server === 'string'
+  ) {
+    return `mcp:${(source as { server: string }).server} ${name}`;
+  }
+  return name;
+}
+
+function formatToolResultLabel(event: SessionEvent): string {
+  const source = event.source;
+  if (
+    source &&
+    typeof source === 'object' &&
+    (source as { type?: unknown }).type === 'mcp' &&
+    typeof (source as { server?: unknown }).server === 'string'
+  ) {
+    return `mcp:${(source as { server: string }).server} ${String(
+      event.toolUseId ?? 'tool',
+    )}`;
+  }
+  return String(event.toolUseId ?? 'tool');
 }

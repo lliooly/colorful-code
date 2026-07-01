@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type {
+  Checkpoint,
   PermissionAuditEntry,
   SessionSnapshot
 } from '@colorful-code/tool-runtime';
@@ -64,6 +65,58 @@ test('saveSnapshot + loadSnapshot round-trip through a real file DB', async () =
       store.loadSnapshot('does-not-exist'),
       undefined,
       'unknown id loads as undefined'
+    );
+  });
+});
+
+test('saveCheckpoint + listCheckpoints preserve parent links and metadata', async () => {
+  await withTempStore((store) => {
+    const first: Checkpoint = {
+      id: 'checkpoint-1',
+      sessionId: 'session-1',
+      createdAt: 1_000,
+      runId: 'session-1-run-1',
+      label: 'First run',
+      summary: 'User asked for tasks.',
+      snapshot: sampleSnapshot(),
+      fileChanges: [{ path: 'README.md', status: 'modified' }]
+    };
+    const second: Checkpoint = {
+      id: 'checkpoint-2',
+      sessionId: 'session-1',
+      parentCheckpointId: 'checkpoint-1',
+      createdAt: 2_000,
+      runId: 'session-1-run-2',
+      label: 'Second run',
+      summary: 'Assistant updated the answer.',
+      snapshot: sampleSnapshot({
+        history: [{ role: 'user', content: 'second' }]
+      })
+    };
+
+    store.saveCheckpoint(first);
+    store.saveCheckpoint(second);
+    store.saveCheckpoint({
+      ...first,
+      id: 'checkpoint-other',
+      sessionId: 'session-2',
+      snapshot: sampleSnapshot({ id: 'session-2' })
+    });
+
+    assert.deepEqual(
+      store.listCheckpoints('session-1').map((checkpoint) => checkpoint.id),
+      ['checkpoint-1', 'checkpoint-2'],
+      'list is filtered by session and sorted by createdAt'
+    );
+    assert.deepEqual(
+      store.loadCheckpoint('session-1', 'checkpoint-2'),
+      second,
+      'checkpoint JSON payload round-trips'
+    );
+    assert.equal(
+      store.loadCheckpoint('session-1', 'checkpoint-other'),
+      undefined,
+      'checkpoint id must also match the requested session'
     );
   });
 });

@@ -3,6 +3,8 @@ import { ToolRunner } from '../core/runner.js';
 import { ToolScheduler } from '../core/scheduler.js';
 import {
   createRuntimeContext,
+  type JsonObject,
+  type EditProposal,
   type RuntimeContext,
   type RuntimeSubagentRequest,
   type RuntimeSubagentResult,
@@ -16,12 +18,14 @@ import type {
   PermissionContext,
   PermissionMode,
 } from '../core/permissions.js';
+import type { McpManager } from '../mcp/types.js';
 import type { CompactionConfig } from './compaction.js';
 import type { ControlMessage } from './control.js';
 import { contentToText } from './content.js';
 import type { SessionEvent, SessionEventListener } from './events.js';
 import type { ConversationEntry, ModelClient } from './model.js';
 import { runTurn } from './turn.js';
+import { applyEditProposal } from '../tools/files.js';
 
 // Dependencies injected when constructing or restoring a session. `tools` and
 // `model` are required; everything else has a sensible default.
@@ -41,6 +45,7 @@ export type SessionDeps = {
   // not snapshot data, so it is re-supplied on `restore`. Absent => no
   // compaction.
   compaction?: CompactionConfig;
+  mcpManager?: McpManager;
   // Maximum nested Agent depth. The default allows a parent session to run one
   // child agent, while preventing recursive agent spawning unless explicitly
   // widened by the caller later.
@@ -57,6 +62,26 @@ export type SessionSnapshot = {
   permissionMode: PermissionMode;
   workspaceRoots: string[];
   todos: TodoItem[];
+};
+
+export type FileChangeMetadata = {
+  path: string;
+  status: string;
+  additions?: number;
+  deletions?: number;
+  metadata?: JsonObject;
+};
+
+export type Checkpoint = {
+  id: string;
+  sessionId: string;
+  parentCheckpointId?: string;
+  createdAt: number;
+  runId?: string;
+  label?: string;
+  summary?: string;
+  snapshot: SessionSnapshot;
+  fileChanges?: FileChangeMetadata[];
 };
 
 function defaultPermissionContext(cwd?: string): PermissionContext {
@@ -99,6 +124,7 @@ export class Session {
   private abortController = new AbortController();
   private runCounter = 0;
   private requestCounter = 0;
+  private editProposalCounter = 0;
   private subagentCounter = 0;
   private activeRun: Promise<void> | undefined;
   private activeRunId: string | undefined;
@@ -120,6 +146,14 @@ export class Session {
       permissionContext: this.permissionContext,
       permissionAudit: [] as PermissionAuditEntry[],
       requestApproval: (request) => this.requestApproval(request),
+      proposeEdit: (proposal, context) => this.proposeEdit(proposal, context),
+      approveEdit: (proposal) => this.emitEditApproved(proposal),
+      applyEdit: (proposal) => this.emitEditApplied(proposal),
+      rejectEdit: (proposal) => this.emitEditRejected(proposal),
+      conflictEdit: (proposal, reason) =>
+        this.emitEditConflict(proposal, reason),
+      applyEditProposal,
+      ...(deps.mcpManager ? { mcpManager: deps.mcpManager } : {}),
       subagentDepth: 0,
       maxSubagentDepth: deps.maxSubagentDepth ?? 1,
       runSubagent: (request, context) => this.runSubagent(request, context),
@@ -159,6 +193,7 @@ export class Session {
         name: request.toolName,
         input: request.input,
         message: request.message,
+        ...(request.source ? { source: request.source } : {}),
         ...(request.suggestions ? { suggestions: request.suggestions } : {}),
       });
     });
@@ -173,6 +208,73 @@ export class Session {
     }
     this.pending.delete(requestId);
     resolver(response);
+  }
+
+  private proposeEdit(
+    proposal: Omit<EditProposal, 'id' | 'createdAt' | 'status'>,
+    context: RuntimeContext,
+  ): EditProposal {
+    this.editProposalCounter += 1;
+    const stored: EditProposal = {
+      ...proposal,
+      id: this.id + '-edit-' + String(this.editProposalCounter),
+      createdAt: Date.now(),
+      status: 'proposed',
+    };
+    if (!context.editProposals) {
+      context.editProposals = new Map();
+    }
+    context.editProposals.set(stored.id, stored);
+    this.emit({
+      type: 'edit_proposed',
+      runId: this.activeRunId ?? this.id,
+      proposalId: stored.id,
+      toolUseId: stored.toolUseId,
+      patches: stored.patches,
+    });
+    return stored;
+  }
+
+  private emitEditApproved(proposal: EditProposal): void {
+    this.emit({
+      type: 'edit_approved',
+      runId: this.activeRunId ?? this.id,
+      proposalId: proposal.id,
+      toolUseId: proposal.toolUseId,
+      patches: proposal.patches,
+    });
+  }
+
+  private emitEditApplied(proposal: EditProposal): void {
+    this.emit({
+      type: 'edit_applied',
+      runId: this.activeRunId ?? this.id,
+      proposalId: proposal.id,
+      toolUseId: proposal.toolUseId,
+      patches: proposal.patches,
+    });
+  }
+
+  private emitEditRejected(proposal: EditProposal, reason?: string): void {
+    this.emit({
+      type: 'edit_rejected',
+      runId: this.activeRunId ?? this.id,
+      proposalId: proposal.id,
+      toolUseId: proposal.toolUseId,
+      patches: proposal.patches,
+      ...(reason ? { reason } : {}),
+    });
+  }
+
+  private emitEditConflict(proposal: EditProposal, reason: string): void {
+    this.emit({
+      type: 'edit_conflict',
+      runId: this.activeRunId ?? this.id,
+      proposalId: proposal.id,
+      toolUseId: proposal.toolUseId,
+      patches: proposal.patches,
+      reason,
+    });
   }
 
   // Auto-denies every parked approval. Used on `cancel` so a blocked turn can
@@ -205,6 +307,14 @@ export class Session {
       permissionContext: this.permissionContext,
       permissionAudit: this.context.permissionAudit,
       requestApproval: (approval) => this.requestApproval(approval),
+      proposeEdit: (proposal, runtimeContext) =>
+        this.proposeEdit(proposal, runtimeContext),
+      approveEdit: (proposal) => this.emitEditApproved(proposal),
+      applyEdit: (proposal) => this.emitEditApplied(proposal),
+      rejectEdit: (proposal) => this.emitEditRejected(proposal),
+      conflictEdit: (proposal, reason) =>
+        this.emitEditConflict(proposal, reason),
+      applyEditProposal,
       permissionPolicy: parentContext.permissionPolicy,
       subagentDepth: (parentContext.subagentDepth ?? 0) + 1,
       maxSubagentDepth:
@@ -319,6 +429,36 @@ export class Session {
       case 'approval_response':
         this.resolveApproval(message.requestId, message.decision);
         return;
+      case 'edit_decision': {
+        const proposal = this.context.editProposals?.get(message.proposalId);
+        if (!proposal) {
+          return;
+        }
+        if (message.decision === 'reject') {
+          proposal.status = 'rejected';
+          this.emitEditRejected(proposal, message.reason);
+          return;
+        }
+        proposal.status = 'approved';
+        this.emitEditApproved(proposal);
+        void (async () => {
+          try {
+            await applyEditProposal(proposal, this.context);
+            proposal.status = 'applied';
+            this.emitEditApplied(proposal);
+          } catch (error) {
+            const reason =
+              error instanceof Error ? error.message : String(error);
+            proposal.status = 'conflict';
+            proposal.conflictReason = reason;
+            for (const patch of proposal.patches) {
+              patch.conflictReason = reason;
+            }
+            this.emitEditConflict(proposal, reason);
+          }
+        })();
+        return;
+      }
       case 'cancel':
         this.abortController.abort();
         this.denyAllPending('Run was cancelled.');
@@ -351,6 +491,7 @@ export class Session {
       tools: Tool[];
       systemPrompt?: string;
       compaction?: CompactionConfig;
+      mcpManager?: McpManager;
     },
   ): Session {
     const session = new Session({
@@ -362,6 +503,7 @@ export class Session {
         ? { systemPrompt: deps.systemPrompt }
         : {}),
       ...(deps.compaction !== undefined ? { compaction: deps.compaction } : {}),
+      ...(deps.mcpManager !== undefined ? { mcpManager: deps.mcpManager } : {}),
       permissionContext: {
         mode: snapshot.permissionMode,
         workspaceRoots: [...snapshot.workspaceRoots],
@@ -371,6 +513,9 @@ export class Session {
     for (const entry of snapshot.history) {
       session.history.push(structuredClone(entry));
     }
+    session.runCounter = snapshot.history.filter(
+      (entry) => entry.role === 'user',
+    ).length;
     session.context.todos = structuredClone(snapshot.todos);
     return session;
   }

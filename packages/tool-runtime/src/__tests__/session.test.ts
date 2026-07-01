@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   Session,
   buildTool,
@@ -11,7 +14,17 @@ import {
   type ScriptedRound,
   type PermissionContext,
   type SessionEvent,
+  type McpManager,
 } from '../index.js';
+
+async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
+  const dir = await mkdtemp(join(tmpdir(), 'colorful-session-runtime-'));
+  try {
+    return await fn(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
 
 // Spins the microtask/macrotask queue so parked promises (approvals) settle and
 // emitted events flush before assertions run.
@@ -114,6 +127,36 @@ test('the loop issues multiple model.run calls when a tool use occurs', async ()
     'expected the multi-round loop to call model.run at least twice, got ' +
       String(runCalls),
   );
+});
+
+test('Session injects the MCP manager into runtime context', async () => {
+  let closed = false;
+  const manager: McpManager = {
+    async connectAll() {
+      return [];
+    },
+    async callTool() {
+      return 'ok';
+    },
+    async listResources() {
+      return [];
+    },
+    async readResource() {
+      return { contents: [] };
+    },
+    async close() {
+      closed = true;
+    },
+  };
+  const session = new Session({
+    model: createScriptedModelClient([[{ type: 'text', text: 'done' }]]),
+    tools: createBuiltinTools(),
+    mcpManager: manager,
+  });
+
+  assert.equal(session.context.mcpManager, manager);
+  await session.context.mcpManager?.close?.();
+  assert.equal(closed, true);
 });
 
 test('Agent runs a child session synchronously and returns its final output', async () => {
@@ -458,6 +501,114 @@ test('cancel mid-run yields run_status:cancelled and auto-denies a pending appro
     .map((event) => (event as { status: string }).status);
   assert.ok(statuses.includes('cancelled'));
   assert.ok(!statuses.includes('completed'));
+});
+
+test('a proposed edit emits lifecycle events and only writes after approval', async () => {
+  await withTempDir(async (dir) => {
+    const file = join(dir, 'note.txt');
+    await writeFile(file, 'hello world\n', 'utf8');
+    const rounds: ScriptedRound[] = [
+      [
+        {
+          type: 'tool_use',
+          toolUseId: 'read-1',
+          name: 'Read',
+          input: { path: file },
+        },
+        {
+          type: 'tool_use',
+          toolUseId: 'propose-1',
+          name: 'ProposeEdit',
+          input: { path: file, oldText: 'hello', newText: 'hi' },
+        },
+      ],
+      [{ type: 'text', text: 'Patch proposed.' }],
+    ];
+    const session = new Session({
+      model: createScriptedModelClient(rounds),
+      tools: createBuiltinTools(),
+    });
+    const events: SessionEvent[] = [];
+    session.subscribe((event) => events.push(event));
+
+    await session.submit('edit the file');
+    await waitFor(
+      () => events.some((event) => event.type === 'edit_proposed'),
+      'edit_proposed',
+    );
+
+    assert.equal(await readFile(file, 'utf8'), 'hello world\n');
+    const proposed = events.find(
+      (event): event is Extract<SessionEvent, { type: 'edit_proposed' }> =>
+        event.type === 'edit_proposed',
+    );
+    assert.ok(proposed);
+    session.send({
+      type: 'edit_decision',
+      proposalId: proposed.proposalId,
+      decision: 'approve',
+    });
+    await waitFor(
+      () => events.some((event) => event.type === 'edit_applied'),
+      'edit_applied',
+    );
+
+    assert.ok(events.some((event) => event.type === 'edit_approved'));
+    assert.ok(events.some((event) => event.type === 'edit_applied'));
+    assert.equal(await readFile(file, 'utf8'), 'hi world\n');
+  });
+});
+
+test('rejecting a proposed edit emits edit_rejected and leaves the file unchanged', async () => {
+  await withTempDir(async (dir) => {
+    const file = join(dir, 'note.txt');
+    await writeFile(file, 'hello world\n', 'utf8');
+    const session = new Session({
+      model: createScriptedModelClient([
+        [
+          {
+            type: 'tool_use',
+            toolUseId: 'read-1',
+            name: 'Read',
+            input: { path: file },
+          },
+          {
+            type: 'tool_use',
+            toolUseId: 'propose-1',
+            name: 'ProposeEdit',
+            input: { path: file, oldText: 'hello', newText: 'hi' },
+          },
+        ],
+        [{ type: 'text', text: 'Patch rejected.' }],
+      ]),
+      tools: createBuiltinTools(),
+    });
+    const events: SessionEvent[] = [];
+    session.subscribe((event) => events.push(event));
+
+    await session.submit('edit the file');
+    await waitFor(
+      () => events.some((event) => event.type === 'edit_proposed'),
+      'edit_proposed',
+    );
+    const proposed = events.find(
+      (event): event is Extract<SessionEvent, { type: 'edit_proposed' }> =>
+        event.type === 'edit_proposed',
+    );
+    assert.ok(proposed);
+    session.send({
+      type: 'edit_decision',
+      proposalId: proposed.proposalId,
+      decision: 'reject',
+    });
+    await waitFor(
+      () => events.some((event) => event.type === 'edit_rejected'),
+      'edit_rejected',
+    );
+
+    assert.ok(events.some((event) => event.type === 'edit_rejected'));
+    assert.equal(await readFile(file, 'utf8'), 'hello world\n');
+  });
 });
 
 test('snapshot then restore preserves history and permission mode', async () => {

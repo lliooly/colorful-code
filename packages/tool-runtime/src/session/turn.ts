@@ -2,7 +2,14 @@ import { describeTools } from '../core/descriptor.js';
 import type { ToolRegistry } from '../core/registry.js';
 import type { ToolUseRequest } from '../core/runner.js';
 import type { ToolScheduler } from '../core/scheduler.js';
-import type { RuntimeContext, TodoItem } from '../core/tool.js';
+import {
+  toolInvocationSource,
+  type JsonObject,
+  type RuntimeContext,
+  type TodoItem,
+  type Tool,
+  type ToolInvocationSource,
+} from '../core/tool.js';
 import type { PermissionAuditEntry } from '../core/permissions.js';
 import {
   compactHistory,
@@ -250,26 +257,40 @@ export async function runTurn(deps: TurnDeps): Promise<void> {
       const callsById = new Map(
         pendingToolUses.map((call) => [call.toolUseId, call]),
       );
+      const sourcesById = new Map<string, ToolInvocationSource>();
       const runnerResults = await deps.scheduler.runAll(scheduledToolUses, {
         onToolStart(toolUse) {
           const call = callsById.get(toolUse.id);
+          const tool = deps.registry.get(toolUse.name);
+          const source = tool
+            ? toolInvocationSource(
+                tool as Tool,
+                (call?.input ?? {}) as JsonObject,
+              )
+            : undefined;
+          if (source) {
+            sourcesById.set(toolUse.id, source);
+          }
           deps.emit({
             type: 'tool_call',
             runId: deps.runId,
             toolUseId: toolUse.id,
             name: toolUse.name,
             input: call?.input ?? {},
+            ...(source ? { source } : {}),
           });
         },
         onToolResult(result) {
           auditCursor = flushAudit(deps, auditCursor);
           todosSnapshot = flushTodos(deps, todosSnapshot);
+          const source = sourcesById.get(result.toolUseId);
           deps.emit({
             type: 'tool_result',
             runId: deps.runId,
             toolUseId: result.toolUseId,
             content: result.content,
             ...(result.isError ? { isError: true } : {}),
+            ...(source ? { source } : {}),
           });
         },
       });

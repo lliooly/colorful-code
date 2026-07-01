@@ -6,25 +6,35 @@ import {
   useMemo,
   useRef,
   useState,
-  type ReactNode
+  type ReactNode,
 } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   API_BASE_URL,
   createSession,
   eventsUrl,
+  forkCheckpoint,
+  listCheckpoints,
+  restoreCheckpoint,
   sendControl,
-  sendMessage
+  sendMessage,
 } from './api';
 import {
   PERMISSION_MODES,
   SESSION_EVENT_TYPES,
+  type EditProposalStatus,
+  type FilePatch,
+  type Checkpoint,
+  type ConversationEntry,
+  type MessageContent,
   type JsonObject,
+  type McpServerStatus,
   type ModelConfig,
   type ModelProtocol,
   type PermissionMode,
   type RunStatus,
-  type SessionEvent
+  type SessionEvent,
+  type ToolInvocationSource,
 } from './types';
 
 // ---- Model presets -------------------------------------------------------
@@ -41,19 +51,25 @@ const PRESETS: readonly Preset[] = [
   { id: 'claude', label: 'Claude', protocol: 'anthropic' },
   { id: 'deepseek', label: 'DeepSeek', protocol: 'openai' },
   { id: 'openai', label: 'OpenAI', protocol: 'openai' },
-  { id: 'custom', label: 'Custom', protocol: 'openai' }
+  { id: 'custom', label: 'Custom', protocol: 'openai' },
 ];
 
 // ---- Derived conversation model -----------------------------------------
 
 type ConversationItem =
+  | { kind: 'user'; text: string }
   | { kind: 'assistant'; runId: string; text: string; finalized: boolean }
   | {
       kind: 'tool';
       toolUseId: string;
       name: string;
       input: JsonObject;
-      result?: { content: string; isError: boolean };
+      source?: ToolInvocationSource;
+      result?: {
+        content: string;
+        isError: boolean;
+        source?: ToolInvocationSource;
+      };
     };
 
 type LoggedEvent = { seq: number; event: SessionEvent };
@@ -64,6 +80,17 @@ type ApprovalState = {
   name: string;
   input: JsonObject;
   message: string;
+  source?: ToolInvocationSource;
+};
+
+type EditProposalRecord = {
+  proposalId: string;
+  runId: string;
+  toolUseId?: string;
+  patches: FilePatch[];
+  status: EditProposalStatus;
+  reason?: string;
+  seq: number;
 };
 
 // ---- Small presentational helpers ---------------------------------------
@@ -87,6 +114,16 @@ function Json({ value }: { value: unknown }): ReactNode {
   );
 }
 
+function EditStatusPill({ status }: { status: EditProposalStatus }): ReactNode {
+  return (
+    <span
+      className={`rounded-full border px-2 py-0.5 text-xs ${editStatusTone(status)}`}
+    >
+      {status}
+    </span>
+  );
+}
+
 function statusTone(status: RunStatus | null): string {
   switch (status) {
     case 'running':
@@ -102,6 +139,60 @@ function statusTone(status: RunStatus | null): string {
   }
 }
 
+function editStatusTone(status: EditProposalStatus): string {
+  switch (status) {
+    case 'proposed':
+      return 'border-amber-500/40 text-foreground';
+    case 'approved':
+      return 'border-primary/40 text-foreground';
+    case 'applied':
+      return 'border-emerald-500/40 text-foreground';
+    case 'rejected':
+      return 'border-border text-muted-foreground';
+    case 'conflict':
+      return 'border-destructive/40 text-destructive';
+    default:
+      return 'border-border text-muted-foreground';
+  }
+}
+
+function patchStatusLabel(status: FilePatch['status']): string {
+  switch (status) {
+    case 'added':
+      return 'added';
+    case 'deleted':
+      return 'deleted';
+    default:
+      return 'modified';
+  }
+}
+
+function patchCounts(patch: FilePatch): { added: number; removed: number } {
+  return patch.hunks.reduce(
+    (acc, hunk) => ({
+      added:
+        acc.added + hunk.lines.filter((line) => line.kind === 'added').length,
+      removed:
+        acc.removed +
+        hunk.lines.filter((line) => line.kind === 'removed').length,
+    }),
+    { added: 0, removed: 0 },
+  );
+}
+
+function lineTone(
+  kind: FilePatch['hunks'][number]['lines'][number]['kind'],
+): string {
+  switch (kind) {
+    case 'added':
+      return 'bg-emerald-500/10 text-foreground';
+    case 'removed':
+      return 'bg-destructive/10 text-foreground';
+    default:
+      return 'text-foreground/80';
+  }
+}
+
 // ---- Page ----------------------------------------------------------------
 
 export default function AgentDebugPage(): ReactNode {
@@ -109,8 +200,7 @@ export default function AgentDebugPage(): ReactNode {
   const [presetId, setPresetId] = useState<string>('claude');
   const [permissionMode, setPermissionMode] =
     useState<PermissionMode>('default');
-  const [customProtocol, setCustomProtocol] =
-    useState<ModelProtocol>('openai');
+  const [customProtocol, setCustomProtocol] = useState<ModelProtocol>('openai');
   const [customBaseURL, setCustomBaseURL] = useState('');
   const [customModel, setCustomModel] = useState('');
   const [customApiKey, setCustomApiKey] = useState('');
@@ -121,77 +211,173 @@ export default function AgentDebugPage(): ReactNode {
   const [connected, setConnected] = useState(false);
   const [runStatus, setRunStatus] = useState<RunStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mcpServers, setMcpServers] = useState<McpServerStatus[]>([]);
+  const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
+  const [currentCheckpointId, setCurrentCheckpointId] = useState<string | null>(
+    null,
+  );
+  const [loadingCheckpoints, setLoadingCheckpoints] = useState(false);
+  const [checkpointAction, setCheckpointAction] = useState<{
+    id: string;
+    type: 'restore' | 'fork';
+  } | null>(null);
 
   // Conversation + raw log + approvals derived from the SSE stream.
   const [items, setItems] = useState<ConversationItem[]>([]);
   const [log, setLog] = useState<LoggedEvent[]>([]);
   const [approval, setApproval] = useState<ApprovalState | null>(null);
+  const [editProposals, setEditProposals] = useState<EditProposalRecord[]>([]);
+  const [selectedProposalId, setSelectedProposalId] = useState<string | null>(
+    null,
+  );
+  const [selectedPatchPath, setSelectedPatchPath] = useState<string | null>(
+    null,
+  );
 
   // Message composer.
   const [draft, setDraft] = useState('');
 
   const sourceRef = useRef<EventSource | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
   const seqRef = useRef(0);
   const conversationEndRef = useRef<HTMLDivElement | null>(null);
 
   const preset = useMemo(
     () => PRESETS.find((p) => p.id === presetId) ?? PRESETS[0],
-    [presetId]
+    [presetId],
   );
   const isCustom = preset.id === 'custom';
 
-  // Fold each incoming event into the conversation + raw log.
-  const handleEvent = useCallback((event: SessionEvent) => {
-    seqRef.current += 1;
-    const seq = seqRef.current;
-    setLog((prev) => [...prev, { seq, event }]);
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
 
-    switch (event.type) {
-      case 'run_status':
-        setRunStatus(event.status);
-        break;
-      case 'message_delta':
-        setItems((prev) => appendDelta(prev, event.runId, event.text));
-        break;
-      case 'message':
-        setItems((prev) => finalizeMessage(prev, event.runId, event.content));
-        break;
-      case 'tool_call':
-        setItems((prev) => [
-          ...prev,
-          {
-            kind: 'tool',
-            toolUseId: event.toolUseId,
-            name: event.name,
-            input: event.input
-          }
-        ]);
-        break;
-      case 'tool_result':
-        setItems((prev) =>
-          attachResult(prev, event.toolUseId, {
-            content: event.content,
-            isError: event.isError ?? false
-          })
-        );
-        break;
-      case 'approval_required':
-        setApproval({
-          requestId: event.requestId,
-          toolUseId: event.toolUseId,
-          name: event.name,
-          input: event.input,
-          message: event.message
-        });
-        break;
-      case 'error':
-        setError(event.message);
-        break;
-      // permission_decision / todos_updated are surfaced via the raw log only.
-      default:
-        break;
+  const resetSessionDerivedState = useCallback(
+    (seedItems: ConversationItem[] = []) => {
+      setItems(seedItems);
+      setLog([]);
+      setApproval(null);
+      setEditProposals([]);
+      setSelectedProposalId(null);
+      setSelectedPatchPath(null);
+      setRunStatus(null);
+      setMcpServers([]);
+      seqRef.current = 0;
+    },
+    [],
+  );
+
+  const refreshCheckpoints = useCallback(async (id: string) => {
+    setLoadingCheckpoints(true);
+    try {
+      const data = await listCheckpoints(id);
+      setCheckpoints(data.checkpoints);
+      setCurrentCheckpointId(data.currentCheckpointId ?? null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoadingCheckpoints(false);
     }
   }, []);
+
+  // Fold each incoming event into the conversation + raw log.
+  const handleEvent = useCallback(
+    (event: SessionEvent) => {
+      seqRef.current += 1;
+      const seq = seqRef.current;
+      setLog((prev) => [...prev, { seq, event }]);
+
+      switch (event.type) {
+        case 'mcp_status':
+          setMcpServers(event.servers);
+          break;
+        case 'run_status':
+          setRunStatus(event.status);
+          if (event.status !== 'running' && sessionIdRef.current) {
+            void refreshCheckpoints(sessionIdRef.current);
+          }
+          break;
+        case 'message_delta':
+          setItems((prev) => appendDelta(prev, event.runId, event.text));
+          break;
+        case 'message':
+          setItems((prev) => finalizeMessage(prev, event.runId, event.content));
+          break;
+        case 'tool_call':
+          setItems((prev) => [
+            ...prev,
+            {
+              kind: 'tool',
+              toolUseId: event.toolUseId,
+              name: event.name,
+              input: event.input,
+              ...(event.source ? { source: event.source } : {}),
+            },
+          ]);
+          break;
+        case 'tool_result':
+          setItems((prev) =>
+            attachResult(prev, event.toolUseId, {
+              content: event.content,
+              isError: event.isError ?? false,
+              ...(event.source ? { source: event.source } : {}),
+            }),
+          );
+          break;
+        case 'approval_required':
+          setApproval({
+            requestId: event.requestId,
+            toolUseId: event.toolUseId,
+            name: event.name,
+            input: event.input,
+            message: event.message,
+            ...(event.source ? { source: event.source } : {}),
+          });
+          break;
+        case 'edit_proposed':
+        case 'edit_approved':
+        case 'edit_applied':
+        case 'edit_rejected':
+        case 'edit_conflict':
+          setEditProposals((prev) =>
+            upsertEditProposal(
+              prev,
+              {
+                proposalId: event.proposalId,
+                runId: event.runId,
+                ...(event.toolUseId ? { toolUseId: event.toolUseId } : {}),
+                patches: event.patches,
+                status:
+                  event.type === 'edit_proposed'
+                    ? 'proposed'
+                    : event.type === 'edit_approved'
+                      ? 'approved'
+                      : event.type === 'edit_applied'
+                        ? 'applied'
+                        : event.type === 'edit_rejected'
+                          ? 'rejected'
+                          : 'conflict',
+                ...(event.type === 'edit_rejected' && event.reason
+                  ? { reason: event.reason }
+                  : {}),
+                ...(event.type === 'edit_conflict' && event.reason
+                  ? { reason: event.reason }
+                  : {}),
+              },
+              seq,
+            ),
+          );
+          break;
+        case 'error':
+          setError(event.message);
+          break;
+        // permission_decision / todos_updated are surfaced via the raw log only.
+        default:
+          break;
+      }
+    },
+    [refreshCheckpoints],
+  );
 
   // Open the SSE stream for a session. The server replays its buffer on connect,
   // so this is reconnect-safe; we connect right after create, before sending.
@@ -221,7 +407,7 @@ export default function AgentDebugPage(): ReactNode {
         });
       }
     },
-    [handleEvent]
+    [handleEvent],
   );
 
   const closeStream = useCallback(() => {
@@ -254,7 +440,7 @@ export default function AgentDebugPage(): ReactNode {
     customProtocol,
     customBaseURL,
     customModel,
-    customApiKey
+    customApiKey,
   ]);
 
   const handleCreate = useCallback(async () => {
@@ -263,15 +449,15 @@ export default function AgentDebugPage(): ReactNode {
     try {
       const id = await createSession({
         permissionMode,
-        model: buildModelConfig()
+        model: buildModelConfig(),
       });
       // Reset derived state for the fresh session.
-      setItems([]);
-      setLog([]);
-      setApproval(null);
-      setRunStatus(null);
-      seqRef.current = 0;
+      resetSessionDerivedState();
+      setCheckpoints([]);
+      setCurrentCheckpointId(null);
+      sessionIdRef.current = id;
       setSessionId(id);
+      void refreshCheckpoints(id);
       // Connect promptly so no events are missed (buffer replay covers the gap).
       openStream(id);
     } catch (err) {
@@ -279,7 +465,13 @@ export default function AgentDebugPage(): ReactNode {
     } finally {
       setConnecting(false);
     }
-  }, [permissionMode, buildModelConfig, openStream]);
+  }, [
+    permissionMode,
+    buildModelConfig,
+    openStream,
+    refreshCheckpoints,
+    resetSessionDerivedState,
+  ]);
 
   const handleSend = useCallback(async () => {
     if (!sessionId || !draft.trim()) return;
@@ -303,13 +495,29 @@ export default function AgentDebugPage(): ReactNode {
           requestId,
           decision: allow
             ? { behavior: 'allow' }
-            : { behavior: 'deny', message: 'Denied from debug UI.' }
+            : { behavior: 'deny', message: 'Denied from debug UI.' },
         });
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [sessionId, approval]
+    [sessionId, approval],
+  );
+
+  const handleEditDecision = useCallback(
+    async (proposalId: string, decision: 'approve' | 'reject') => {
+      if (!sessionId) return;
+      try {
+        await sendControl(sessionId, {
+          type: 'edit_decision',
+          proposalId,
+          decision,
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [sessionId],
   );
 
   const handleSetMode = useCallback(
@@ -322,7 +530,7 @@ export default function AgentDebugPage(): ReactNode {
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [sessionId]
+    [sessionId],
   );
 
   const handleCancel = useCallback(async () => {
@@ -334,7 +542,90 @@ export default function AgentDebugPage(): ReactNode {
     }
   }, [sessionId]);
 
+  const handleRestoreCheckpoint = useCallback(
+    async (checkpoint: Checkpoint) => {
+      if (!sessionId) return;
+      setError(null);
+      setCheckpointAction({ id: checkpoint.id, type: 'restore' });
+      try {
+        const restored = await restoreCheckpoint(sessionId, checkpoint.id, {
+          model: buildModelConfig(),
+        });
+        resetSessionDerivedState(
+          conversationItemsFromHistory(checkpoint.snapshot.history),
+        );
+        setPermissionMode(checkpoint.snapshot.permissionMode);
+        setCurrentCheckpointId(restored.checkpointId);
+        await refreshCheckpoints(sessionId);
+        sessionIdRef.current = sessionId;
+        setSessionId(sessionId);
+        openStream(sessionId);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setCheckpointAction(null);
+      }
+    },
+    [
+      sessionId,
+      buildModelConfig,
+      openStream,
+      refreshCheckpoints,
+      resetSessionDerivedState,
+    ],
+  );
+
+  const handleForkCheckpoint = useCallback(
+    async (checkpoint: Checkpoint) => {
+      if (!sessionId) return;
+      setError(null);
+      setCheckpointAction({ id: checkpoint.id, type: 'fork' });
+      try {
+        const forked = await forkCheckpoint(sessionId, checkpoint.id, {
+          model: buildModelConfig(),
+        });
+        resetSessionDerivedState(
+          conversationItemsFromHistory(checkpoint.snapshot.history),
+        );
+        setPermissionMode(checkpoint.snapshot.permissionMode);
+        sessionIdRef.current = forked.id;
+        setSessionId(forked.id);
+        setCheckpoints([]);
+        setCurrentCheckpointId(forked.checkpointId);
+        await refreshCheckpoints(forked.id);
+        openStream(forked.id);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setCheckpointAction(null);
+      }
+    },
+    [
+      sessionId,
+      buildModelConfig,
+      openStream,
+      refreshCheckpoints,
+      resetSessionDerivedState,
+    ],
+  );
+
   const hasSession = sessionId !== null;
+  const sortedEditProposals = useMemo(
+    () => [...editProposals].sort((a, b) => b.seq - a.seq),
+    [editProposals],
+  );
+  const selectedProposal =
+    sortedEditProposals.find(
+      (proposal) => proposal.proposalId === selectedProposalId,
+    ) ??
+    sortedEditProposals[0] ??
+    null;
+  const selectedPatch =
+    selectedProposal?.patches.find(
+      (patch) => patch.path === selectedPatchPath,
+    ) ??
+    selectedProposal?.patches[0] ??
+    null;
 
   return (
     <main className="min-h-screen bg-background px-4 py-6 text-foreground sm:px-6 sm:py-8">
@@ -409,10 +700,7 @@ export default function AgentDebugPage(): ReactNode {
             </label>
 
             <div className="flex items-end gap-2 sm:col-span-2 lg:col-span-2">
-              <Button
-                onClick={() => void handleCreate()}
-                disabled={connecting}
-              >
+              <Button onClick={() => void handleCreate()} disabled={connecting}>
                 {hasSession ? 'New session' : 'Create session'}
               </Button>
               <Button
@@ -482,6 +770,198 @@ export default function AgentDebugPage(): ReactNode {
           ) : null}
         </section>
 
+        {/* MCP status */}
+        {hasSession ? (
+          <section className={panelClass}>
+            <div className="flex items-center justify-between gap-2 pb-3">
+              <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                MCP servers
+              </h2>
+              <span className="text-xs text-muted-foreground">
+                {mcpServers.length} configured
+              </span>
+            </div>
+            {mcpServers.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No MCP servers for this session.
+              </p>
+            ) : (
+              <div className="grid gap-3 md:grid-cols-2">
+                {mcpServers.map((server) => (
+                  <div
+                    key={server.name}
+                    className="rounded-xl border border-border/70 bg-background/70 px-3 py-2"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="font-mono text-sm text-foreground">
+                          {server.name}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {server.transport}
+                        </p>
+                      </div>
+                      <span
+                        className={
+                          server.status === 'connected'
+                            ? 'rounded-full border border-primary/40 px-2 py-0.5 text-xs text-foreground'
+                            : 'rounded-full border border-destructive/40 px-2 py-0.5 text-xs text-destructive'
+                        }
+                      >
+                        {server.status}
+                      </span>
+                    </div>
+                    {server.error ? (
+                      <p className="mt-2 text-xs text-destructive">
+                        {server.error}
+                      </p>
+                    ) : null}
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                          tools
+                        </p>
+                        {server.tools.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">none</p>
+                        ) : (
+                          <ul className="space-y-1">
+                            {server.tools.map((tool) => (
+                              <li
+                                key={tool.registeredName ?? tool.name}
+                                className="font-mono text-xs text-foreground/85"
+                              >
+                                {tool.registeredName ?? tool.name}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                      <div>
+                        <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                          resources
+                        </p>
+                        {server.resources.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">none</p>
+                        ) : (
+                          <ul className="space-y-1">
+                            {server.resources.map((resource) => (
+                              <li
+                                key={resource.uri}
+                                className="break-all font-mono text-xs text-foreground/85"
+                              >
+                                {resource.name
+                                  ? `${resource.name} · ${resource.uri}`
+                                  : resource.uri}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        ) : null}
+
+        {/* Checkpoints */}
+        {hasSession ? (
+          <section className={panelClass}>
+            <div className="flex items-center justify-between gap-2 pb-3">
+              <div>
+                <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  Checkpoints
+                </h2>
+              </div>
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => {
+                  if (sessionId) void refreshCheckpoints(sessionId);
+                }}
+                disabled={loadingCheckpoints}
+              >
+                {loadingCheckpoints ? 'Refreshing' : 'Refresh'}
+              </Button>
+            </div>
+            {checkpoints.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                {loadingCheckpoints
+                  ? 'Loading checkpoints…'
+                  : 'No checkpoints for this session yet.'}
+              </p>
+            ) : (
+              <div className="flex min-h-0 flex-col gap-3">
+                {checkpoints.map((checkpoint) => {
+                  const isCurrent = checkpoint.id === currentCheckpointId;
+                  const isRestoring =
+                    checkpointAction?.id === checkpoint.id &&
+                    checkpointAction.type === 'restore';
+                  const isForking =
+                    checkpointAction?.id === checkpoint.id &&
+                    checkpointAction.type === 'fork';
+                  const checkpointActionPending = checkpointAction !== null;
+                  return (
+                    <div
+                      key={checkpoint.id}
+                      className="rounded-xl border border-border/70 bg-background/70 px-3 py-2"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="truncate font-mono text-sm text-foreground">
+                              {checkpoint.label?.trim() || checkpoint.id}
+                            </p>
+                            {isCurrent ? (
+                              <span className="rounded-full border border-primary/40 px-2 py-0.5 text-xs text-foreground">
+                                current
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {formatCheckpointTime(checkpoint.createdAt)}
+                            {checkpoint.runId
+                              ? ` · run ${checkpoint.runId}`
+                              : ''}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            onClick={() =>
+                              void handleRestoreCheckpoint(checkpoint)
+                            }
+                            disabled={checkpointActionPending}
+                          >
+                            {isRestoring ? 'Restoring' : 'Restore'}
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            onClick={() =>
+                              void handleForkCheckpoint(checkpoint)
+                            }
+                            disabled={checkpointActionPending}
+                          >
+                            {isForking ? 'Forking' : 'Fork'}
+                          </Button>
+                        </div>
+                      </div>
+                      {checkpoint.summary ? (
+                        <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground/85">
+                          {checkpoint.summary}
+                        </p>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        ) : null}
+
         {/* Message composer */}
         <section className={panelClass}>
           <div className="flex items-end gap-2">
@@ -511,6 +991,217 @@ export default function AgentDebugPage(): ReactNode {
           </div>
         </section>
 
+        {hasSession ? (
+          <section className={panelClass}>
+            <div className="flex items-center justify-between gap-2 pb-3">
+              <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                Edit proposals
+              </h2>
+              <span className="text-xs text-muted-foreground">
+                {sortedEditProposals.length} proposals
+              </span>
+            </div>
+            {sortedEditProposals.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                Edit proposals will appear here when the runtime emits them.
+              </p>
+            ) : (
+              <div className="grid min-h-0 gap-3 lg:grid-cols-[360px_minmax(0,1fr)]">
+                <div className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-1">
+                  {sortedEditProposals.map((proposal) => {
+                    const isSelected =
+                      proposal.proposalId === selectedProposal?.proposalId;
+                    const canDecide = proposal.status === 'proposed';
+                    return (
+                      <div
+                        key={proposal.proposalId}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => {
+                          setSelectedProposalId(proposal.proposalId);
+                          setSelectedPatchPath(
+                            proposal.patches[0]?.path ?? null,
+                          );
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            setSelectedProposalId(proposal.proposalId);
+                            setSelectedPatchPath(
+                              proposal.patches[0]?.path ?? null,
+                            );
+                          }
+                        }}
+                        className={`rounded-xl border px-3 py-3 text-left transition-colors ${
+                          isSelected
+                            ? 'border-primary/50 bg-primary/5'
+                            : 'border-border/70 bg-background/70 hover:border-border'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate font-mono text-sm text-foreground">
+                              {proposal.proposalId}
+                            </p>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              run {proposal.runId}
+                              {proposal.toolUseId
+                                ? ` · tool ${proposal.toolUseId}`
+                                : ''}
+                            </p>
+                          </div>
+                          <EditStatusPill status={proposal.status} />
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                          <span>{proposal.patches.length} files</span>
+                          {proposal.reason ? (
+                            <span>{proposal.reason}</span>
+                          ) : null}
+                        </div>
+                        {canDecide ? (
+                          <div className="mt-3 flex gap-2">
+                            <Button
+                              size="xs"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void handleEditDecision(
+                                  proposal.proposalId,
+                                  'approve',
+                                );
+                              }}
+                            >
+                              Approve
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant="destructive"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void handleEditDecision(
+                                  proposal.proposalId,
+                                  'reject',
+                                );
+                              }}
+                            >
+                              Reject
+                            </Button>
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="grid min-h-0 gap-3 lg:grid-cols-[240px_minmax(0,1fr)]">
+                  <div className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-1">
+                    <div className="rounded-xl border border-border/70 bg-background/70 px-3 py-2">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                        Files
+                      </p>
+                      <div className="mt-2 space-y-2">
+                        {selectedProposal?.patches.map((patch) => {
+                          const counts = patchCounts(patch);
+                          const selected = patch.path === selectedPatch?.path;
+                          return (
+                            <button
+                              key={patch.path}
+                              type="button"
+                              onClick={() => setSelectedPatchPath(patch.path)}
+                              className={`w-full rounded-lg border px-3 py-2 text-left ${
+                                selected
+                                  ? 'border-primary/50 bg-primary/5'
+                                  : 'border-border/60 bg-background/60'
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <p className="truncate font-mono text-sm text-foreground">
+                                  {patch.path}
+                                </p>
+                                <span className="shrink-0 rounded-full border border-border/70 px-2 py-0.5 text-[11px] text-muted-foreground">
+                                  {patchStatusLabel(patch.status)}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-[11px] text-muted-foreground">
+                                +{counts.added} -{counts.removed}
+                              </p>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex min-h-0 flex-col rounded-xl border border-border/70 bg-background/70">
+                    {selectedPatch ? (
+                      <>
+                        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 px-3 py-2">
+                          <div className="min-w-0">
+                            <p className="truncate font-mono text-sm text-foreground">
+                              {selectedPatch.path}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {patchStatusLabel(selectedPatch.status)} ·{' '}
+                              {selectedPatch.hunks.length} hunks
+                            </p>
+                          </div>
+                          <EditStatusPill
+                            status={selectedProposal?.status ?? 'proposed'}
+                          />
+                        </div>
+                        <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
+                          <div className="space-y-4">
+                            {selectedPatch.hunks.map((hunk, hunkIndex) => (
+                              <div
+                                key={`${selectedPatch.path}-${hunkIndex}`}
+                                className="rounded-lg border border-border/60"
+                              >
+                                <div className="border-b border-border/60 bg-muted/30 px-3 py-2 font-mono text-[11px] text-muted-foreground">
+                                  @@ -{hunk.oldStart},{hunk.oldLines} +
+                                  {hunk.newStart},{hunk.newLines} @@
+                                </div>
+                                <div className="overflow-x-auto">
+                                  <div className="min-w-[640px]">
+                                    {hunk.lines.map((line, lineIndex) => (
+                                      <div
+                                        key={`${selectedPatch.path}-${hunkIndex}-${lineIndex}`}
+                                        className={`grid grid-cols-[4rem_4rem_minmax(0,1fr)] gap-2 px-3 py-1 font-mono text-xs leading-5 ${lineTone(
+                                          line.kind,
+                                        )}`}
+                                      >
+                                        <span className="text-right text-muted-foreground/70">
+                                          {line.oldNumber ?? ''}
+                                        </span>
+                                        <span className="text-right text-muted-foreground/70">
+                                          {line.newNumber ?? ''}
+                                        </span>
+                                        <span className="whitespace-pre-wrap break-words">
+                                          {line.kind === 'added'
+                                            ? `+ ${line.text}`
+                                            : line.kind === 'removed'
+                                              ? `- ${line.text}`
+                                              : `  ${line.text}`}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <p className="p-4 text-sm text-muted-foreground">
+                        Select a file to inspect its diff.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </section>
+        ) : null}
+
         {/* Live view + raw log */}
         <section className="grid min-h-0 gap-5 lg:grid-cols-2">
           {/* Conversation */}
@@ -521,7 +1212,7 @@ export default function AgentDebugPage(): ReactNode {
               </h2>
               <span
                 className={`rounded-full border px-2 py-0.5 text-xs ${statusTone(
-                  runStatus
+                  runStatus,
                 )}`}
               >
                 {runStatus ?? 'idle'}
@@ -534,7 +1225,19 @@ export default function AgentDebugPage(): ReactNode {
                 </p>
               ) : (
                 items.map((item, index) =>
-                  item.kind === 'assistant' ? (
+                  item.kind === 'user' ? (
+                    <div
+                      key={`u-${String(index)}`}
+                      className="rounded-xl border border-border/70 bg-background/70 px-3 py-2"
+                    >
+                      <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                        user
+                      </p>
+                      <p className="whitespace-pre-wrap text-sm leading-6">
+                        {item.text}
+                      </p>
+                    </div>
+                  ) : item.kind === 'assistant' ? (
                     <div
                       key={`a-${item.runId}-${String(index)}`}
                       className="rounded-xl border border-border/70 bg-background/70 px-3 py-2"
@@ -553,6 +1256,11 @@ export default function AgentDebugPage(): ReactNode {
                     >
                       <p className="mb-1 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                         tool · {item.name}
+                        {item.source?.type === 'mcp' ? (
+                          <span className="text-foreground/60">
+                            mcp:{item.source.server}
+                          </span>
+                        ) : null}
                         {item.result ? (
                           <span
                             className={
@@ -579,7 +1287,7 @@ export default function AgentDebugPage(): ReactNode {
                         </div>
                       ) : null}
                     </div>
-                  )
+                  ),
                 )
               )}
               <div ref={conversationEndRef} />
@@ -639,6 +1347,11 @@ export default function AgentDebugPage(): ReactNode {
             <h2 className="mt-2 text-lg font-semibold tracking-tight">
               {approval.name}
             </h2>
+            {approval.source?.type === 'mcp' ? (
+              <p className="mt-1 font-mono text-xs text-muted-foreground">
+                mcp:{approval.source.server}
+              </p>
+            ) : null}
             <p className="mt-2 text-sm text-muted-foreground">
               {approval.message}
             </p>
@@ -670,7 +1383,7 @@ export default function AgentDebugPage(): ReactNode {
 function appendDelta(
   items: ConversationItem[],
   runId: string,
-  text: string
+  text: string,
 ): ConversationItem[] {
   const last = items[items.length - 1];
   if (
@@ -690,7 +1403,7 @@ function appendDelta(
 function finalizeMessage(
   items: ConversationItem[],
   runId: string,
-  content: string
+  content: string,
 ): ConversationItem[] {
   for (let i = items.length - 1; i >= 0; i -= 1) {
     const item = items[i];
@@ -698,23 +1411,121 @@ function finalizeMessage(
       const updated: ConversationItem = {
         ...item,
         text: content,
-        finalized: true
+        finalized: true,
       };
       return [...items.slice(0, i), updated, ...items.slice(i + 1)];
     }
   }
-  return [...items, { kind: 'assistant', runId, text: content, finalized: true }];
+  return [
+    ...items,
+    { kind: 'assistant', runId, text: content, finalized: true },
+  ];
 }
 
 // Attach a tool_result to its matching tool_call by toolUseId.
 function attachResult(
   items: ConversationItem[],
   toolUseId: string,
-  result: { content: string; isError: boolean }
+  result: { content: string; isError: boolean; source?: ToolInvocationSource },
 ): ConversationItem[] {
   return items.map((item) =>
     item.kind === 'tool' && item.toolUseId === toolUseId
       ? { ...item, result }
-      : item
+      : item,
   );
+}
+
+function upsertEditProposal(
+  items: EditProposalRecord[],
+  proposal: Omit<EditProposalRecord, 'seq'>,
+  seq: number,
+): EditProposalRecord[] {
+  const next: EditProposalRecord = { ...proposal, seq };
+  const index = items.findIndex(
+    (item) => item.proposalId === proposal.proposalId,
+  );
+  if (index === -1) return [...items, next];
+  const existing = items[index];
+  const merged: EditProposalRecord = {
+    ...existing,
+    ...next,
+    reason: proposal.reason ?? existing.reason,
+  };
+  return [...items.slice(0, index), merged, ...items.slice(index + 1)];
+}
+
+function conversationItemsFromHistory(
+  history: ConversationEntry[],
+): ConversationItem[] {
+  const items: ConversationItem[] = [];
+  history.forEach((entry, index) => {
+    const text = messageContentToText(entry.content);
+    if (entry.role === 'user') {
+      if (text) items.push({ kind: 'user', text });
+      return;
+    }
+    if (entry.role === 'assistant') {
+      if (text) {
+        items.push({
+          kind: 'assistant',
+          runId: `checkpoint-${String(index)}`,
+          text,
+          finalized: true,
+        });
+      }
+      for (const call of entry.toolCalls ?? []) {
+        items.push({
+          kind: 'tool',
+          toolUseId: call.toolUseId,
+          name: call.name,
+          input: call.input,
+        });
+      }
+      return;
+    }
+    for (const result of entry.toolResults ?? []) {
+      let lastIndex = -1;
+      for (let i = items.length - 1; i >= 0; i -= 1) {
+        const item = items[i];
+        if (item?.kind === 'tool' && item.toolUseId === result.toolUseId) {
+          lastIndex = i;
+          break;
+        }
+      }
+      const toolResult = {
+        content: result.content,
+        isError: result.isError ?? false,
+      };
+      if (lastIndex >= 0) {
+        const toolItem = items[lastIndex];
+        if (toolItem?.kind === 'tool') {
+          items[lastIndex] = { ...toolItem, result: toolResult };
+        }
+      } else {
+        items.push({
+          kind: 'tool',
+          toolUseId: result.toolUseId,
+          name: result.toolUseId,
+          input: {},
+          result: toolResult,
+        });
+      }
+    }
+  });
+  return items;
+}
+
+function messageContentToText(content: MessageContent): string {
+  if (typeof content === 'string') return content;
+  return content
+    .map((block) =>
+      block.type === 'text' ? block.text : `[image: ${block.mediaType}]`,
+    )
+    .join('\n');
+}
+
+function formatCheckpointTime(value: number): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString();
 }

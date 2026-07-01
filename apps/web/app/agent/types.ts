@@ -15,7 +15,7 @@ export const PERMISSION_MODES: readonly PermissionMode[] = [
   'plan',
   'acceptEdits',
   'readOnly',
-  'bypass'
+  'bypass',
 ];
 
 export type ModelProtocol = 'anthropic' | 'openai';
@@ -34,9 +34,132 @@ export type RunStatus = 'running' | 'completed' | 'cancelled' | 'error';
 
 export type JsonObject = Record<string, unknown>;
 
+export type TextContentBlock = {
+  type: 'text';
+  text: string;
+};
+
+export type ImageContentBlock = {
+  type: 'image';
+  mediaType: string;
+  data: string;
+};
+
+export type ContentBlock = TextContentBlock | ImageContentBlock;
+
+export type MessageContent = string | ContentBlock[];
+
+export type ConversationToolCall = {
+  toolUseId: string;
+  name: string;
+  input: JsonObject;
+};
+
+export type ConversationToolResult = {
+  toolUseId: string;
+  content: string;
+  isError?: boolean;
+};
+
+export type ConversationEntry = {
+  role: 'user' | 'assistant' | 'tool';
+  content: MessageContent;
+  toolCalls?: ConversationToolCall[];
+  toolResults?: ConversationToolResult[];
+};
+
+export type SessionSnapshot = {
+  id: string;
+  cwd?: string;
+  history: ConversationEntry[];
+  permissionMode: PermissionMode;
+  workspaceRoots: string[];
+  todos: unknown[];
+};
+
+export type Checkpoint = {
+  id: string;
+  sessionId: string;
+  parentCheckpointId?: string;
+  createdAt: number;
+  runId?: string;
+  label?: string;
+  summary?: string;
+  snapshot: SessionSnapshot;
+  fileChanges?: unknown;
+};
+
+export type ListCheckpointsResponse = {
+  checkpoints: Checkpoint[];
+  currentCheckpointId?: string;
+};
+
+export type CheckpointSessionResponse = {
+  id: string;
+  checkpointId: string;
+};
+
+export type ToolInvocationSource =
+  | { type: 'mcp'; server: string }
+  | { type: 'builtin' }
+  | { type: 'lsp' };
+
+export type PatchLineKind = 'context' | 'added' | 'removed';
+
+export type FilePatchLine = {
+  kind: PatchLineKind;
+  oldNumber?: number;
+  newNumber?: number;
+  text: string;
+};
+
+export type FilePatchHunk = {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  lines: FilePatchLine[];
+};
+
+export type FilePatch = {
+  path: string;
+  status: 'added' | 'modified' | 'deleted';
+  hunks: FilePatchHunk[];
+  added: number;
+  removed: number;
+  conflictReason?: string;
+};
+
+export type EditProposalStatus =
+  | 'proposed'
+  | 'approved'
+  | 'applied'
+  | 'rejected'
+  | 'conflict';
+
+export type McpServerStatus = {
+  name: string;
+  status: 'connected' | 'failed';
+  transport: 'stdio' | 'http' | 'sse';
+  tools: Array<{
+    name: string;
+    registeredName?: string;
+    description?: string;
+  }>;
+  resources: Array<{
+    uri: string;
+    name?: string;
+    mimeType?: string;
+    description?: string;
+  }>;
+  instructions?: string;
+  error?: string;
+};
+
 // The full SessionEvent union streamed over SSE. Each event's SSE `event:` name
 // equals its `type`; `data` is the JSON-encoded event below.
 export type SessionEvent =
+  | { type: 'mcp_status'; servers: McpServerStatus[] }
   | { type: 'run_status'; status: RunStatus; runId: string }
   | { type: 'message_delta'; runId: string; text: string }
   | { type: 'message'; runId: string; role: 'assistant'; content: string }
@@ -46,6 +169,7 @@ export type SessionEvent =
       toolUseId: string;
       name: string;
       input: JsonObject;
+      source?: ToolInvocationSource;
     }
   | {
       type: 'tool_result';
@@ -53,6 +177,7 @@ export type SessionEvent =
       toolUseId: string;
       content: string;
       isError?: boolean;
+      source?: ToolInvocationSource;
     }
   | {
       type: 'approval_required';
@@ -62,7 +187,45 @@ export type SessionEvent =
       name: string;
       input: JsonObject;
       message: string;
+      source?: ToolInvocationSource;
       suggestions?: unknown[];
+    }
+  | {
+      type: 'edit_proposed';
+      runId: string;
+      proposalId: string;
+      toolUseId?: string;
+      patches: FilePatch[];
+    }
+  | {
+      type: 'edit_approved';
+      runId: string;
+      proposalId: string;
+      toolUseId?: string;
+      patches: FilePatch[];
+    }
+  | {
+      type: 'edit_applied';
+      runId: string;
+      proposalId: string;
+      toolUseId?: string;
+      patches: FilePatch[];
+    }
+  | {
+      type: 'edit_rejected';
+      runId: string;
+      proposalId: string;
+      toolUseId?: string;
+      patches: FilePatch[];
+      reason?: string;
+    }
+  | {
+      type: 'edit_conflict';
+      runId: string;
+      proposalId: string;
+      toolUseId?: string;
+      patches: FilePatch[];
+      reason?: string;
     }
   | { type: 'permission_decision'; runId: string; entry: unknown }
   | { type: 'todos_updated'; runId: string; todos: unknown[] }
@@ -86,17 +249,23 @@ export type SessionEventType = SessionEvent['type'];
 // Every event type, used to register one SSE listener per name (a plain
 // `onmessage` never fires because the server names every event).
 export const SESSION_EVENT_TYPES: readonly SessionEventType[] = [
+  'mcp_status',
   'run_status',
   'message_delta',
   'message',
   'tool_call',
   'tool_result',
   'approval_required',
+  'edit_proposed',
+  'edit_approved',
+  'edit_applied',
+  'edit_rejected',
+  'edit_conflict',
   'permission_decision',
   'todos_updated',
   'usage',
   'context_compacted',
-  'error'
+  'error',
 ];
 
 export type ApprovalDecision =
@@ -105,5 +274,10 @@ export type ApprovalDecision =
 
 export type ControlMessage =
   | { type: 'approval_response'; requestId: string; decision: ApprovalDecision }
+  | {
+      type: 'edit_decision';
+      proposalId: string;
+      decision: 'approve' | 'reject';
+    }
   | { type: 'cancel' }
   | { type: 'set_permission_mode'; mode: PermissionMode };

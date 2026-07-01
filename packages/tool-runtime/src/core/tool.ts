@@ -11,10 +11,21 @@ export type JsonObject = Record<string, unknown>;
 
 export type ToolSource = 'builtin' | 'mcp' | 'lsp';
 
+export type ToolInvocationSource =
+  | { type: 'mcp'; server: string }
+  | { type: 'builtin' }
+  | { type: 'lsp' };
+
+export type McpToolBinding = {
+  server: string;
+  tool?: string;
+};
+
 export type ToolResultBlock = {
   toolUseId: string;
   content: string;
   isError?: boolean;
+  metadata?: JsonObject;
 };
 
 export type ToolCallResult<Output> = {
@@ -34,6 +45,48 @@ export type FileReadSnapshot = {
   content: string;
   mtimeMs: number;
   complete: boolean;
+};
+
+export type PatchLineKind = 'context' | 'added' | 'removed';
+
+export type PatchLine = {
+  kind: PatchLineKind;
+  oldNumber?: number;
+  newNumber?: number;
+  text: string;
+};
+
+export type FilePatchHunk = {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  lines: PatchLine[];
+};
+
+export type FilePatch = {
+  path: string;
+  status: 'added' | 'modified' | 'deleted';
+  hunks: FilePatchHunk[];
+  added: number;
+  removed: number;
+  conflictReason?: string;
+};
+
+export type EditProposal = {
+  id: string;
+  toolUseId: string;
+  createdAt: number;
+  patches: FilePatch[];
+  files: Array<{
+    path: string;
+    before: string;
+    after: string;
+    mtimeMs?: number;
+    requireUnchanged: boolean;
+  }>;
+  status: 'proposed' | 'approved' | 'applied' | 'rejected' | 'conflict';
+  conflictReason?: string;
 };
 
 export type TodoItem = {
@@ -101,6 +154,23 @@ export type RuntimeContext = {
   toolUseId?: string;
   cwd?: string;
   fileState?: Map<string, FileReadSnapshot>;
+  editProposals?: Map<string, EditProposal>;
+  proposeEdit?: (
+    proposal: Omit<EditProposal, 'id' | 'createdAt' | 'status'>,
+    context: RuntimeContext,
+  ) => Promise<EditProposal> | EditProposal;
+  approveEdit?: (proposal: EditProposal, context: RuntimeContext) => void;
+  applyEdit?: (proposal: EditProposal, context: RuntimeContext) => void;
+  rejectEdit?: (proposal: EditProposal, context: RuntimeContext) => void;
+  conflictEdit?: (
+    proposal: EditProposal,
+    reason: string,
+    context: RuntimeContext,
+  ) => void;
+  applyEditProposal?: (
+    proposal: EditProposal,
+    context: RuntimeContext,
+  ) => Promise<void>;
   todos?: TodoItem[];
   tasks?: Map<string, RuntimeTask>;
   backgroundProcesses?: Map<string, RuntimeBackgroundProcess>;
@@ -150,6 +220,7 @@ export type Tool<Input extends JsonObject = JsonObject, Output = unknown> = {
   aliases?: string[];
   description?: string;
   searchHint?: string;
+  mcp?: McpToolBinding;
   inputSchema: Schema<Input>;
   inputJSONSchema?: ToolInputJSONSchema;
   source?: ToolSource;
@@ -174,6 +245,7 @@ export type ToolDefinition<Input extends JsonObject, Output> = {
   aliases?: string[];
   description?: string;
   searchHint?: string;
+  mcp?: McpToolBinding;
   inputSchema: Schema<Input>;
   inputJSONSchema?: ToolInputJSONSchema;
   source?: ToolSource;
@@ -274,4 +346,25 @@ export function createRuntimeContext(
     planMode: false,
     ...overrides,
   };
+}
+
+export function toolInvocationSource(
+  tool: Tool<JsonObject, unknown>,
+  input: JsonObject,
+): ToolInvocationSource | undefined {
+  if (tool.mcp) {
+    return { type: 'mcp', server: tool.mcp.server };
+  }
+  if (
+    (tool.name === 'MCPTool' ||
+      tool.name === 'ListMcpResourcesTool' ||
+      tool.name === 'ReadMcpResourceTool') &&
+    typeof input.server === 'string'
+  ) {
+    return { type: 'mcp', server: input.server };
+  }
+  if (tool.source === 'mcp') {
+    return { type: 'mcp', server: tool.name };
+  }
+  return undefined;
 }

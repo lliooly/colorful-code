@@ -79,7 +79,7 @@ test('create session options feed permission state and dynamic context into the 
   const store = createMemoryStore();
   const service = new SessionsService(capturingFactory, store);
 
-  const { id } = service.create({
+  const { id } = await service.create({
     cwd: '/workspace/app',
     workspaceRoots: ['/workspace/app', '/workspace/shared'],
     permissionMode: 'readOnly',
@@ -112,7 +112,7 @@ test('create session options feed permission state and dynamic context into the 
     ]);
     assert.equal(snapshot?.permissionMode, 'readOnly');
   } finally {
-    service.dispose(id);
+    await service.dispose(id);
   }
 });
 
@@ -138,7 +138,7 @@ test('create session loads CLAUDE.md from the workspace into project memory', as
   const store = createMemoryStore();
   const service = new SessionsService(capturingFactory, store);
 
-  const { id } = service.create({
+  const { id } = await service.create({
     cwd,
     workspaceRoots: [root],
   });
@@ -152,7 +152,7 @@ test('create session loads CLAUDE.md from the workspace into project memory', as
     assert.match(system, /Always prefer the project memory test instruction\./);
     assert.match(system, /CLAUDE\.md/);
   } finally {
-    service.dispose(id);
+    await service.dispose(id);
     rmSync(root, { recursive: true, force: true });
   }
 });

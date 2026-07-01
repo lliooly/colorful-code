@@ -8,26 +8,31 @@ import {
   NotFoundException,
   Param,
   Post,
-  Sse
+  Sse,
 } from '@nestjs/common';
 import type { MessageEvent } from '@nestjs/common';
 import { map, type Observable } from 'rxjs';
 import type {
   ControlMessage,
+  Checkpoint,
   PermissionAuditEntry,
   PermissionBehavior,
   PermissionMode,
   PermissionRule,
   PermissionRuleSource,
   SessionEvent,
-  SessionSnapshot
+  SessionSnapshot,
 } from '@colorful-code/tool-runtime';
 import {
   SessionsService,
   type CreateSessionOptions,
-  type RestoreSessionOptions
+  type RestoreSessionOptions,
 } from './sessions.service';
 import type { ModelSelection } from './model-factory';
+import {
+  validateMcpServersConfig,
+  type McpServersConfig,
+} from '../config/mcp-config';
 
 // ---- Request body shapes (validated by hand to avoid a validation dep) ----
 
@@ -39,10 +44,12 @@ type CreateSessionBody = {
   rules?: unknown;
   cwd?: unknown;
   model?: unknown;
+  mcpServers?: unknown;
 };
 
 type RestoreSessionBody = {
   model?: unknown;
+  mcpServers?: unknown;
 };
 
 type MessageBody = {
@@ -58,7 +65,7 @@ const PERMISSION_MODES: readonly PermissionMode[] = [
   'plan',
   'acceptEdits',
   'readOnly',
-  'bypass'
+  'bypass',
 ];
 
 function isPermissionMode(value: unknown): value is PermissionMode {
@@ -78,7 +85,7 @@ function validatePermissionMode(value: unknown): PermissionMode | undefined {
   }
   if (!isPermissionMode(value)) {
     throw new BadRequestException(
-      `\`permissionMode\` must be one of: ${PERMISSION_MODES.join(', ')}.`
+      `\`permissionMode\` must be one of: ${PERMISSION_MODES.join(', ')}.`,
     );
   }
   return value;
@@ -89,7 +96,7 @@ const RULE_SOURCES: readonly PermissionRuleSource[] = [
   'projectSettings',
   'session',
   'cliArg',
-  'policy'
+  'policy',
 ];
 
 const RULE_BEHAVIORS: readonly PermissionBehavior[] = ['allow', 'deny', 'ask'];
@@ -107,7 +114,7 @@ function validateWorkspaceRoots(value: unknown): string[] | undefined {
   }
   if (!Array.isArray(value) || value.some((root) => typeof root !== 'string')) {
     throw new BadRequestException(
-      '`workspaceRoots` must be an array of strings.'
+      '`workspaceRoots` must be an array of strings.',
     );
   }
   return [...(value as string[])];
@@ -147,7 +154,7 @@ function validateRules(value: unknown): PermissionRule[] | undefined {
       source: raw.source as PermissionRuleSource,
       behavior: raw.behavior as PermissionBehavior,
       toolName: raw.toolName,
-      ...(raw.argPattern !== undefined ? { argPattern: raw.argPattern } : {})
+      ...(raw.argPattern !== undefined ? { argPattern: raw.argPattern } : {}),
     };
   });
 }
@@ -155,7 +162,7 @@ function validateRules(value: unknown): PermissionRule[] | undefined {
 const MODEL_PROTOCOLS = ['anthropic', 'openai'] as const;
 
 function isModelProtocol(
-  value: unknown
+  value: unknown,
 ): value is (typeof MODEL_PROTOCOLS)[number] {
   return (
     typeof value === 'string' &&
@@ -187,7 +194,7 @@ function validateModelSelection(value: unknown): ModelSelection | undefined {
   if (value.protocol !== undefined) {
     if (!isModelProtocol(value.protocol)) {
       throw new BadRequestException(
-        "`model.protocol` must be 'anthropic' or 'openai'."
+        "`model.protocol` must be 'anthropic' or 'openai'.",
       );
     }
     selection.protocol = value.protocol;
@@ -211,7 +218,10 @@ function validateModelSelection(value: unknown): ModelSelection | undefined {
     selection.apiKey = value.apiKey;
   }
   if (value.maxTokens !== undefined) {
-    if (typeof value.maxTokens !== 'number' || !Number.isInteger(value.maxTokens)) {
+    if (
+      typeof value.maxTokens !== 'number' ||
+      !Number.isInteger(value.maxTokens)
+    ) {
       throw new BadRequestException('`model.maxTokens` must be an integer.');
     }
     selection.maxTokens = value.maxTokens;
@@ -225,13 +235,25 @@ function validateModelSelection(value: unknown): ModelSelection | undefined {
   if (value.thinking !== undefined) {
     if (value.thinking !== 'adaptive' && value.thinking !== 'disabled') {
       throw new BadRequestException(
-        "`model.thinking` must be 'adaptive' or 'disabled'."
+        "`model.thinking` must be 'adaptive' or 'disabled'.",
       );
     }
     selection.thinking = value.thinking;
   }
 
   return selection;
+}
+
+function validateMcpServers(value: unknown): McpServersConfig | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  try {
+    return validateMcpServersConfig(value);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new BadRequestException(message);
+  }
 }
 
 // Validates and narrows an arbitrary control body into a ControlMessage. Throws
@@ -249,13 +271,13 @@ function validateControl(body: ControlBody): ControlMessage {
     case 'approval_response': {
       if (typeof body.requestId !== 'string') {
         throw new BadRequestException(
-          'approval_response requires a string `requestId`.'
+          'approval_response requires a string `requestId`.',
         );
       }
       const decision = body.decision as Record<string, unknown> | undefined;
       if (!decision || typeof decision !== 'object') {
         throw new BadRequestException(
-          'approval_response requires a `decision` object.'
+          'approval_response requires a `decision` object.',
         );
       }
       if (decision.behavior === 'allow') {
@@ -265,7 +287,7 @@ function validateControl(body: ControlBody): ControlMessage {
         const updatedInput = decision.updatedInput;
         if (updatedInput !== undefined && !isPlainObject(updatedInput)) {
           throw new BadRequestException(
-            'approval_response `decision.updatedInput` must be a JSON object.'
+            'approval_response `decision.updatedInput` must be a JSON object.',
           );
         }
         return {
@@ -273,8 +295,8 @@ function validateControl(body: ControlBody): ControlMessage {
           requestId: body.requestId,
           decision: {
             behavior: 'allow',
-            ...(updatedInput !== undefined ? { updatedInput } : {})
-          }
+            ...(updatedInput !== undefined ? { updatedInput } : {}),
+          },
         };
       }
       if (decision.behavior === 'deny') {
@@ -285,13 +307,31 @@ function validateControl(body: ControlBody): ControlMessage {
             behavior: 'deny',
             ...(typeof decision.message === 'string'
               ? { message: decision.message }
-              : {})
-          }
+              : {}),
+          },
         };
       }
       throw new BadRequestException(
-        'approval_response `decision.behavior` must be "allow" or "deny".'
+        'approval_response `decision.behavior` must be "allow" or "deny".',
       );
+    }
+    case 'edit_decision': {
+      if (typeof body.proposalId !== 'string') {
+        throw new BadRequestException(
+          'edit_decision requires a string `proposalId`.',
+        );
+      }
+      if (body.decision !== 'approve' && body.decision !== 'reject') {
+        throw new BadRequestException(
+          'edit_decision `decision` must be "approve" or "reject".',
+        );
+      }
+      return {
+        type: 'edit_decision',
+        proposalId: body.proposalId,
+        decision: body.decision,
+        ...(typeof body.reason === 'string' ? { reason: body.reason } : {}),
+      };
     }
     case 'cancel': {
       return { type: 'cancel' };
@@ -299,14 +339,14 @@ function validateControl(body: ControlBody): ControlMessage {
     case 'set_permission_mode': {
       if (!isPermissionMode(body.mode)) {
         throw new BadRequestException(
-          'set_permission_mode requires a valid `mode`.'
+          'set_permission_mode requires a valid `mode`.',
         );
       }
       return { type: 'set_permission_mode', mode: body.mode };
     }
     default:
       throw new BadRequestException(
-        `Unsupported control message type: ${String(type)}`
+        `Unsupported control message type: ${String(type)}`,
       );
   }
 }
@@ -318,19 +358,21 @@ export class SessionsController {
   // POST /sessions -> create a session (optionally seeding its PermissionContext)
   // and return its id.
   @Post()
-  create(@Body() body: CreateSessionBody = {}): { id: string } {
+  async create(@Body() body: CreateSessionBody = {}): Promise<{ id: string }> {
     const permissionMode = validatePermissionMode(body.permissionMode);
     const workspaceRoots = validateWorkspaceRoots(body.workspaceRoots);
     const rules = validateRules(body.rules);
     const model = validateModelSelection(body.model);
+    const mcpServers = validateMcpServers(body.mcpServers);
     const options: CreateSessionOptions = {
       ...(permissionMode !== undefined ? { permissionMode } : {}),
       ...(workspaceRoots !== undefined ? { workspaceRoots } : {}),
       ...(rules !== undefined ? { rules } : {}),
       ...(typeof body.cwd === 'string' ? { cwd: body.cwd } : {}),
-      ...(model !== undefined ? { model } : {})
+      ...(model !== undefined ? { model } : {}),
+      ...(mcpServers !== undefined ? { mcpServers } : {}),
     };
-    return this.sessions.create(options);
+    return await this.sessions.create(options);
   }
 
   // POST /sessions/:id/restore -> restore a disposed/non-live session from its
@@ -340,11 +382,13 @@ export class SessionsController {
   @Post(':id/restore')
   restore(
     @Param('id') id: string,
-    @Body() body: RestoreSessionBody = {}
-  ): { id: string } {
+    @Body() body: RestoreSessionBody = {},
+  ): Promise<{ id: string }> {
     const model = validateModelSelection(body.model);
+    const mcpServers = validateMcpServers(body.mcpServers);
     const options: RestoreSessionOptions = {
-      ...(model !== undefined ? { model } : {})
+      ...(model !== undefined ? { model } : {}),
+      ...(mcpServers !== undefined ? { mcpServers } : {}),
     };
     return this.sessions.restore(id, options);
   }
@@ -355,7 +399,7 @@ export class SessionsController {
   @HttpCode(202)
   message(
     @Param('id') id: string,
-    @Body() body: MessageBody
+    @Body() body: MessageBody,
   ): { status: 'accepted' } {
     if (typeof body?.text !== 'string') {
       throw new BadRequestException('messages requires a string `text`.');
@@ -370,7 +414,7 @@ export class SessionsController {
   @HttpCode(202)
   control(
     @Param('id') id: string,
-    @Body() body: ControlBody
+    @Body() body: ControlBody,
   ): { status: 'accepted' } {
     const message = validateControl(body ?? {});
     this.sessions.sendControl(id, message);
@@ -383,11 +427,13 @@ export class SessionsController {
   @Sse(':id/events')
   events(@Param('id') id: string): Observable<MessageEvent> {
     return this.sessions.events(id).pipe(
-      map((event: SessionEvent): MessageEvent => ({
-        // `type` doubles as the SSE event name; `data` is the JSON payload.
-        type: event.type,
-        data: event
-      }))
+      map(
+        (event: SessionEvent): MessageEvent => ({
+          // `type` doubles as the SSE event name; `data` is the JSON payload.
+          type: event.type,
+          data: event,
+        }),
+      ),
     );
   }
 
@@ -412,11 +458,49 @@ export class SessionsController {
     return { entries: this.sessions.loadAudit(id) };
   }
 
+  @Get(':id/checkpoints')
+  checkpoints(@Param('id') id: string): {
+    checkpoints: Checkpoint[];
+    currentCheckpointId?: string;
+  } {
+    return this.sessions.listCheckpoints(id);
+  }
+
+  @Post(':id/checkpoints/:checkpointId/restore')
+  restoreCheckpoint(
+    @Param('id') id: string,
+    @Param('checkpointId') checkpointId: string,
+    @Body() body: RestoreSessionBody = {},
+  ): Promise<{ id: string; checkpointId: string }> {
+    const model = validateModelSelection(body.model);
+    const mcpServers = validateMcpServers(body.mcpServers);
+    const options: RestoreSessionOptions = {
+      ...(model !== undefined ? { model } : {}),
+      ...(mcpServers !== undefined ? { mcpServers } : {}),
+    };
+    return this.sessions.restoreCheckpoint(id, checkpointId, options);
+  }
+
+  @Post(':id/checkpoints/:checkpointId/fork')
+  forkCheckpoint(
+    @Param('id') id: string,
+    @Param('checkpointId') checkpointId: string,
+    @Body() body: RestoreSessionBody = {},
+  ): Promise<{ id: string; checkpointId: string }> {
+    const model = validateModelSelection(body.model);
+    const mcpServers = validateMcpServers(body.mcpServers);
+    const options: RestoreSessionOptions = {
+      ...(model !== undefined ? { model } : {}),
+      ...(mcpServers !== undefined ? { mcpServers } : {}),
+    };
+    return this.sessions.forkCheckpoint(id, checkpointId, options);
+  }
+
   // DELETE /sessions/:id -> dispose. 404 if unknown.
   @Delete(':id')
   @HttpCode(204)
-  remove(@Param('id') id: string): void {
-    if (!this.sessions.dispose(id)) {
+  async remove(@Param('id') id: string): Promise<void> {
+    if (!(await this.sessions.dispose(id))) {
       throw new NotFoundException(`Unknown session: ${id}`);
     }
   }
