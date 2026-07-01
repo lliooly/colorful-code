@@ -137,6 +137,8 @@ export class AnthropicModelClient implements ModelClient {
         case 'content_block_delta': {
           if (event.delta.type === 'text_delta') {
             yield { type: 'text', text: event.delta.text };
+          } else if (event.delta.type === 'thinking_delta') {
+            yield { type: 'thinking', text: event.delta.thinking };
           } else if (event.delta.type === 'input_json_delta') {
             const block = toolBlocks.get(event.index);
             if (block) {

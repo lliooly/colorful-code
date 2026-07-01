@@ -101,6 +101,39 @@ test('a turn streams text, runs a read-only tool, then a final completion comple
   assert.equal(snapshot.history[3]?.content, 'Here are your tasks.');
 });
 
+test('a turn emits visible thinking deltas from the model stream', async () => {
+  const session = new Session({
+    model: createScriptedModelClient([
+      [
+        { type: 'thinking', text: 'Checking context.' },
+        { type: 'text', text: 'Answer.' },
+      ],
+    ]),
+    tools: [],
+  });
+
+  const events: SessionEvent[] = [];
+  session.subscribe((event) => events.push(event));
+
+  await session.submit('think visibly');
+
+  assert.deepEqual(
+    events.map((event) => event.type),
+    [
+      'run_status',
+      'thinking_delta',
+      'message_delta',
+      'message',
+      'run_status',
+    ],
+  );
+  const thinking = events.find(
+    (event): event is Extract<SessionEvent, { type: 'thinking_delta' }> =>
+      event.type === 'thinking_delta',
+  );
+  assert.equal(thinking?.text, 'Checking context.');
+});
+
 test('the loop issues multiple model.run calls when a tool use occurs', async () => {
   // A spy model wrapping the scripted client so we can count completions. A
   // turn that requests a tool must drive at least two completions (one to

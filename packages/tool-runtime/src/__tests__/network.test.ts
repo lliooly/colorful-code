@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
+import {
   ToolRegistry,
   ToolRunner,
   createRuntimeContext,
@@ -18,8 +23,128 @@ function networkRunner(context = createRuntimeContext()) {
   );
 }
 
-test("WebFetch reports an error when no provider is configured", async () => {
-  const result = await networkRunner().run({
+async function withHttpServer<T>(
+  handler: (req: IncomingMessage, res: ServerResponse) => void,
+  fn: (origin: string) => Promise<T>,
+): Promise<T> {
+  const server = createServer(handler);
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    return await fn("http://127.0.0.1:" + String(address.port));
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+}
+
+test("WebFetch uses the default HTTP provider when no provider is configured", async () => {
+  await withHttpServer(
+    (_req, res) => {
+      res.setHeader("content-type", "text/plain; charset=utf-8");
+      res.end("hello from http");
+    },
+    async (origin) => {
+      const result = await networkRunner().run({
+        id: "fetch-default",
+        name: "WebFetch",
+        input: { url: origin + "/page" },
+      });
+
+      assert.equal(result.isError, undefined);
+      assert.equal(result.content, "hello from http");
+    },
+  );
+});
+
+test("WebFetch reports HTTP failures from the default provider", async () => {
+  await withHttpServer(
+    (_req, res) => {
+      res.statusCode = 503;
+      res.end("unavailable");
+    },
+    async (origin) => {
+      const result = await networkRunner().run({
+        id: "fetch-failure",
+        name: "WebFetch",
+        input: { url: origin + "/down" },
+      });
+
+      assert.equal(result.isError, true);
+      assert.match(result.content, /WebFetch failed with HTTP 503/);
+    },
+  );
+});
+
+test("WebSearch uses a configured HTTP JSON search endpoint", async () => {
+  await withHttpServer(
+    (req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify({
+          path: req.url,
+          results: [
+            { title: "First", url: "https://example.test/first", snippet: "One" },
+            { title: "Second", link: "https://example.test/second" },
+          ],
+        }),
+      );
+    },
+    async (origin) => {
+      const context = createRuntimeContext({
+        webSearchEndpoint: origin + "/search?q={query}",
+      });
+      const result = await networkRunner(context).run({
+        id: "search-default",
+        name: "WebSearch",
+        input: { query: "runtime tools" },
+      });
+
+      assert.equal(result.isError, undefined);
+      assert.match(result.content, /First/);
+      assert.match(result.content, /https:\/\/example\.test\/first/);
+      assert.match(result.content, /Second/);
+    },
+  );
+});
+
+test("WebSearch uses the default HTTP HTML search provider", async () => {
+  await withHttpServer(
+    (_req, res) => {
+      res.setHeader("content-type", "text/html; charset=utf-8");
+      res.end(`
+        <html>
+          <a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.test%2Freal&amp;rut=1">
+            <b>Runtime</b> Tools
+          </a>
+        </html>
+      `);
+    },
+    async (origin) => {
+      const context = createRuntimeContext({
+        webSearchEndpoint: origin + "/html?q={query}",
+      });
+      const result = await networkRunner(context).run({
+        id: "search-html",
+        name: "WebSearch",
+        input: { query: "runtime tools" },
+      });
+
+      assert.equal(result.isError, undefined);
+      assert.match(result.content, /Runtime Tools/);
+      assert.match(result.content, /https:\/\/example\.test\/real/);
+    },
+  );
+});
+
+test("WebFetch can still report an error when the default provider is disabled", async () => {
+  const result = await networkRunner(
+    createRuntimeContext({ disableDefaultWebProviders: true }),
+  ).run({
     id: "fetch-missing",
     name: "WebFetch",
     input: { url: "https://example.com" },
@@ -29,8 +154,10 @@ test("WebFetch reports an error when no provider is configured", async () => {
   assert.match(result.content, /WebFetch provider not configured/);
 });
 
-test("WebSearch reports an error when no provider is configured", async () => {
-  const result = await networkRunner().run({
+test("WebSearch can still report an error when the default provider is disabled", async () => {
+  const result = await networkRunner(
+    createRuntimeContext({ disableDefaultWebProviders: true }),
+  ).run({
     id: "search-missing",
     name: "WebSearch",
     input: { query: "runtime tools" },
@@ -41,7 +168,9 @@ test("WebSearch reports an error when no provider is configured", async () => {
 });
 
 test("WebBrowser reports an error when no provider is configured", async () => {
-  const result = await networkRunner().run({
+  const result = await networkRunner(
+    createRuntimeContext({ disableDefaultWebProviders: true }),
+  ).run({
     id: "browser-missing",
     name: "WebBrowser",
     input: { url: "https://example.com" },

@@ -198,6 +198,7 @@ export type SessionEvent =
     }
   | { type: 'run_status'; status: RunStatus; runId: string }
   | { type: 'message_delta'; runId: string; text: string }
+  | { type: 'thinking_delta'; runId: string; text: string }
   | { type: 'message'; runId: string; role: 'assistant'; content: string }
   | {
       type: 'tool_call';
@@ -294,6 +295,7 @@ export const SESSION_EVENT_TYPES: readonly SessionEventType[] = [
   'file_deleted',
   'run_status',
   'message_delta',
+  'thinking_delta',
   'message',
   'tool_call',
   'tool_result',

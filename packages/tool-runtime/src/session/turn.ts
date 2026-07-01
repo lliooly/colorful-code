@@ -182,6 +182,15 @@ export async function runTurn(deps: TurnDeps): Promise<void> {
           break;
         }
 
+        if (event.type === 'thinking') {
+          deps.emit({
+            type: 'thinking_delta',
+            runId: deps.runId,
+            text: event.text,
+          });
+          continue;
+        }
+
         if (event.type === 'text') {
           assistantText += event.text;
           deps.emit({

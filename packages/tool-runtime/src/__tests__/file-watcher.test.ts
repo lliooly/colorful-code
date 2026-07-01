@@ -12,6 +12,7 @@ import {
   createScriptedModelClient,
   createWorkspaceFileWatcher,
   type FileWatchEvent,
+  type LspManager,
   type SessionEvent,
 } from '../index.js';
 
@@ -108,6 +109,60 @@ test('file watch invalidation makes Edit require a fresh Read after external cha
 
       assert.equal(edit.isError, true);
       assert.match(edit.content, /read it again/i);
+    } finally {
+      await watcher.close();
+    }
+  });
+});
+
+test('workspace watcher syncs external file changes to the LSP manager', async () => {
+  await withTempDir(async (dir) => {
+    const file = join(dir, 'note.ts');
+    const changes: Array<{ file: string; content: string }> = [];
+    const lspManager: LspManager = {
+      async initialize() {
+        return [];
+      },
+      async goToDefinition() {
+        return [];
+      },
+      async findReferences() {
+        return [];
+      },
+      async getDiagnostics() {
+        return [];
+      },
+      async hover() {
+        return null;
+      },
+      async documentSymbols() {
+        return [];
+      },
+      async workspaceSymbol() {
+        return [];
+      },
+      async didChange(changedFile, content) {
+        changes.push({ file: changedFile, content });
+      },
+      async close() {},
+    };
+    const context = createRuntimeContext({ cwd: dir, lspManager });
+    const watcher = createWorkspaceFileWatcher({
+      roots: [dir],
+      context,
+      onEvent: () => undefined,
+    });
+    try {
+      await writeFile(file, 'export const answer = 42;\n', 'utf8');
+      await waitFor(
+        () =>
+          changes.some(
+            (change) =>
+              change.file === file &&
+              change.content === 'export const answer = 42;\n',
+          ),
+        'lsp didChange',
+      );
     } finally {
       await watcher.close();
     }

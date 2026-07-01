@@ -1,5 +1,5 @@
 import { watch, type FSWatcher } from 'node:fs';
-import { readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { RuntimeContext } from '../core/tool.js';
 
@@ -40,6 +40,24 @@ function invalidate(context: RuntimeContext | undefined, filePath: string): void
   snapshot.complete = false;
 }
 
+async function syncLspDocument(
+  context: RuntimeContext | undefined,
+  event: FileWatchEvent,
+): Promise<void> {
+  if (
+    !context?.lspManager ||
+    (event.type !== 'file_created' && event.type !== 'file_changed')
+  ) {
+    return;
+  }
+  try {
+    const content = await readFile(event.path, 'utf8');
+    await context.lspManager.didChange(event.path, content);
+  } catch {
+    // File watching is advisory. LSP sync must not break the session stream.
+  }
+}
+
 export function createWorkspaceFileWatcher(
   options: WorkspaceFileWatcherOptions,
 ): WorkspaceFileWatcher {
@@ -53,6 +71,7 @@ export function createWorkspaceFileWatcher(
       return;
     }
     invalidate(options.context, event.path);
+    void syncLspDocument(options.context, event);
     options.onEvent(event);
   };
 

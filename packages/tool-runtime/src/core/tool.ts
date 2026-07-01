@@ -215,7 +215,9 @@ export type RuntimeContext = {
   emitHookFailure?: (failure: HookFailure, context: RuntimeContext) => void;
   webFetchProvider?: (url: string) => Promise<string>;
   webSearchProvider?: (query: string) => Promise<string[]>;
+  webSearchEndpoint?: string;
   webBrowserProvider?: (url: string) => Promise<string>;
+  disableDefaultWebProviders?: boolean;
   mcpToolProvider?: (
     server: string,
     tool: string,
@@ -338,6 +340,10 @@ export function buildTool<Input extends JsonObject, Output>(
 export function createRuntimeContext(
   overrides: RuntimeContext = {},
 ): RuntimeContext {
+  const defaultWebProviders =
+    overrides.disableDefaultWebProviders === true
+      ? {}
+      : createDefaultWebProviders(overrides);
   return {
     fileState: new Map<string, FileReadSnapshot>(),
     todos: [],
@@ -352,8 +358,155 @@ export function createRuntimeContext(
     notifications: [],
     worktrees: [],
     planMode: false,
+    ...defaultWebProviders,
     ...overrides,
   };
+}
+
+function createDefaultWebProviders(
+  overrides: RuntimeContext,
+): Pick<
+  RuntimeContext,
+  'webFetchProvider' | 'webSearchProvider' | 'webBrowserProvider'
+> {
+  const webFetchProvider = overrides.webFetchProvider ?? defaultWebFetch;
+  return {
+    webFetchProvider,
+    webBrowserProvider: overrides.webBrowserProvider ?? webFetchProvider,
+    webSearchProvider:
+      overrides.webSearchProvider ??
+      ((query: string) => defaultWebSearch(overrides.webSearchEndpoint, query)),
+  };
+}
+
+async function defaultWebFetch(url: string): Promise<string> {
+  const response = await fetch(url, {
+    headers: {
+      accept:
+        'text/html,application/xhtml+xml,application/xml,text/plain,application/json;q=0.9,*/*;q=0.8',
+      'user-agent': 'ColorfulCode/0.0 (+https://colorful-code.local)',
+    },
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      'WebFetch failed with HTTP ' +
+        String(response.status) +
+        ' ' +
+        response.statusText +
+        (text.length > 0 ? ': ' + text.slice(0, 500) : ''),
+    );
+  }
+  return text;
+}
+
+async function defaultWebSearch(
+  endpointTemplate: string | undefined,
+  query: string,
+): Promise<string[]> {
+  const endpoint = endpointTemplate
+    ? buildSearchEndpoint(endpointTemplate, query)
+    : 'https://duckduckgo.com/html/?q=' + encodeURIComponent(query);
+  const text = await defaultWebFetch(endpoint);
+  const trimmed = text.trimStart();
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    return formatSearchPayload(JSON.parse(text));
+  }
+  return formatSearchHtml(text);
+}
+
+function buildSearchEndpoint(endpointTemplate: string, query: string): string {
+  return endpointTemplate.includes('{query}')
+    ? endpointTemplate.replaceAll('{query}', encodeURIComponent(query))
+    : appendQuery(endpointTemplate, query);
+}
+
+function appendQuery(endpoint: string, query: string): string {
+  const url = new URL(endpoint);
+  if (!url.searchParams.has('q') && !url.searchParams.has('query')) {
+    url.searchParams.set('q', query);
+  }
+  return url.toString();
+}
+
+function formatSearchPayload(payload: unknown): string[] {
+  const candidates = Array.isArray(payload)
+    ? payload
+    : payload &&
+        typeof payload === 'object' &&
+        Array.isArray((payload as { results?: unknown }).results)
+      ? (payload as { results: unknown[] }).results
+      : [];
+  return candidates.map(formatSearchResult).filter((line) => line.length > 0);
+}
+
+function formatSearchResult(result: unknown): string {
+  if (typeof result === 'string') {
+    return result;
+  }
+  if (!result || typeof result !== 'object') {
+    return '';
+  }
+  const record = result as Record<string, unknown>;
+  const title = stringValue(record.title) ?? stringValue(record.name);
+  const url = stringValue(record.url) ?? stringValue(record.link);
+  const snippet =
+    stringValue(record.snippet) ??
+    stringValue(record.description) ??
+    stringValue(record.content);
+  return [title, url, snippet].filter(Boolean).join('\n');
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function formatSearchHtml(html: string): string[] {
+  const results: string[] = [];
+  const resultLinkPattern =
+    /<a\b[^>]*class=["'][^"']*result__a[^"']*["'][^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  for (const match of html.matchAll(resultLinkPattern)) {
+    const href = decodeHtml(match[1] ?? '').trim();
+    const title = stripHtml(match[2] ?? '').trim();
+    if (href.length === 0 && title.length === 0) {
+      continue;
+    }
+    results.push([title, normalizeDuckDuckGoLink(href)].filter(Boolean).join('\n'));
+    if (results.length >= 10) {
+      break;
+    }
+  }
+  return results;
+}
+
+function stripHtml(html: string): string {
+  return decodeHtml(html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' '));
+}
+
+function normalizeDuckDuckGoLink(href: string): string {
+  try {
+    const url = new URL(href, 'https://duckduckgo.com');
+    const uddg = url.searchParams.get('uddg');
+    return uddg ?? url.toString();
+  } catch {
+    return href;
+  }
+}
+
+function decodeHtml(value: string): string {
+  return value
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x2F;/g, '/')
+    .replace(/&#x([0-9a-f]+);/gi, (_match, hex: string) =>
+      String.fromCodePoint(Number.parseInt(hex, 16)),
+    )
+    .replace(/&#(\d+);/g, (_match, decimal: string) =>
+      String.fromCodePoint(Number.parseInt(decimal, 10)),
+    );
 }
 
 export function toolInvocationSource(

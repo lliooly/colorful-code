@@ -71,6 +71,8 @@ export type SessionEvent =
   // Streaming assistant text; concatenating `message_delta` over a run yields the
   // finalized `message` content.
   | { type: 'message_delta'; runId: string; text: string }
+  // Streaming model thinking/reasoning text when the provider exposes it.
+  | { type: 'thinking_delta'; runId: string; text: string }
   // Finalized assistant message for the run.
   | { type: 'message'; runId: string; role: 'assistant'; content: string }
   | {

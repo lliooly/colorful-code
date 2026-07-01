@@ -84,6 +84,9 @@ async function handleEvent(
     case 'message_delta':
       process.stdout.write(String(event.text ?? ''));
       return;
+    case 'thinking_delta':
+      process.stderr.write(`\n~ ${String(event.text ?? '')}\n`);
+      return;
     case 'tool_call':
       process.stderr.write(
         `\n> ${formatToolLabel(event)} ${JSON.stringify(event.input ?? {})}\n`,

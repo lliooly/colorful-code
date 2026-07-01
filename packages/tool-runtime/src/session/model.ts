@@ -45,6 +45,7 @@ export type ModelTurnInput = {
 // re-invocation: after running the collected tools it issues a fresh `run` for
 // the next completion.
 export type ModelTurnEvent =
+  | { type: 'thinking'; text: string }
   | { type: 'text'; text: string }
   | { type: 'tool_use'; toolUseId: string; name: string; input: JsonObject }
   | { type: 'usage'; inputTokens?: number; outputTokens?: number }

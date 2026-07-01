@@ -170,6 +170,33 @@ test('anthropic adapter: text deltas, accumulated tool_use, single end', async (
   assert.equal(events.at(-1)?.type, 'end', 'end is last');
 });
 
+test('anthropic adapter: emits thinking deltas', async () => {
+  const { client } = fakeAnthropicClient([
+    {
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'thinking' },
+    },
+    {
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'thinking_delta', thinking: 'Considering options.' },
+    },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'message_stop' },
+  ]);
+
+  const adapter = new AnthropicModelClient({ client, model: 'claude-test' });
+  const events = await collect(
+    adapter.run({ history: [], tools: [], signal: NEVER_ABORT }),
+  );
+
+  assert.deepEqual(events, [
+    { type: 'thinking', text: 'Considering options.' },
+    { type: 'end' },
+  ]);
+});
+
 test('anthropic adapter: translates history + tools into the request', async () => {
   const { client, calls } = fakeAnthropicClient([{ type: 'message_stop' }]);
   const adapter = new AnthropicModelClient({
