@@ -99,6 +99,18 @@ export type CheckpointSessionResponse = {
   checkpointId: string;
 };
 
+export type SessionSummary = {
+  id: string;
+  title: string;
+  updatedAt: number;
+  cwd?: string;
+  checkpointId?: string;
+};
+
+export type ListSessionsResponse = {
+  sessions: SessionSummary[];
+};
+
 export type ToolInvocationSource =
   | { type: 'mcp'; server: string }
   | { type: 'builtin' }

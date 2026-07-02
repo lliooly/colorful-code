@@ -1,13 +1,13 @@
 import {
   createScriptedModelClient,
-  type ModelClient
+  type ModelClient,
 } from '@colorful-code/tool-runtime';
 import type { ServerEnvironment } from '../config/environment';
 import {
   buildModelClientConfig,
   resolveModelPreset,
   type ModelClientConfig,
-  type ModelSelectionOverrides
+  type ModelSelectionOverrides,
 } from '../model/model-config';
 import { createModelClient } from '../model/create-model-client';
 
@@ -36,7 +36,7 @@ export type ModelClientFactoryOptions = {
 };
 
 export type ModelClientFactory = (
-  options: ModelClientFactoryOptions
+  options: ModelClientFactoryOptions,
 ) => ModelClient;
 
 // Thrown when a model selection cannot be satisfied (no provider key, or an
@@ -50,32 +50,34 @@ export class ModelSelectionError extends Error {
   }
 }
 
-// Picks the provider API key for a resolved config. Named presets read the key
-// from the environment by protocol (anthropic -> anthropic; the openai protocol
-// splits by preset id so DeepSeek uses its own key); `custom` requires a
-// per-request BYO key. Throws ModelSelectionError when the needed key is absent.
+// Picks the provider API key for a resolved config. A request-scoped apiKey wins
+// for every preset, which lets the desktop UI test and run named templates
+// without requiring server env changes. If absent, named presets read the key
+// from the environment by protocol/preset; `custom` requires a per-request BYO
+// key. Throws ModelSelectionError when the needed key is absent.
 function resolveApiKey(
   env: ServerEnvironment,
   presetId: string | undefined,
-  selection: ModelSelection
+  selection: ModelSelection,
 ): string {
   const preset = resolveModelPreset(presetId);
+
+  if (selection.apiKey && selection.apiKey.length > 0) {
+    return selection.apiKey;
+  }
 
   // Custom (or any selection without a named-preset key source) must bring its
   // own key.
   if (preset.id === 'custom') {
-    if (selection.apiKey && selection.apiKey.length > 0) {
-      return selection.apiKey;
-    }
     throw new ModelSelectionError(
-      'The custom model preset requires an `apiKey` in the request (bring your own key).'
+      'The custom model preset requires an `apiKey` in the request (bring your own key).',
     );
   }
 
   const keyByPreset: Record<string, string | undefined> = {
     claude: env.providerKeys.anthropic,
     deepseek: env.providerKeys.deepseek,
-    openai: env.providerKeys.openai
+    openai: env.providerKeys.openai,
   };
 
   const key = keyByPreset[preset.id];
@@ -84,7 +86,7 @@ function resolveApiKey(
   }
 
   throw new ModelSelectionError(
-    `No API key configured for the "${preset.id}" model preset. Set the corresponding provider key on the server, or use the custom preset with a request \`apiKey\`.`
+    `No API key configured for the "${preset.id}" model preset. Set the corresponding provider key on the server, or use the custom preset with a request \`apiKey\`.`,
   );
 }
 
@@ -93,7 +95,7 @@ function resolveApiKey(
 // (so a missing key fails at create time) and reused by the real factory.
 export function resolveModelClientConfig(
   env: ServerEnvironment,
-  selection: ModelSelection = {}
+  selection: ModelSelection = {},
 ): ModelClientConfig {
   const { preset, ...overrides } = selection;
   const apiKey = resolveApiKey(env, preset, selection);
@@ -101,7 +103,7 @@ export function resolveModelClientConfig(
     return buildModelClientConfig({
       ...(preset !== undefined ? { presetId: preset } : {}),
       overrides,
-      apiKey
+      apiKey,
     });
   } catch (error) {
     // buildModelClientConfig throws plain Errors for unknown preset / missing
@@ -124,13 +126,12 @@ export const createServerModelClientFactory =
 // tool — obviously a stand-in. Anything that needs real model behaviour uses the
 // server factory above (default) or overrides MODEL_CLIENT_FACTORY (the e2e).
 export const createPlaceholderModelClientFactory =
-  (): ModelClientFactory =>
-  (): ModelClient =>
+  (): ModelClientFactory => (): ModelClient =>
     createScriptedModelClient([
       [
         {
           type: 'text',
-          text: 'Placeholder model client: configure a real model adapter (Step 2) to get real completions.'
-        }
-      ]
+          text: 'Placeholder model client: configure a real model adapter (Step 2) to get real completions.',
+        },
+      ],
     ]);

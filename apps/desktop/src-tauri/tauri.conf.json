@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Colorful Code",
+  "version": "0.0.0",
+  "identifier": "com.colorfulcode.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm --filter @colorful-code/web dev",
+    "devUrl": "http://localhost:3000/agent",
+    "beforeBuildCommand": "pnpm --filter @colorful-code/web build",
+    "frontendDist": "../../web/out"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Colorful Code",
+        "label": "main",
+        "url": "/agent",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 960,
+        "minHeight": 640,
+        "transparent": true,
+        "devtools": false
+      }
+    ],
+    "macOSPrivateApi": true,
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"]
+  }
+}

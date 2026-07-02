@@ -1,11 +1,11 @@
 import { Inject, Injectable, OnModuleDestroy } from '@nestjs/common';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq } from 'drizzle-orm';
 import type {
   Checkpoint,
   FileChangeMetadata,
   PermissionAuditEntry,
   PermissionDecisionReason,
-  SessionSnapshot
+  SessionSnapshot,
 } from '@colorful-code/tool-runtime';
 import { SERVER_ENV } from '../config/config.module';
 import type { ServerEnvironment } from '../config/environment';
@@ -15,7 +15,7 @@ import {
   checkpoints,
   sessions,
   type AuditRow,
-  type CheckpointRow
+  type CheckpointRow,
 } from './schema';
 
 // The persistence boundary over the drizzle/SQLite database. The session
@@ -54,14 +54,14 @@ export class SessionStore implements OnModuleDestroy {
     const row = {
       id: snapshot.id,
       snapshot: JSON.stringify(snapshot),
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
     };
     this.db
       .insert(sessions)
       .values(row)
       .onConflictDoUpdate({
         target: sessions.id,
-        set: { snapshot: row.snapshot, updatedAt: row.updatedAt }
+        set: { snapshot: row.snapshot, updatedAt: row.updatedAt },
       })
       .run();
   }
@@ -82,6 +82,18 @@ export class SessionStore implements OnModuleDestroy {
     return JSON.parse(row.snapshot) as SessionSnapshot;
   }
 
+  listSessions(): Array<{ snapshot: SessionSnapshot; updatedAt: number }> {
+    return this.db
+      .select({ snapshot: sessions.snapshot, updatedAt: sessions.updatedAt })
+      .from(sessions)
+      .orderBy(desc(sessions.updatedAt), asc(sessions.id))
+      .all()
+      .map((row) => ({
+        snapshot: JSON.parse(row.snapshot) as SessionSnapshot,
+        updatedAt: row.updatedAt,
+      }));
+  }
+
   saveCheckpoint(checkpoint: Checkpoint): void {
     const row = {
       id: checkpoint.id,
@@ -95,7 +107,7 @@ export class SessionStore implements OnModuleDestroy {
       fileChanges:
         checkpoint.fileChanges === undefined
           ? null
-          : JSON.stringify(checkpoint.fileChanges)
+          : JSON.stringify(checkpoint.fileChanges),
     };
     this.db
       .insert(checkpoints)
@@ -110,8 +122,8 @@ export class SessionStore implements OnModuleDestroy {
           label: row.label,
           summary: row.summary,
           snapshot: row.snapshot,
-          fileChanges: row.fileChanges
-        }
+          fileChanges: row.fileChanges,
+        },
       })
       .run();
   }
@@ -128,7 +140,7 @@ export class SessionStore implements OnModuleDestroy {
 
   loadCheckpoint(
     sessionId: string,
-    checkpointId: string
+    checkpointId: string,
   ): Checkpoint | undefined {
     const rows = this.db
       .select()
@@ -136,8 +148,8 @@ export class SessionStore implements OnModuleDestroy {
       .where(
         and(
           eq(checkpoints.sessionId, sessionId),
-          eq(checkpoints.id, checkpointId)
-        )
+          eq(checkpoints.id, checkpointId),
+        ),
       )
       .limit(1)
       .all();
@@ -158,7 +170,7 @@ export class SessionStore implements OnModuleDestroy {
       toolName: entry.toolName,
       behavior: entry.behavior,
       reason: entry.reason === undefined ? null : JSON.stringify(entry.reason),
-      at: entry.at
+      at: entry.at,
     }));
     this.db.insert(audit).values(rows).run();
   }
@@ -185,7 +197,7 @@ export class SessionStore implements OnModuleDestroy {
       toolName: row.toolName,
       behavior: row.behavior as PermissionAuditEntry['behavior'],
       at: row.at,
-      ...(reason !== undefined ? { reason } : {})
+      ...(reason !== undefined ? { reason } : {}),
     };
   }
 
@@ -205,7 +217,7 @@ export class SessionStore implements OnModuleDestroy {
       ...(row.label !== null ? { label: row.label } : {}),
       ...(row.summary !== null ? { summary: row.summary } : {}),
       snapshot: JSON.parse(row.snapshot) as SessionSnapshot,
-      ...(fileChanges !== undefined ? { fileChanges } : {})
+      ...(fileChanges !== undefined ? { fileChanges } : {}),
     };
   }
 

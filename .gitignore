@@ -5,6 +5,9 @@ node_modules
 dist
 dist-test
 coverage
+apps/web/out
+apps/desktop/src-tauri/target
+apps/desktop/src-tauri/gen
 .DS_Store
 bazel-*
 *.tsbuildinfo

@@ -27,6 +27,7 @@ import {
   SessionsService,
   type CreateSessionOptions,
   type RestoreSessionOptions,
+  type SessionSummary,
 } from './sessions.service';
 import type { ModelSelection } from './model-factory';
 import {
@@ -183,7 +184,9 @@ function isModelProtocol(
 // availability are resolved server-side at session create and surface as a 400
 // from the service — they are NOT re-checked here (the controller has no
 // environment). A present-but-malformed field is a 400 so a typo fails loudly.
-function validateModelSelection(value: unknown): ModelSelection | undefined {
+export function validateModelSelection(
+  value: unknown,
+): ModelSelection | undefined {
   if (value === undefined) {
     return undefined;
   }
@@ -384,6 +387,11 @@ function validateControl(body: ControlBody): ControlMessage {
 @Controller('sessions')
 export class SessionsController {
   constructor(private readonly sessions: SessionsService) {}
+
+  @Get()
+  list(): { sessions: SessionSummary[] } {
+    return this.sessions.listSessions();
+  }
 
   // POST /sessions -> create a session (optionally seeding its PermissionContext)
   // and return its id.

@@ -84,6 +84,14 @@ export type RestoreSessionOptions = {
   watchWorkspace?: boolean;
 };
 
+export type SessionSummary = {
+  id: string;
+  title: string;
+  updatedAt: number;
+  cwd?: string;
+  checkpointId?: string;
+};
+
 // What the service tracks per live session: the engine `Session`, an append-only
 // log of every emitted `SessionEvent` (the replay buffer), the live listener set,
 // and the unsubscribe handle for the engine subscription. The log is what lets a
@@ -658,7 +666,11 @@ export class SessionsService implements OnModuleDestroy {
       ...structuredClone(checkpoint.snapshot),
       id: forkId,
     };
-    const prepared = await this.prepareRestoredSession(snapshot, forkId, options);
+    const prepared = await this.prepareRestoredSession(
+      snapshot,
+      forkId,
+      options,
+    );
     this.registerPreparedSession(prepared, {
       currentCheckpointId: checkpoint.id,
     });
@@ -730,16 +742,13 @@ export class SessionsService implements OnModuleDestroy {
     prepared: PreparedSession,
     registerOptions: { currentCheckpointId?: string } = {},
   ): { id: string } {
-    return this.register(
-      prepared.session,
-      {
-        ...registerOptions,
-        ...(prepared.mcpManager ? { mcpManager: prepared.mcpManager } : {}),
-        mcpConnections: prepared.mcpConnections,
-        ...(prepared.lspManager ? { lspManager: prepared.lspManager } : {}),
-        lspConnections: prepared.lspConnections,
-      },
-    );
+    return this.register(prepared.session, {
+      ...registerOptions,
+      ...(prepared.mcpManager ? { mcpManager: prepared.mcpManager } : {}),
+      mcpConnections: prepared.mcpConnections,
+      ...(prepared.lspManager ? { lspManager: prepared.lspManager } : {}),
+      lspConnections: prepared.lspConnections,
+    });
   }
 
   // Saves the session snapshot (upsert) and drains any buffered audit entries
@@ -919,6 +928,22 @@ export class SessionsService implements OnModuleDestroy {
     return this.store.listAudit(id);
   }
 
+  listSessions(): { sessions: SessionSummary[] } {
+    return {
+      sessions: this.store.listSessions().map(({ snapshot, updatedAt }) => {
+        const checkpoints = this.store.listCheckpoints(snapshot.id);
+        const latestCheckpoint = checkpoints.at(-1);
+        return {
+          id: snapshot.id,
+          title: latestCheckpoint?.summary ?? sessionTitle(snapshot),
+          updatedAt: latestCheckpoint?.createdAt ?? updatedAt,
+          ...(snapshot.cwd !== undefined ? { cwd: snapshot.cwd } : {}),
+          ...(latestCheckpoint ? { checkpointId: latestCheckpoint.id } : {}),
+        };
+      }),
+    };
+  }
+
   listCheckpoints(id: string): {
     checkpoints: Checkpoint[];
     currentCheckpointId?: string;
@@ -957,4 +982,30 @@ export class SessionsService implements OnModuleDestroy {
   async onModuleDestroy(): Promise<void> {
     await Promise.all([...this.entries.keys()].map((id) => this.dispose(id)));
   }
+}
+
+function sessionTitle(snapshot: SessionSnapshot): string {
+  const firstUser = snapshot.history.find((entry) => entry.role === 'user');
+  if (!firstUser) {
+    return snapshot.cwd ? workspaceName(snapshot.cwd) : snapshot.id;
+  }
+  const text = messageContentToText(firstUser.content).trim();
+  return text.length > 0 ? text.slice(0, 80) : snapshot.id;
+}
+
+function workspaceName(path: string): string {
+  const parts = path.split('/').filter(Boolean);
+  return parts.at(-1) ?? path;
+}
+
+function messageContentToText(
+  content: SessionSnapshot['history'][number]['content'],
+): string {
+  if (typeof content === 'string') return content;
+  return content
+    .map((block) => {
+      if (block.type === 'text') return block.text;
+      return `[image: ${block.mediaType}]`;
+    })
+    .join('\n');
 }

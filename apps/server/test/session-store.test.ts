@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import type {
   Checkpoint,
   PermissionAuditEntry,
-  SessionSnapshot
+  SessionSnapshot,
 } from '@colorful-code/tool-runtime';
 import { SessionStore } from '../src/persistence/session-store';
 
@@ -21,7 +21,7 @@ import { SessionStore } from '../src/persistence/session-store';
 // creates the parent directory), opens a store, and runs `body` against it,
 // guaranteeing the connection is closed and the temp dir removed afterward.
 async function withTempStore(
-  body: (store: SessionStore, dbPath: string) => void | Promise<void>
+  body: (store: SessionStore, dbPath: string) => void | Promise<void>,
 ): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'colorful-code-store-'));
   // Nested under a not-yet-existing `data/` dir to exercise mkdir-recursive.
@@ -35,18 +35,20 @@ async function withTempStore(
   }
 }
 
-function sampleSnapshot(overrides: Partial<SessionSnapshot> = {}): SessionSnapshot {
+function sampleSnapshot(
+  overrides: Partial<SessionSnapshot> = {},
+): SessionSnapshot {
   return {
     id: 'session-1',
     cwd: '/work/project',
     history: [
       { role: 'user', content: 'List my tasks.' },
-      { role: 'assistant', content: 'There are no tasks yet.' }
+      { role: 'assistant', content: 'There are no tasks yet.' },
     ],
     permissionMode: 'default',
     workspaceRoots: ['/work/project'],
     todos: [{ content: 'ship persistence', status: 'pending' }],
-    ...overrides
+    ...overrides,
   };
 }
 
@@ -59,12 +61,16 @@ test('saveSnapshot + loadSnapshot round-trip through a real file DB', async () =
     assert.ok(existsSync(dbPath), 'the SQLite file was created on disk');
 
     const loaded = store.loadSnapshot('session-1');
-    assert.deepEqual(loaded, snapshot, 'loaded snapshot deep-equals the saved one');
+    assert.deepEqual(
+      loaded,
+      snapshot,
+      'loaded snapshot deep-equals the saved one',
+    );
 
     assert.equal(
       store.loadSnapshot('does-not-exist'),
       undefined,
-      'unknown id loads as undefined'
+      'unknown id loads as undefined',
     );
   });
 });
@@ -79,7 +85,7 @@ test('saveCheckpoint + listCheckpoints preserve parent links and metadata', asyn
       label: 'First run',
       summary: 'User asked for tasks.',
       snapshot: sampleSnapshot(),
-      fileChanges: [{ path: 'README.md', status: 'modified' }]
+      fileChanges: [{ path: 'README.md', status: 'modified' }],
     };
     const second: Checkpoint = {
       id: 'checkpoint-2',
@@ -90,8 +96,8 @@ test('saveCheckpoint + listCheckpoints preserve parent links and metadata', asyn
       label: 'Second run',
       summary: 'Assistant updated the answer.',
       snapshot: sampleSnapshot({
-        history: [{ role: 'user', content: 'second' }]
-      })
+        history: [{ role: 'user', content: 'second' }],
+      }),
     };
 
     store.saveCheckpoint(first);
@@ -100,23 +106,23 @@ test('saveCheckpoint + listCheckpoints preserve parent links and metadata', asyn
       ...first,
       id: 'checkpoint-other',
       sessionId: 'session-2',
-      snapshot: sampleSnapshot({ id: 'session-2' })
+      snapshot: sampleSnapshot({ id: 'session-2' }),
     });
 
     assert.deepEqual(
       store.listCheckpoints('session-1').map((checkpoint) => checkpoint.id),
       ['checkpoint-1', 'checkpoint-2'],
-      'list is filtered by session and sorted by createdAt'
+      'list is filtered by session and sorted by createdAt',
     );
     assert.deepEqual(
       store.loadCheckpoint('session-1', 'checkpoint-2'),
       second,
-      'checkpoint JSON payload round-trips'
+      'checkpoint JSON payload round-trips',
     );
     assert.equal(
       store.loadCheckpoint('session-1', 'checkpoint-other'),
       undefined,
-      'checkpoint id must also match the requested session'
+      'checkpoint id must also match the requested session',
     );
   });
 });
@@ -128,8 +134,8 @@ test('saveSnapshot upserts: second save keeps one row with the latest value', as
       sampleSnapshot({
         permissionMode: 'acceptEdits',
         history: [{ role: 'user', content: 'updated' }],
-        todos: []
-      })
+        todos: [],
+      }),
     );
 
     const loaded = store.loadSnapshot('session-1');
@@ -137,9 +143,26 @@ test('saveSnapshot upserts: second save keeps one row with the latest value', as
     assert.deepEqual(
       loaded?.history,
       [{ role: 'user', content: 'updated' }],
-      'latest history wins'
+      'latest history wins',
     );
     assert.deepEqual(loaded?.todos, [], 'latest todos win');
+  });
+});
+
+test('listSessions returns persisted snapshots newest first', async () => {
+  await withTempStore((store) => {
+    store.saveSnapshot(sampleSnapshot({ id: 'older' }));
+    store.saveSnapshot(sampleSnapshot({ id: 'newer', cwd: '/work/newer' }));
+
+    const listed = store.listSessions();
+
+    assert.deepEqual(
+      listed.map((entry) => entry.snapshot.id),
+      ['newer', 'older'],
+      'sessions are sorted by updatedAt descending',
+    );
+    assert.equal(listed[0]?.snapshot.cwd, '/work/newer');
+    assert.equal(typeof listed[0]?.updatedAt, 'number');
   });
 });
 
@@ -151,7 +174,7 @@ test('appendAudit + listAudit returns entries in order, reason JSON round-trips'
         toolName: 'TaskList',
         behavior: 'allow',
         reason: { type: 'toolDefault' },
-        at: 1000
+        at: 1000,
       },
       {
         toolUseId: 'call-2',
@@ -159,17 +182,17 @@ test('appendAudit + listAudit returns entries in order, reason JSON round-trips'
         behavior: 'ask',
         reason: {
           type: 'rule',
-          rule: { source: 'session', behavior: 'ask', toolName: 'Write' }
+          rule: { source: 'session', behavior: 'ask', toolName: 'Write' },
         },
-        at: 2000
+        at: 2000,
       },
       {
         // No `reason` -> stored as NULL -> comes back without the key.
         toolUseId: 'call-3',
         toolName: 'Bash',
         behavior: 'deny',
-        at: 3000
-      }
+        at: 3000,
+      },
     ];
 
     store.appendAudit('session-1', entries);
@@ -182,7 +205,7 @@ test('appendAudit + listAudit returns entries in order, reason JSON round-trips'
     assert.equal(
       second?.reason?.type === 'rule' && second.reason.rule.toolName,
       'Write',
-      'nested reason JSON round-tripped'
+      'nested reason JSON round-tripped',
     );
   });
 });
@@ -190,34 +213,34 @@ test('appendAudit + listAudit returns entries in order, reason JSON round-trips'
 test('listAudit is filtered by sessionId and preserves per-session order', async () => {
   await withTempStore((store) => {
     store.appendAudit('session-a', [
-      { toolUseId: 'a-1', toolName: 'TaskList', behavior: 'allow', at: 10 }
+      { toolUseId: 'a-1', toolName: 'TaskList', behavior: 'allow', at: 10 },
     ]);
     store.appendAudit('session-b', [
-      { toolUseId: 'b-1', toolName: 'Write', behavior: 'deny', at: 20 }
+      { toolUseId: 'b-1', toolName: 'Write', behavior: 'deny', at: 20 },
     ]);
     // A second batch for session-a appended after session-b's row exists.
     store.appendAudit('session-a', [
-      { toolUseId: 'a-2', toolName: 'Bash', behavior: 'ask', at: 30 }
+      { toolUseId: 'a-2', toolName: 'Bash', behavior: 'ask', at: 30 },
     ]);
 
     const a = store.listAudit('session-a');
     assert.deepEqual(
       a.map((entry) => entry.toolUseId),
       ['a-1', 'a-2'],
-      'only session-a entries, in insertion order'
+      'only session-a entries, in insertion order',
     );
 
     const b = store.listAudit('session-b');
     assert.deepEqual(
       b.map((entry) => entry.toolUseId),
       ['b-1'],
-      'only session-b entries'
+      'only session-b entries',
     );
 
     assert.deepEqual(
       store.listAudit('session-c'),
       [],
-      'an unknown session has an empty audit trail'
+      'an unknown session has an empty audit trail',
     );
   });
 });
@@ -229,7 +252,7 @@ test('a reopened file DB still sees previously persisted data', async () => {
     const first = SessionStore.openAt(dbPath);
     first.saveSnapshot(sampleSnapshot({ id: 'persisted' }));
     first.appendAudit('persisted', [
-      { toolUseId: 'c-1', toolName: 'TaskList', behavior: 'allow', at: 99 }
+      { toolUseId: 'c-1', toolName: 'TaskList', behavior: 'allow', at: 99 },
     ]);
     first.close();
 
