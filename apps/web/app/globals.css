@@ -161,7 +161,7 @@ body {
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  background: color-mix(in oklch, var(--sidebar) 24%, transparent);
+  background: color-mix(in oklch, var(--sidebar) 26%, transparent) !important;
   backdrop-filter: blur(60px) saturate(180%) brightness(1.06);
   -webkit-backdrop-filter: blur(60px) saturate(180%) brightness(1.06);
   box-shadow:
@@ -185,24 +185,66 @@ body {
   z-index: 0;
   pointer-events: none;
   content: '';
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklch, var(--foreground) 10%, transparent),
+    transparent 18%,
+    transparent 78%,
+    color-mix(in oklch, var(--foreground) 8%, transparent)
+  );
+  opacity: 0.42;
+}
+
+.sidebar-collapsed-top-cutout {
+  --agent-sidebar-top-cutout: 3.5rem;
+  --agent-sidebar-titlebar-bg: var(--background);
+
+  box-shadow: 12px 0 32px color-mix(in oklch, var(--foreground) 6%, transparent);
+}
+
+.sidebar-collapsed-top-cutout::before {
   background:
+    linear-gradient(
+        to bottom,
+        transparent 0 var(--agent-sidebar-top-cutout),
+        color-mix(in oklch, var(--foreground) 14%, transparent)
+          var(--agent-sidebar-top-cutout) 100%
+      )
+      right top / 1px 100% no-repeat,
     linear-gradient(
       90deg,
       color-mix(in oklch, var(--foreground) 10%, transparent),
       transparent 18%,
       transparent 78%,
       color-mix(in oklch, var(--foreground) 8%, transparent)
-    ),
-    repeating-linear-gradient(
-      135deg,
-      color-mix(in oklch, var(--foreground) 4%, transparent) 0 1px,
-      transparent 1px 5px
     );
-  opacity: 0.42;
+}
+
+.sidebar-collapsed-top-cutout::after {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 0;
+  height: var(--agent-sidebar-top-cutout);
+  pointer-events: none;
+  content: '';
+  background: var(--agent-sidebar-titlebar-bg);
+  box-shadow: inset 0 -1px 0
+    color-mix(in oklch, var(--foreground) 10%, transparent);
+}
+
+.agent-sidebar-resize-handle-cutout {
+  --agent-sidebar-top-cutout: 3.5rem;
+
+  background: linear-gradient(
+    to bottom,
+    var(--background) 0 var(--agent-sidebar-top-cutout),
+    var(--border) var(--agent-sidebar-top-cutout) 100%
+  ) !important;
 }
 
 .dark .agent-sidebar-glass {
-  background: color-mix(in oklch, var(--sidebar) 26%, transparent);
   backdrop-filter: blur(60px) saturate(190%) brightness(0.94);
   -webkit-backdrop-filter: blur(60px) saturate(190%) brightness(0.94);
   box-shadow:
@@ -212,20 +254,41 @@ body {
 }
 
 .dark .agent-sidebar-glass::before {
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklch, white 8%, transparent),
+    transparent 20%,
+    transparent 76%,
+    color-mix(in oklch, white 10%, transparent)
+  );
+  opacity: 0.5;
+}
+
+.dark .sidebar-collapsed-top-cutout {
+  box-shadow: 12px 0 36px color-mix(in oklch, black 22%, transparent);
+}
+
+.dark .sidebar-collapsed-top-cutout::before {
   background:
+    linear-gradient(
+        to bottom,
+        transparent 0 var(--agent-sidebar-top-cutout),
+        color-mix(in oklch, white 14%, transparent)
+          var(--agent-sidebar-top-cutout) 100%
+      )
+      right top / 1px 100% no-repeat,
     linear-gradient(
       90deg,
       color-mix(in oklch, white 8%, transparent),
       transparent 20%,
       transparent 76%,
       color-mix(in oklch, white 10%, transparent)
-    ),
-    repeating-linear-gradient(
-      135deg,
-      color-mix(in oklch, white 5%, transparent) 0 1px,
-      transparent 1px 5px
     );
-  opacity: 0.5;
+}
+
+.dark .sidebar-collapsed-top-cutout::after {
+  background: var(--agent-sidebar-titlebar-bg);
+  box-shadow: inset 0 -1px 0 color-mix(in oklch, white 10%, transparent);
 }
 
 .agent-compact-ui {

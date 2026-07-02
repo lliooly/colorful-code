@@ -20,6 +20,8 @@ import {
   FileDiff,
   Ellipsis,
   Check,
+  ArrowLeft,
+  ArrowRight,
   Upload,
   Database,
   PanelLeft,
@@ -672,14 +674,22 @@ export default function AgentPage(): ReactNode {
     }
 
     applyTheme(preferences.theme);
+    if ('__TAURI_INTERNALS__' in window) {
+      const windowTheme =
+        preferences.theme === 'system' ? null : preferences.theme;
+      void import('@tauri-apps/api/window')
+        .then(({ getCurrentWindow }) =>
+          getCurrentWindow().setTheme(windowTheme),
+        )
+        .catch(() => undefined);
+    }
 
     if (preferences.theme === 'system') {
       function handleSystemChange(): void {
         applyTheme('system');
       }
       mediaQuery.addEventListener('change', handleSystemChange);
-      return () =>
-        mediaQuery.removeEventListener('change', handleSystemChange);
+      return () => mediaQuery.removeEventListener('change', handleSystemChange);
     }
   }, [preferences.language, preferences.theme]);
 
@@ -1241,12 +1251,76 @@ export default function AgentPage(): ReactNode {
     panel.collapse();
   }, [sidebarCollapsed]);
 
+  const handleNavigateBack = useCallback(() => {
+    window.history.back();
+  }, []);
+
+  const handleNavigateForward = useCallback(() => {
+    window.history.forward();
+  }, []);
+
   return (
     <TooltipProvider>
       <SidebarProvider
         defaultOpen
         className="!min-h-0 h-dvh max-h-dvh overflow-hidden"
       >
+        <div
+          className="fixed top-0 left-0 z-40 flex h-12 items-center px-3"
+          data-tauri-drag-region="deep"
+        >
+          <div className="ml-[5.75rem] flex items-center gap-2.5">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={handleToggleSidebar}
+                  aria-label={
+                    sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'
+                  }
+                  data-tauri-drag-region="false"
+                  className="text-sidebar-foreground/70 hover:bg-sidebar-accent/45 hover:text-sidebar-foreground [&_svg]:size-4"
+                >
+                  <PanelLeft />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={handleNavigateBack}
+                  aria-label="Back"
+                  data-tauri-drag-region="false"
+                  className="text-sidebar-foreground/55 hover:bg-sidebar-accent/45 hover:text-sidebar-foreground [&_svg]:size-4"
+                >
+                  <ArrowLeft />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Back</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={handleNavigateForward}
+                  aria-label="Forward"
+                  data-tauri-drag-region="false"
+                  className="text-sidebar-foreground/35 hover:bg-sidebar-accent/45 hover:text-sidebar-foreground [&_svg]:size-4"
+                >
+                  <ArrowRight />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Forward</TooltipContent>
+            </Tooltip>
+          </div>
+        </div>
         <ResizablePanelGroup
           orientation="horizontal"
           className="h-full min-h-0 max-h-full overflow-hidden bg-transparent text-foreground"
@@ -1262,9 +1336,15 @@ export default function AgentPage(): ReactNode {
             onResize={(size) => setSidebarCollapsed(size.inPixels <= 80)}
           >
             <Sidebar
-              className="agent-sidebar-glass w-full min-w-0 border-r border-border/55"
+              className={cn(
+                'w-full min-w-0',
+                sidebarCollapsed
+                  ? 'agent-sidebar-glass sidebar-collapsed-top-cutout'
+                  : 'agent-sidebar-glass border-r border-border/55',
+              )}
               collapsible="none"
             >
+              <div className="h-12 shrink-0" data-tauri-drag-region="deep" />
               <SidebarContent
                 className={cn(
                   sidebarCollapsed && 'items-center gap-3 overflow-hidden',
@@ -1482,97 +1562,95 @@ export default function AgentPage(): ReactNode {
               </SidebarFooter>
             </Sidebar>
           </ResizablePanel>
-          <ResizableHandle withHandle />
+          <ResizableHandle
+            withHandle
+            className={cn(
+              sidebarCollapsed && 'agent-sidebar-resize-handle-cutout',
+            )}
+          />
           <ResizablePanel
             minSize="360px"
             className="min-h-0 overflow-hidden bg-background"
           >
             <div className="agent-compact-ui flex h-full min-h-0 flex-col overflow-hidden">
-              <div className="flex flex-wrap items-center justify-between gap-3 px-5 pb-2 pt-4 sm:px-6">
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={handleToggleSidebar}
-                  aria-label={
-                    sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'
-                  }
-                >
-                  <PanelLeft />
-                </Button>
-                <div className="flex items-center gap-2">
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="outline"
-                        size="icon-sm"
-                        onClick={() => setDiffOpen(true)}
-                      >
-                        <FileDiff />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>{t.topbar.editProposals}</TooltipContent>
-                  </Tooltip>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="outline">
-                        <Ellipsis />
-                        {t.topbar.more}
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="min-w-56">
-                      <DropdownMenuLabel>
-                        {t.topbar.workspace}
-                      </DropdownMenuLabel>
-                      <DropdownMenuGroup>
-                        <DropdownMenuItem
-                          disabled={items.length === 0}
-                          onSelect={handleExportTranscript}
-                        >
-                          {t.topbar.exportTranscript}
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          disabled={!sessionId}
-                          onSelect={() => void handleCopySessionId()}
-                        >
-                          {t.topbar.copySessionId}
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          disabled={!sessionId || loadingCheckpoints}
-                          onSelect={() => {
-                            if (sessionId) void refreshCheckpoints(sessionId);
-                          }}
-                        >
-                          {t.topbar.refreshCheckpoints}
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          disabled={!currentCheckpointId}
-                          onSelect={() => {
-                            const checkpoint = checkpoints.find(
-                              (item) => item.id === currentCheckpointId,
-                            );
-                            if (checkpoint)
-                              void handleForkCheckpoint(checkpoint);
-                          }}
-                        >
-                          {t.topbar.forkCheckpoint}
-                        </DropdownMenuItem>
-                      </DropdownMenuGroup>
-                      <DropdownMenuSeparator />
+              <div
+                className="flex h-12 shrink-0 items-center justify-end gap-2 px-5"
+                data-tauri-drag-region="deep"
+              >
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => setDiffOpen(true)}
+                      data-tauri-drag-region="false"
+                    >
+                      <FileDiff />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>{t.topbar.editProposals}</TooltipContent>
+                </Tooltip>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      data-tauri-drag-region="false"
+                    >
+                      <Ellipsis />
+                      {t.topbar.more}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="min-w-56">
+                    <DropdownMenuLabel>{t.topbar.workspace}</DropdownMenuLabel>
+                    <DropdownMenuGroup>
                       <DropdownMenuItem
-                        onSelect={() =>
-                          setNotice(
-                            'Plugin management is not exposed by the current backend API.',
-                          )
-                        }
+                        disabled={items.length === 0}
+                        onSelect={handleExportTranscript}
                       >
-                        {t.topbar.openPlugins}
+                        {t.topbar.exportTranscript}
                       </DropdownMenuItem>
-                      <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
-                        {t.topbar.openSettings}
+                      <DropdownMenuItem
+                        disabled={!sessionId}
+                        onSelect={() => void handleCopySessionId()}
+                      >
+                        {t.topbar.copySessionId}
                       </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
+                      <DropdownMenuItem
+                        disabled={!sessionId || loadingCheckpoints}
+                        onSelect={() => {
+                          if (sessionId) void refreshCheckpoints(sessionId);
+                        }}
+                      >
+                        {t.topbar.refreshCheckpoints}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        disabled={!currentCheckpointId}
+                        onSelect={() => {
+                          const checkpoint = checkpoints.find(
+                            (item) => item.id === currentCheckpointId,
+                          );
+                          if (checkpoint) void handleForkCheckpoint(checkpoint);
+                        }}
+                      >
+                        {t.topbar.forkCheckpoint}
+                      </DropdownMenuItem>
+                    </DropdownMenuGroup>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onSelect={() =>
+                        setNotice(
+                          'Plugin management is not exposed by the current backend API.',
+                        )
+                      }
+                    >
+                      {t.topbar.openPlugins}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
+                      {t.topbar.openSettings}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
 
               <div className="flex min-h-0 flex-1 flex-col px-5 pb-5 sm:px-6">
@@ -2345,7 +2423,10 @@ export default function AgentPage(): ReactNode {
       </Dialog>
 
       <Sheet open={diffOpen} onOpenChange={setDiffOpen}>
-        <SheetContent side="right" className="agent-compact-ui w-full sm:max-w-2xl">
+        <SheetContent
+          side="right"
+          className="agent-compact-ui w-full sm:max-w-2xl"
+        >
           <SheetHeader>
             <SheetTitle>Edit proposals</SheetTitle>
             <SheetDescription>
