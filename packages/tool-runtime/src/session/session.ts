@@ -1,4 +1,5 @@
 import { ToolRegistry } from '../core/registry.js';
+import { describeTools } from '../core/descriptor.js';
 import { ToolRunner } from '../core/runner.js';
 import { ToolScheduler } from '../core/scheduler.js';
 import {
@@ -21,6 +22,7 @@ import type {
 import type { McpManager } from '../mcp/types.js';
 import type { LspManager } from '../lsp/types.js';
 import type { CompactionConfig } from './compaction.js';
+import { compactHistory } from './compaction.js';
 import type { ControlMessage } from './control.js';
 import { contentToText } from './content.js';
 import type { SessionEvent, SessionEventListener } from './events.js';
@@ -544,6 +546,32 @@ export class Session {
       case 'set_permission_mode':
         this.permissionContext.mode = message.mode;
         return;
+      case 'compact': {
+        if (!this.compaction) return;
+        const tools = describeTools(this.registry.list());
+        const abortController = new AbortController();
+        void compactHistory({
+          history: this.history,
+          model: this.model,
+          config: this.compaction,
+          ...(this.systemPrompt !== undefined
+            ? { system: this.systemPrompt }
+            : {}),
+          tools,
+          signal: abortController.signal,
+        }).then((result) => {
+          if (result) {
+            this.emit({
+              type: 'context_compacted',
+              runId: `compact-${Date.now().toString(36)}`,
+              tokensBefore: result.tokensBefore,
+              tokensAfter: result.tokensAfter,
+              entriesSummarized: result.entriesSummarized,
+            });
+          }
+        });
+        return;
+      }
     }
   }
 

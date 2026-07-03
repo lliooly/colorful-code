@@ -2,11 +2,20 @@ import { PERMISSION_MODES, type PermissionMode } from './types';
 
 export type Language = 'en' | 'zh';
 export type ThemePreference = 'system' | 'light' | 'dark';
+export type ModelPresetId = 'claude' | 'deepseek' | 'openai' | 'custom';
+
+export const MODEL_PRESET_IDS: readonly ModelPresetId[] = [
+  'claude',
+  'deepseek',
+  'openai',
+  'custom',
+];
 
 export type AgentPreferences = {
   language: Language;
   theme: ThemePreference;
   permissionModeVisibility: Record<PermissionMode, boolean>;
+  modelPresetVisibility: Record<ModelPresetId, boolean>;
 };
 
 export const AGENT_PREFERENCES_STORAGE_KEY = 'colorful-code.agent.preferences';
@@ -20,6 +29,12 @@ export const DEFAULT_AGENT_PREFERENCES: AgentPreferences = {
     acceptEdits: true,
     readOnly: true,
     bypass: true,
+  },
+  modelPresetVisibility: {
+    claude: true,
+    deepseek: true,
+    openai: true,
+    custom: true,
   },
 };
 
@@ -43,6 +58,9 @@ export function mergeAgentPreferences(value: unknown): AgentPreferences {
       : DEFAULT_AGENT_PREFERENCES.theme,
     permissionModeVisibility: mergePermissionVisibility(
       value.permissionModeVisibility,
+    ),
+    modelPresetVisibility: mergeModelPresetVisibility(
+      value.modelPresetVisibility,
     ),
   };
 }
@@ -69,6 +87,37 @@ export function getVisiblePermissionModes(
   );
 }
 
+export function setModelPresetVisibility(
+  preferences: AgentPreferences,
+  presetId: string,
+  visible: boolean,
+): AgentPreferences {
+  if (!isModelPresetId(presetId)) return { ...preferences };
+
+  const nextVisibility = {
+    ...preferences.modelPresetVisibility,
+    [presetId]: visible,
+  };
+  if (!hasVisibleModelPreset(nextVisibility)) {
+    nextVisibility[presetId] = true;
+  }
+
+  return {
+    ...preferences,
+    modelPresetVisibility: nextVisibility,
+  };
+}
+
+export function getVisibleModelPresetIds(
+  preferences: AgentPreferences,
+  presetIds: readonly string[] = MODEL_PRESET_IDS,
+): string[] {
+  return presetIds.filter(
+    (presetId) =>
+      isModelPresetId(presetId) && preferences.modelPresetVisibility[presetId],
+  );
+}
+
 function mergePermissionVisibility(
   value: unknown,
 ): Record<PermissionMode, boolean> {
@@ -86,6 +135,41 @@ function mergePermissionVisibility(
     },
     { ...DEFAULT_AGENT_PREFERENCES.permissionModeVisibility },
   );
+}
+
+function mergeModelPresetVisibility(
+  value: unknown,
+): Record<ModelPresetId, boolean> {
+  if (!isRecord(value)) {
+    return { ...DEFAULT_AGENT_PREFERENCES.modelPresetVisibility };
+  }
+
+  const visibility = MODEL_PRESET_IDS.reduce<Record<ModelPresetId, boolean>>(
+    (acc, presetId) => {
+      acc[presetId] =
+        typeof value[presetId] === 'boolean'
+          ? value[presetId]
+          : DEFAULT_AGENT_PREFERENCES.modelPresetVisibility[presetId];
+      return acc;
+    },
+    { ...DEFAULT_AGENT_PREFERENCES.modelPresetVisibility },
+  );
+
+  if (!hasVisibleModelPreset(visibility)) {
+    visibility.claude = true;
+  }
+
+  return visibility;
+}
+
+function hasVisibleModelPreset(
+  visibility: Record<ModelPresetId, boolean>,
+): boolean {
+  return MODEL_PRESET_IDS.some((presetId) => visibility[presetId]);
+}
+
+function isModelPresetId(value: string): value is ModelPresetId {
+  return MODEL_PRESET_IDS.includes(value as ModelPresetId);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

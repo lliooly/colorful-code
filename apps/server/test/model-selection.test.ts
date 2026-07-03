@@ -47,7 +47,7 @@ test('buildModelClientConfig merges preset defaults with overrides', () => {
   });
   assert.equal(config.protocol, 'openai');
   assert.equal(config.baseURL, 'https://api.deepseek.com');
-  assert.equal(config.model, 'deepseek-chat');
+  assert.equal(config.model, 'deepseek-v4-pro');
 
   const overridden = buildModelClientConfig({
     presetId: 'openai',
@@ -62,7 +62,7 @@ test('buildModelClientConfig merges preset defaults with overrides', () => {
 test('claude selection pulls the anthropic key by default', () => {
   const config = resolveModelClientConfig(env({ anthropic: 'sk-ant' }));
   assert.equal(config.protocol, 'anthropic');
-  assert.equal(config.model, 'claude-opus-4-8');
+  assert.equal(config.model, 'claude-fable-5');
   assert.equal(config.apiKey, 'sk-ant');
 });
 
@@ -82,7 +82,7 @@ test('named presets may use a request-scoped api key before falling back to env 
   });
 
   assert.equal(config.protocol, 'openai');
-  assert.equal(config.model, 'gpt-4o');
+  assert.equal(config.model, 'gpt-5.5');
   assert.equal(config.apiKey, 'request-key');
 });
 

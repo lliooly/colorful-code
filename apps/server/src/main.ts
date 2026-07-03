@@ -6,12 +6,12 @@ import {
 } from '@nestjs/platform-fastify';
 import { AppModule } from './app.module';
 import {
-  loadDevelopmentEnvFileIfPresent,
+  loadServerDevelopmentEnvFiles,
   loadServerEnvironment,
 } from './config/environment';
 
 async function bootstrap() {
-  loadDevelopmentEnvFileIfPresent();
+  loadServerDevelopmentEnvFiles();
   const serverEnvironment = loadServerEnvironment();
 
   const app = await NestFactory.create<NestFastifyApplication>(

@@ -3,6 +3,7 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  Optional,
   OnModuleDestroy,
 } from '@nestjs/common';
 import { existsSync, readFileSync, statSync } from 'node:fs';
@@ -47,6 +48,11 @@ import {
   type ModelClientFactory,
   type ModelSelection,
 } from './model-factory';
+import {
+  VoiceTranscriptionService,
+  type VoiceAudioChunk,
+  type VoiceStartOptions,
+} from './voice-transcription';
 import { buildCompactionConfig } from './compaction-config';
 import { SessionStore } from '../persistence/session-store';
 import {
@@ -258,6 +264,8 @@ export class SessionsService implements OnModuleDestroy {
     @Inject(MODEL_CLIENT_FACTORY)
     private readonly modelClientFactory: ModelClientFactory,
     private readonly store: SessionStore,
+    @Optional()
+    private readonly voiceTranscription?: VoiceTranscriptionService,
   ) {}
 
   // Builds a fresh PermissionContext from the request options. `workspaceRoots`
@@ -854,6 +862,41 @@ export class SessionsService implements OnModuleDestroy {
     return entry;
   }
 
+  private emitEvent(id: string, event: SessionEvent): void {
+    const entry = this.require(id);
+    entry.log.push(event);
+    for (const listener of entry.listeners) {
+      listener(event);
+    }
+  }
+
+  startVoiceTranscription(
+    id: string,
+    requestId: string,
+    options: VoiceStartOptions,
+  ): void {
+    this.require(id);
+    if (!this.voiceTranscription) {
+      throw new BadRequestException('Voice transcription is not available.');
+    }
+    this.voiceTranscription.start(id, requestId, options, (event) =>
+      this.emitEvent(id, event),
+    );
+  }
+
+  appendVoiceAudio(id: string, chunk: VoiceAudioChunk): void {
+    this.require(id);
+    if (!this.voiceTranscription) {
+      throw new BadRequestException('Voice transcription is not available.');
+    }
+    this.voiceTranscription.appendAudio(id, chunk);
+  }
+
+  stopVoiceTranscription(id: string): void {
+    this.require(id);
+    this.voiceTranscription?.stop(id);
+  }
+
   // Fire-and-forget: append the user message and start the turn. Progress is
   // observed over the event stream; we deliberately do not await completion so
   // the HTTP request returns immediately (the run may park on an approval).
@@ -904,6 +947,7 @@ export class SessionsService implements OnModuleDestroy {
       return false;
     }
     entry.session.send({ type: 'cancel' });
+    this.voiceTranscription?.stop(id);
     // Persist the final state (and flush any not-yet-flushed audit) before the
     // session leaves memory.
     this.persist(entry.session, entry.pendingAudit);
@@ -966,6 +1010,7 @@ export class SessionsService implements OnModuleDestroy {
       return false;
     }
     entry.session.send({ type: 'cancel' });
+    this.voiceTranscription?.stop(id);
     if (options.persist) {
       this.persist(entry.session, entry.pendingAudit);
     }

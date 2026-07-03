@@ -8,6 +8,7 @@ import {
   MODEL_CLIENT_FACTORY,
   createServerModelClientFactory
 } from './model-factory';
+import { VoiceTranscriptionService } from './voice-transcription';
 
 // The session transport: in-memory session registry (SessionsService) exposed
 // over REST + SSE (SessionsController). The model client factory is a provider
@@ -20,6 +21,7 @@ import {
   controllers: [SessionsController],
   providers: [
     SessionsService,
+    VoiceTranscriptionService,
     {
       provide: MODEL_CLIENT_FACTORY,
       inject: [SERVER_ENV],

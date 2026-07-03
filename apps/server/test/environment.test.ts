@@ -1,10 +1,11 @@
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   loadDevelopmentEnvFileIfPresent,
+  loadServerDevelopmentEnvFiles,
   loadServerEnvironment,
   toRedactedServerEnvironment,
 } from '../src/config/environment';
@@ -106,6 +107,32 @@ test('loadDevelopmentEnvFileIfPresent skips .env in production', () => {
     } else {
       process.env.PORT = previousPort;
     }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('loadServerDevelopmentEnvFiles loads apps/server/.env from repository root', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'colorful-code-env-'));
+  const previousKey = process.env.OPENAI_API_KEY;
+  try {
+    const serverDir = join(dir, 'apps/server');
+    writeFileSync(join(dir, '.env'), 'ANTHROPIC_API_KEY=sk-root\n');
+    mkdirSync(serverDir, { recursive: true });
+    writeFileSync(join(serverDir, '.env'), 'OPENAI_API_KEY=sk-server\n');
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+
+    loadServerDevelopmentEnvFiles(dir, { NODE_ENV: 'development' });
+
+    assert.equal(process.env.OPENAI_API_KEY, 'sk-server');
+    assert.equal(process.env.ANTHROPIC_API_KEY, 'sk-root');
+  } finally {
+    if (previousKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousKey;
+    }
+    delete process.env.ANTHROPIC_API_KEY;
     rmSync(dir, { recursive: true, force: true });
   }
 });

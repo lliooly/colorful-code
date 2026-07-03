@@ -75,6 +75,19 @@ export type ModelConnectionResult = {
   sample?: string;
 };
 
+export type StartVoiceTranscriptionRequest = {
+  requestId: string;
+  apiKey?: string;
+  model?: string;
+  language?: 'en' | 'zh' | 'auto';
+};
+
+export type VoiceAudioChunkRequest = {
+  audio: string;
+  sampleRate: number;
+  numChannels: number;
+};
+
 // POST /sessions -> { id }
 export async function createSession(
   req: CreateSessionRequest,
@@ -109,6 +122,29 @@ export async function sendControl(
   message: ControlMessage,
 ): Promise<void> {
   await postJson(`/sessions/${encodeURIComponent(sessionId)}/control`, message);
+}
+
+export async function startVoiceTranscription(
+  sessionId: string,
+  req: StartVoiceTranscriptionRequest,
+): Promise<void> {
+  await postJson(`/sessions/${encodeURIComponent(sessionId)}/voice/start`, req);
+}
+
+export async function appendVoiceAudio(
+  sessionId: string,
+  chunk: VoiceAudioChunkRequest,
+): Promise<void> {
+  await postJson(
+    `/sessions/${encodeURIComponent(sessionId)}/voice/audio`,
+    chunk,
+  );
+}
+
+export async function stopVoiceTranscription(
+  sessionId: string,
+): Promise<void> {
+  await postJson(`/sessions/${encodeURIComponent(sessionId)}/voice/stop`, {});
 }
 
 // GET /sessions/:id/checkpoints -> { checkpoints, currentCheckpointId? }

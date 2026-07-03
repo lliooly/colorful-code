@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Colorful Code 需要访问麦克风以接收语音输入。</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Colorful Code 使用语音识别将您的语音转换为文字。</string>
+</dict>
+</plist>

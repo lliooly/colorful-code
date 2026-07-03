@@ -2,9 +2,11 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import {
   DEFAULT_AGENT_PREFERENCES,
+  getVisibleModelPresetIds,
   getVisiblePermissionModes,
   isLanguage,
   mergeAgentPreferences,
+  setModelPresetVisibility,
   setPermissionModeVisibility,
 } from '../app/agent/preferences';
 
@@ -53,6 +55,51 @@ test('setPermissionModeVisibility updates a single permission mode without mutat
     'acceptEdits',
     'readOnly',
   ]);
+});
+
+test('mergeAgentPreferences keeps model presets visible by default and ignores unknown presets', () => {
+  const preferences = mergeAgentPreferences({
+    modelPresetVisibility: {
+      claude: false,
+      deepseek: true,
+      unknown: false,
+    },
+  });
+
+  assert.deepEqual(getVisibleModelPresetIds(preferences), [
+    'deepseek',
+    'openai',
+    'custom',
+  ]);
+});
+
+test('mergeAgentPreferences preserves at least one enabled model preset', () => {
+  const preferences = mergeAgentPreferences({
+    modelPresetVisibility: {
+      claude: false,
+      deepseek: false,
+      openai: false,
+      custom: false,
+    },
+  });
+
+  assert.deepEqual(getVisibleModelPresetIds(preferences), ['claude']);
+});
+
+test('setModelPresetVisibility refuses to hide the last visible model preset', () => {
+  const oneVisible = mergeAgentPreferences({
+    modelPresetVisibility: {
+      claude: true,
+      deepseek: false,
+      openai: false,
+      custom: false,
+    },
+  });
+
+  const next = setModelPresetVisibility(oneVisible, 'claude', false);
+
+  assert.deepEqual(getVisibleModelPresetIds(next), ['claude']);
+  assert.notEqual(next, oneVisible);
 });
 
 test('isLanguage narrows only supported UI languages', () => {

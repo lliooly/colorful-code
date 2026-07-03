@@ -193,6 +193,30 @@ export type HookAuditEntry = {
 export type SessionEvent =
   | { type: 'mcp_status'; servers: McpServerStatus[] }
   | { type: 'lsp_status'; servers: LspServerStatus[] }
+  | {
+      type: 'voice_transcript_status';
+      runId: string;
+      requestId: string;
+      status: 'connecting' | 'recording' | 'stopped';
+    }
+  | {
+      type: 'voice_transcript_delta';
+      runId: string;
+      requestId: string;
+      text: string;
+    }
+  | {
+      type: 'voice_transcript_done';
+      runId: string;
+      requestId: string;
+      text: string;
+    }
+  | {
+      type: 'voice_transcript_error';
+      runId: string;
+      requestId: string;
+      message: string;
+    }
   | { type: 'hook_event'; runId: string; entry: HookAuditEntry }
   | {
       type: 'hook_failure';
@@ -300,6 +324,10 @@ export type SessionEventType = SessionEvent['type'];
 export const SESSION_EVENT_TYPES: readonly SessionEventType[] = [
   'mcp_status',
   'lsp_status',
+  'voice_transcript_status',
+  'voice_transcript_delta',
+  'voice_transcript_done',
+  'voice_transcript_error',
   'hook_event',
   'hook_failure',
   'file_created',
@@ -336,4 +364,5 @@ export type ControlMessage =
       decision: 'approve' | 'reject';
     }
   | { type: 'cancel' }
-  | { type: 'set_permission_mode'; mode: PermissionMode };
+  | { type: 'set_permission_mode'; mode: PermissionMode }
+  | { type: 'compact' };

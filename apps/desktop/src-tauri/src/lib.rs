@@ -1,15 +1,17 @@
 #[cfg(target_os = "macos")]
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 #[cfg(target_os = "macos")]
 use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
 
 use serde::Serialize;
 use std::{
+    ffi::{CStr, CString},
+    os::raw::c_char,
     env,
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::Mutex,
+    sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -46,6 +48,59 @@ struct AgentServerStatus {
 struct PickedFile {
     name: String,
     path: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MacosSpeechEvent {
+    kind: String,
+    text: String,
+}
+
+#[cfg(target_os = "macos")]
+static SPEECH_APP_HANDLE: OnceLock<Mutex<Option<tauri::AppHandle>>> = OnceLock::new();
+
+#[cfg(target_os = "macos")]
+extern "C" {
+    fn colorful_macos_speech_start(
+        language: *const c_char,
+        callback: extern "C" fn(*const c_char, *const c_char),
+    ) -> *mut c_char;
+    fn colorful_macos_speech_stop();
+    fn colorful_macos_speech_free(pointer: *mut c_char);
+}
+
+#[cfg(target_os = "macos")]
+extern "C" fn macos_speech_callback(kind: *const c_char, text: *const c_char) {
+    let kind = unsafe { c_string_to_string(kind) };
+    let text = unsafe { c_string_to_string(text) };
+    if let Some(handle) = speech_app_handle() {
+        let _ = handle.emit("macos_speech://event", MacosSpeechEvent { kind, text });
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn c_string_to_string(value: *const c_char) -> String {
+    if value.is_null() {
+        return String::new();
+    }
+    CStr::from_ptr(value).to_string_lossy().into_owned()
+}
+
+#[cfg(target_os = "macos")]
+fn speech_app_handle() -> Option<tauri::AppHandle> {
+    let slot = SPEECH_APP_HANDLE.get_or_init(|| Mutex::new(None));
+    slot.lock().ok().and_then(|handle| handle.clone())
+}
+
+#[cfg(target_os = "macos")]
+fn set_speech_app_handle(handle: tauri::AppHandle) -> Result<(), String> {
+    let slot = SPEECH_APP_HANDLE.get_or_init(|| Mutex::new(None));
+    let mut guard = slot
+        .lock()
+        .map_err(|_| "macOS speech handle lock poisoned".to_string())?;
+    *guard = Some(handle);
+    Ok(())
 }
 
 #[tauri::command]
@@ -138,6 +193,39 @@ fn ensure_agent_server(
     })
 }
 
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn macos_speech_start(app: tauri::AppHandle, language: String) -> Result<(), String> {
+    set_speech_app_handle(app)?;
+    let language = CString::new(language).map_err(|_| "Invalid speech language.".to_string())?;
+    let error = unsafe { colorful_macos_speech_start(language.as_ptr(), macos_speech_callback) };
+    if error.is_null() {
+        return Ok(());
+    }
+    let message = unsafe { CStr::from_ptr(error).to_string_lossy().into_owned() };
+    unsafe { colorful_macos_speech_free(error) };
+    Err(message)
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn macos_speech_start(_language: String) -> Result<(), String> {
+    Err("macOS speech is only available on macOS.".to_string())
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn macos_speech_stop() -> Result<(), String> {
+    unsafe { colorful_macos_speech_stop() };
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn macos_speech_stop() -> Result<(), String> {
+    Ok(())
+}
+
 fn workspace_root() -> Option<PathBuf> {
     if let Ok(root) = env::var("COLORFUL_CODE_REPO_ROOT") {
         return Some(PathBuf::from(root));
@@ -193,7 +281,9 @@ pub fn run() {
             pick_workspace_directory,
             pick_upload_file,
             agent_server_status,
-            ensure_agent_server
+            ensure_agent_server,
+            macos_speech_start,
+            macos_speech_stop
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -216,6 +306,7 @@ mod tests {
     use super::is_workspace_root;
     use super::{find_workspace_root_from, server_database_path, workspace_root};
     use std::path::{Path, PathBuf};
+    use std::process::Command;
 
     #[test]
     fn repository_root_is_detected_by_workspace_and_server_entry() {
@@ -244,6 +335,59 @@ mod tests {
         assert_eq!(
             server_database_path(root),
             PathBuf::from("/repo/apps/server/data/colorful-code.db")
+        );
+    }
+
+    #[test]
+    fn macos_privacy_descriptions_cover_voice_input() {
+        let plist = include_str!("../Info.plist");
+
+        assert!(plist.contains("<key>NSMicrophoneUsageDescription</key>"));
+        assert!(plist.contains("<string>Colorful Code 需要访问麦克风以接收语音输入。</string>"));
+        assert!(plist.contains("<key>NSSpeechRecognitionUsageDescription</key>"));
+        assert!(plist.contains("<string>Colorful Code 使用语音识别将您的语音转换为文字。</string>"));
+    }
+
+    #[test]
+    fn macos_speech_bridge_source_is_packaged() {
+        let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/macos_speech.m");
+        assert!(bridge.is_file());
+    }
+
+    #[test]
+    fn macos_speech_bridge_preflights_privacy_usage_descriptions() {
+        let bridge = include_str!("macos_speech.m");
+
+        assert!(bridge.contains("privacyUsageDescriptionError"));
+        assert!(bridge.contains("NSSpeechRecognitionUsageDescription"));
+        assert!(bridge.contains("NSMicrophoneUsageDescription"));
+        assert!(bridge.find("privacyUsageDescriptionError").unwrap() < bridge.find("requestSpeechAuthorization").unwrap());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_speech_bridge_uses_non_deprecated_audio_tap_api() {
+        let object_path = std::env::temp_dir().join(format!(
+            "colorful_macos_speech_warning_probe_{}.o",
+            std::process::id()
+        ));
+        let output = Command::new("xcrun")
+            .arg("clang")
+            .arg("-Werror=deprecated-declarations")
+            .arg("-fobjc-arc")
+            .arg("-ObjC")
+            .arg("-c")
+            .arg("src/macos_speech.m")
+            .arg("-o")
+            .arg(&object_path)
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .expect("failed to execute xcrun clang for macOS speech bridge warning check");
+
+        assert!(
+            output.status.success(),
+            "macOS speech bridge compiled with deprecated API warnings:\n{}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 }

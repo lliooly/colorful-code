@@ -45,20 +45,20 @@ export const MODEL_PRESETS: readonly ModelPreset[] = [
     id: 'claude',
     label: 'Claude',
     protocol: 'anthropic',
-    defaultModel: 'claude-opus-4-8'
+    defaultModel: 'claude-fable-5'
   },
   {
     id: 'deepseek',
     label: 'DeepSeek',
     protocol: 'openai',
     baseURL: 'https://api.deepseek.com',
-    defaultModel: 'deepseek-chat'
+    defaultModel: 'deepseek-v4-pro'
   },
   {
     id: 'openai',
     label: 'OpenAI',
     protocol: 'openai',
-    defaultModel: 'gpt-4o'
+    defaultModel: 'gpt-5.5'
   },
   {
     id: 'custom',

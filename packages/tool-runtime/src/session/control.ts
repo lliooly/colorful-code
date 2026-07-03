@@ -24,4 +24,6 @@ export type ControlMessage =
   // Abort the current run (and auto-deny any pending approvals).
   | { type: 'cancel' }
   // Mutate the live permission mode for subsequent decisions.
-  | { type: 'set_permission_mode'; mode: PermissionMode };
+  | { type: 'set_permission_mode'; mode: PermissionMode }
+  // Manually trigger context compaction on demand.
+  | { type: 'compact' };

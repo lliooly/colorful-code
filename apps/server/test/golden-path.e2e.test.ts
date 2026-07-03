@@ -149,6 +149,31 @@ function assertSseRouteMetadata(controller: SessionsController): void {
   );
 }
 
+function assertVoiceRouteMetadata(controller: SessionsController): void {
+  const routes: Array<{
+    handler: keyof SessionsController;
+    path: string;
+  }> = [
+    { handler: 'voiceStart', path: ':id/voice/start' },
+    { handler: 'voiceAudio', path: ':id/voice/audio' },
+    { handler: 'voiceStop', path: ':id/voice/stop' },
+  ];
+
+  for (const route of routes) {
+    const handler = controller[route.handler];
+    assert.equal(
+      Reflect.getMetadata(PATH_METADATA, handler),
+      route.path,
+      `${route.handler} is mapped to ${route.path}`,
+    );
+    assert.equal(
+      Reflect.getMetadata(METHOD_METADATA, handler),
+      RequestMethod.POST,
+      `${route.handler} is mapped to HTTP POST`,
+    );
+  }
+}
+
 test('golden path: approval round-trip over REST + SSE', async () => {
   await boot();
   assert.ok(app, 'app is initialized');
@@ -171,6 +196,7 @@ test('golden path: approval round-trip over REST + SSE', async () => {
   // 2) Assert the controller still exposes the real GET SSE route without
   //    relying on sandboxed socket permissions.
   assertSseRouteMetadata(controller);
+  assertVoiceRouteMetadata(controller);
 
   // 3) Subscribe to the controller's SSE Observable BEFORE submitting. The
   //    subscription is consumed with a cursor so assertions prove stream order.

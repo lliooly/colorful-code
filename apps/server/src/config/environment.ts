@@ -79,6 +79,18 @@ export function loadDevelopmentEnvFileIfPresent(
   }
 }
 
+export function loadServerDevelopmentEnvFiles(
+  cwd = process.cwd(),
+  env = process.env,
+): void {
+  if (env.NODE_ENV === 'production') {
+    return;
+  }
+
+  loadDevelopmentEnvFileIfPresent(join(cwd, 'apps/server'), env);
+  loadDevelopmentEnvFileIfPresent(cwd, env);
+}
+
 export function loadServerEnvironment(
   env: EnvironmentSource = process.env,
 ): ServerEnvironment {

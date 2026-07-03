@@ -29,6 +29,10 @@ import {
   type RestoreSessionOptions,
   type SessionSummary,
 } from './sessions.service';
+import {
+  validateVoiceAudioChunk,
+  validateVoiceStartOptions,
+} from './voice-transcription';
 import type { ModelSelection } from './model-factory';
 import {
   validateMcpServersConfig,
@@ -63,6 +67,19 @@ type RestoreSessionBody = {
 
 type MessageBody = {
   text?: unknown;
+};
+
+type VoiceStartBody = {
+  requestId?: unknown;
+  apiKey?: unknown;
+  model?: unknown;
+  language?: unknown;
+};
+
+type VoiceAudioBody = {
+  audio?: unknown;
+  sampleRate?: unknown;
+  numChannels?: unknown;
 };
 
 // Mirrors the engine's ControlMessage union as a wire shape; `validateControl`
@@ -289,6 +306,13 @@ function validateWatchWorkspace(value: unknown): boolean | undefined {
   return value;
 }
 
+function validateRequestId(value: unknown): string {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new BadRequestException('voice transcription requires `requestId`.');
+  }
+  return value;
+}
+
 // Validates and narrows an arbitrary control body into a ControlMessage. Throws
 // BadRequestException (400) on anything malformed so a bad client cannot push an
 // ill-formed message into the engine.
@@ -368,6 +392,9 @@ function validateControl(body: ControlBody): ControlMessage {
     }
     case 'cancel': {
       return { type: 'cancel' };
+    }
+    case 'compact': {
+      return { type: 'compact' };
     }
     case 'set_permission_mode': {
       if (!isPermissionMode(body.mode)) {
@@ -464,6 +491,38 @@ export class SessionsController {
   ): { status: 'accepted' } {
     const message = validateControl(body ?? {});
     this.sessions.sendControl(id, message);
+    return { status: 'accepted' };
+  }
+
+  @Post(':id/voice/start')
+  @HttpCode(202)
+  voiceStart(
+    @Param('id') id: string,
+    @Body() body: VoiceStartBody = {},
+  ): { status: 'accepted' } {
+    const requestId = validateRequestId(body.requestId);
+    this.sessions.startVoiceTranscription(
+      id,
+      requestId,
+      validateVoiceStartOptions(body),
+    );
+    return { status: 'accepted' };
+  }
+
+  @Post(':id/voice/audio')
+  @HttpCode(202)
+  voiceAudio(
+    @Param('id') id: string,
+    @Body() body: VoiceAudioBody,
+  ): { status: 'accepted' } {
+    this.sessions.appendVoiceAudio(id, validateVoiceAudioChunk(body));
+    return { status: 'accepted' };
+  }
+
+  @Post(':id/voice/stop')
+  @HttpCode(202)
+  voiceStop(@Param('id') id: string): { status: 'accepted' } {
+    this.sessions.stopVoiceTranscription(id);
     return { status: 'accepted' };
   }
 

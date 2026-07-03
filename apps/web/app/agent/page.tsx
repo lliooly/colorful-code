@@ -23,7 +23,6 @@ import {
   ArrowLeft,
   ArrowRight,
   Upload,
-  Database,
   PanelLeft,
   ArrowUp,
   Square,
@@ -39,6 +38,8 @@ import {
   RefreshCw,
   CheckCircle2,
   AlertCircle,
+  ChevronDown,
+  Mic,
 } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -67,6 +68,7 @@ import {
   EmptyTitle,
 } from '@/components/ui/empty';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Message,
   MessageAvatar,
@@ -126,13 +128,19 @@ import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import {
+  canUseMacosSpeech,
   ensureAgentServer,
   isTauriRuntime,
+  listenMacosSpeech,
   pickUploadFile,
   pickWorkspaceDirectory,
+  startMacosSpeech,
+  stopMacosSpeech,
   type AgentServerStatus,
+  type MacosSpeechEvent,
 } from './desktop';
 import {
+  appendVoiceAudio,
   createSession,
   eventsUrl,
   forkCheckpoint,
@@ -144,15 +152,24 @@ import {
   restoreSession,
   sendControl,
   sendMessage,
+  startVoiceTranscription,
+  stopVoiceTranscription,
   testModelConfig,
   type PublicModelPreset,
 } from './api';
 import {
+  appendTranscriptToDraft,
+  startVoiceRecorder,
+  type VoiceRecorder,
+} from './voice-recorder';
+import {
   AGENT_PREFERENCES_STORAGE_KEY,
   DEFAULT_AGENT_PREFERENCES,
+  getVisibleModelPresetIds,
   getVisiblePermissionModes,
   isLanguage,
   mergeAgentPreferences,
+  setModelPresetVisibility,
   setPermissionModeVisibility,
   type AgentPreferences,
   type Language,
@@ -230,7 +247,7 @@ const PRESETS: readonly ModelPreset[] = [
     id: 'claude',
     label: 'Claude',
     protocol: 'anthropic',
-    defaultModel: 'claude-opus-4-8',
+    defaultModel: 'claude-fable-5',
     requiresApiKey: true,
     requiresBaseURL: false,
     requiresModel: false,
@@ -240,7 +257,7 @@ const PRESETS: readonly ModelPreset[] = [
     label: 'DeepSeek',
     protocol: 'openai',
     baseURL: 'https://api.deepseek.com',
-    defaultModel: 'deepseek-chat',
+    defaultModel: 'deepseek-v4-pro',
     requiresApiKey: true,
     requiresBaseURL: false,
     requiresModel: false,
@@ -249,7 +266,7 @@ const PRESETS: readonly ModelPreset[] = [
     id: 'openai',
     label: 'OpenAI',
     protocol: 'openai',
-    defaultModel: 'gpt-4o',
+    defaultModel: 'gpt-5.5',
     requiresApiKey: true,
     requiresBaseURL: false,
     requiresModel: false,
@@ -337,6 +354,10 @@ const copy = {
       contextWindow: 'Context window',
       modelContext: 'Model context',
       contextPercent: 'of current context budget',
+      compact: 'Compact context',
+      compactDescription:
+        'Summarise older messages to free context window space.',
+      compacting: 'Compacting…',
       model: 'Model',
       send: 'Send',
       baseUrl: 'Base URL',
@@ -372,7 +393,9 @@ const copy = {
       modelId: 'Model',
       modelTemplates: 'Templates',
       modelTemplatesDescription:
-        'Built-in templates only need a provider key. Custom adapters can target any compatible endpoint.',
+        'Enable the templates you want available in the chat composer. At least one template stays on.',
+      templateEnabled: 'Enabled',
+      templateDisabled: 'Disabled',
       customModelDescription:
         'Custom needs protocol, base URL, API key, and a model id.',
       namedModelDescription:
@@ -388,6 +411,16 @@ const copy = {
       acceptEdits: 'Accept edits',
       readOnly: 'Read only',
       bypass: 'Full access',
+    },
+    permissionModeDescriptions: {
+      default:
+        'Ask before edits outside the workspace or actions that need network access.',
+      plan: 'Review the plan first; the agent will not edit files until approved.',
+      acceptEdits:
+        'Apply workspace edits automatically, but still ask for risky actions.',
+      readOnly: 'Inspect files and answer questions without changing the workspace.',
+      bypass:
+        'Allow edits and commands without approval prompts. Use only when you trust the task.',
     },
   },
   zh: {
@@ -444,6 +477,9 @@ const copy = {
       contextWindow: '上下文窗口',
       modelContext: '模型上下文',
       contextPercent: '当前上下文预算',
+      compact: '压缩上下文',
+      compactDescription: '将较早的对话总结为摘要，释放上下文窗口空间。',
+      compacting: '压缩中…',
       model: '模型',
       send: '发送',
       baseUrl: '基础 URL',
@@ -477,7 +513,9 @@ const copy = {
       modelId: '模型',
       modelTemplates: '模版',
       modelTemplatesDescription:
-        '内置模版只需要填 provider key。Custom 可以连接任意兼容端点。',
+        '开启需要显示在聊天输入区的模版。系统会至少保留一个模版可用。',
+      templateEnabled: '已开启',
+      templateDisabled: '已关闭',
       customModelDescription: 'Custom 需要协议、Base URL、API key 和模型 id。',
       namedModelDescription:
         '这个模版使用 adapter 默认配置；填入临时 key 后即可测试和运行。',
@@ -493,8 +531,27 @@ const copy = {
       readOnly: '只读模式',
       bypass: '完全访问',
     },
+    permissionModeDescriptions: {
+      default: '外部文件编辑和联网等操作会先询问确认。',
+      plan: '先审阅计划，批准前不会修改文件。',
+      acceptEdits: '自动应用工作区内编辑，危险操作仍会询问。',
+      readOnly: '只读取和分析文件，不修改当前工作区。',
+      bypass: '无需确认即可执行编辑和命令。只在完全信任任务时使用。',
+    },
   },
 } as const satisfies Record<Language, Record<string, unknown>>;
+
+const permissionModeTriggerClasses: Record<PermissionMode, string> = {
+  readOnly:
+    'text-emerald-600 hover:text-emerald-700 dark:text-emerald-400',
+  plan: 'text-sky-600 hover:text-sky-700 dark:text-sky-400',
+  default:
+    'text-blue-600 hover:text-blue-700 dark:text-blue-400',
+  acceptEdits:
+    'text-orange-600 hover:text-orange-700 dark:text-orange-400',
+  bypass:
+    'text-red-600 hover:text-red-700 dark:text-red-400',
+};
 
 export default function AgentPage(): ReactNode {
   const [permissionMode, setPermissionMode] =
@@ -574,30 +631,52 @@ export default function AgentPage(): ReactNode {
 
   const sourceRef = useRef<EventSource | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  const voiceRecorderRef = useRef<VoiceRecorder | null>(null);
+  const voiceRequestIdRef = useRef<string | null>(null);
+  const voicePartialRef = useRef('');
+  const macosSpeechActiveRef = useRef(false);
+  const macosSpeechUnlistenRef = useRef<(() => void) | null>(null);
   const seqRef = useRef(0);
   const sidebarPanelRef = useRef<PanelImperativeHandle | null>(null);
 
+  const cleanupMacosSpeech = useCallback(() => {
+    macosSpeechActiveRef.current = false;
+    macosSpeechUnlistenRef.current?.();
+    macosSpeechUnlistenRef.current = null;
+    voicePartialRef.current = '';
+  }, []);
+
   const {
     items,
-    log,
     hookWarnings,
     approval,
     editProposals,
-    mcpServers,
-    lspServers,
     runStatus,
   } = viewState;
 
+  const modelPresetIds = useMemo(
+    () => modelPresets.map((item) => item.id),
+    [modelPresets],
+  );
+  const visibleModelPresetIds = useMemo(
+    () => getVisibleModelPresetIds(preferences, modelPresetIds),
+    [modelPresetIds, preferences],
+  );
+  const visibleModelPresets = useMemo(
+    () =>
+      modelPresets.filter((item) => visibleModelPresetIds.includes(item.id)),
+    [modelPresets, visibleModelPresetIds],
+  );
   const preset = useMemo(
-    () => modelPresets.find((item) => item.id === presetId) ?? modelPresets[0],
-    [modelPresets, presetId],
+    () =>
+      visibleModelPresets.find((item) => item.id === presetId) ??
+      visibleModelPresets[0] ??
+      modelPresets[0],
+    [modelPresets, presetId, visibleModelPresets],
   );
   const isCustom = preset.id === 'custom';
   const selectedModelProtocol =
     preset.protocol ?? (isCustom ? customProtocol : undefined);
-  const selectedModelApiKey = isCustom
-    ? customApiKey
-    : (presetApiKeys[preset.id] ?? '');
   const selectedRemoteModel = isCustom
     ? customModel
     : (presetModelOverrides[preset.id] ?? '');
@@ -660,6 +739,25 @@ export default function AgentPage(): ReactNode {
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
+
+  useEffect(() => {
+    return () => {
+      const recorder = voiceRecorderRef.current;
+      voiceRecorderRef.current = null;
+      voiceRequestIdRef.current = null;
+      voicePartialRef.current = '';
+      if (recorder) {
+        void recorder.stop();
+      }
+      if (sessionId) {
+        void stopVoiceTranscription(sessionId).catch(() => undefined);
+      }
+      if (macosSpeechActiveRef.current) {
+        void stopMacosSpeech().catch(() => undefined);
+      }
+      cleanupMacosSpeech();
+    };
+  }, [cleanupMacosSpeech, sessionId]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -811,6 +909,45 @@ export default function AgentPage(): ReactNode {
 
   const handleEvent = useCallback(
     (event: SessionEvent) => {
+      if (
+        event.type === 'voice_transcript_status' ||
+        event.type === 'voice_transcript_delta' ||
+        event.type === 'voice_transcript_done' ||
+        event.type === 'voice_transcript_error'
+      ) {
+        if (event.requestId !== voiceRequestIdRef.current) {
+          return;
+        }
+        if (event.type === 'voice_transcript_status') {
+          setListening(event.status !== 'stopped');
+          if (event.status === 'stopped') {
+            voiceRequestIdRef.current = null;
+            voicePartialRef.current = '';
+          }
+          return;
+        }
+        if (event.type === 'voice_transcript_delta') {
+          voicePartialRef.current += event.text;
+          setDraft((prev) => appendTranscriptToDraft(prev, event.text));
+          return;
+        }
+        if (event.type === 'voice_transcript_done') {
+          if (!voicePartialRef.current) {
+            setDraft((prev) => appendTranscriptToDraft(prev, event.text));
+          }
+          setListening(false);
+          voiceRequestIdRef.current = null;
+          voicePartialRef.current = '';
+          return;
+        }
+        if (event.type === 'voice_transcript_error') {
+          setError(event.message);
+          setListening(false);
+          voiceRequestIdRef.current = null;
+          voicePartialRef.current = '';
+          return;
+        }
+      }
       seqRef.current += 1;
       const seq = seqRef.current;
       setViewState((prev) => applyAgentEvent(prev, event, seq));
@@ -1022,6 +1159,20 @@ export default function AgentPage(): ReactNode {
     [handleSetMode, permissionMode, preferences],
   );
 
+  const handleSetModelPresetVisibility = useCallback(
+    (id: string, visible: boolean) => {
+      const next = setModelPresetVisibility(preferences, id, visible);
+      const nextVisibleIds = getVisibleModelPresetIds(next, modelPresetIds);
+      setPreferences(next);
+      if (!nextVisibleIds.includes(presetId) && nextVisibleIds.length > 0) {
+        setPresetId(nextVisibleIds[0] ?? presetId);
+        setRemoteModels([]);
+        setModelStatus(null);
+      }
+    },
+    [modelPresetIds, preferences, presetId],
+  );
+
   const handleCancel = useCallback(async () => {
     if (!sessionId) return;
     try {
@@ -1030,6 +1181,155 @@ export default function AgentPage(): ReactNode {
       setError(err instanceof Error ? err.message : String(err));
     }
   }, [sessionId]);
+
+  const [listening, setListening] = useState(false);
+
+  const handleMacosSpeechEvent = useCallback(
+    (event: MacosSpeechEvent) => {
+      if (!macosSpeechActiveRef.current) {
+        return;
+      }
+      if (event.kind === 'status') {
+        setListening(event.text !== 'stopped');
+        if (event.text === 'stopped') {
+          cleanupMacosSpeech();
+        }
+        return;
+      }
+      if (event.kind === 'error') {
+        setError(event.text);
+        setListening(false);
+        cleanupMacosSpeech();
+        return;
+      }
+      const previous = voicePartialRef.current;
+      const addition = event.text.startsWith(previous)
+        ? event.text.slice(previous.length)
+        : event.text;
+      voicePartialRef.current = event.text;
+      setDraft((prev) => appendTranscriptToDraft(prev, addition));
+      if (event.kind === 'done') {
+        setListening(false);
+        cleanupMacosSpeech();
+      }
+    },
+    [cleanupMacosSpeech],
+  );
+
+  const startMacosSpeechFallback = useCallback(async () => {
+    cleanupMacosSpeech();
+    voiceRequestIdRef.current = null;
+    voicePartialRef.current = '';
+    macosSpeechUnlistenRef.current =
+      await listenMacosSpeech(handleMacosSpeechEvent);
+    macosSpeechActiveRef.current = true;
+    setListening(true);
+    const started = await startMacosSpeech(preferences.language);
+    if (!started) {
+      cleanupMacosSpeech();
+      setListening(false);
+      throw new Error('macOS native speech is not available.');
+    }
+  }, [cleanupMacosSpeech, handleMacosSpeechEvent, preferences.language]);
+
+  const handleMicClick = useCallback(async () => {
+    if (!sessionId) {
+      setError('Create a session before starting voice input.');
+      return;
+    }
+
+    if (voiceRecorderRef.current) {
+      const recorder = voiceRecorderRef.current;
+      voiceRecorderRef.current = null;
+      setListening(false);
+      await recorder.stop();
+      await stopVoiceTranscription(sessionId).catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : String(err));
+      });
+      return;
+    }
+
+    if (macosSpeechActiveRef.current) {
+      setListening(false);
+      await stopMacosSpeech().catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : String(err));
+      });
+      cleanupMacosSpeech();
+      return;
+    }
+
+    const requestId = `voice-${Date.now().toString(36)}`;
+    const modelConfig = buildModelConfig();
+    const openAiApiKey =
+      modelConfig.preset === 'openai' ||
+      (modelConfig.preset === 'custom' && modelConfig.protocol === 'openai')
+        ? modelConfig.apiKey
+        : presetApiKeys.openai;
+
+    try {
+      setError(null);
+      voiceRequestIdRef.current = requestId;
+      voicePartialRef.current = '';
+      setListening(true);
+      await startVoiceTranscription(sessionId, {
+        requestId,
+        ...(openAiApiKey?.trim() ? { apiKey: openAiApiKey.trim() } : {}),
+        language: preferences.language,
+      });
+      voiceRecorderRef.current = await startVoiceRecorder({
+        onChunk: async (chunk) => {
+          const activeSessionId = sessionIdRef.current;
+          if (!activeSessionId || voiceRequestIdRef.current !== requestId) {
+            return;
+          }
+          await appendVoiceAudio(activeSessionId, chunk);
+        },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      voiceRequestIdRef.current = null;
+      voicePartialRef.current = '';
+      setListening(false);
+      await voiceRecorderRef.current?.stop().catch(() => undefined);
+      voiceRecorderRef.current = null;
+      await stopVoiceTranscription(sessionId).catch(() => undefined);
+      if (/OpenAI API key/i.test(message) && canUseMacosSpeech()) {
+        try {
+          await startMacosSpeechFallback();
+          setError(null);
+          return;
+        } catch (fallbackError) {
+          setError(
+            fallbackError instanceof Error
+              ? fallbackError.message
+              : String(fallbackError),
+          );
+          return;
+        }
+      }
+      setError(message);
+    }
+  }, [
+    sessionId,
+    buildModelConfig,
+    cleanupMacosSpeech,
+    presetApiKeys.openai,
+    preferences.language,
+    startMacosSpeechFallback,
+  ]);
+
+  const [compacting, setCompacting] = useState(false);
+  const handleCompact = useCallback(async () => {
+    if (!sessionId || compacting) return;
+    setCompacting(true);
+    try {
+      await sendControl(sessionId, { type: 'compact' });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCompacting(false);
+    }
+  }, [sessionId, compacting]);
 
   const handleApprovalDecision = useCallback(
     async (allow: boolean) => {
@@ -1347,7 +1647,7 @@ export default function AgentPage(): ReactNode {
               <div className="h-12 shrink-0" data-tauri-drag-region="deep" />
               <SidebarContent
                 className={cn(
-                  sidebarCollapsed && 'items-center gap-3 overflow-hidden',
+                  sidebarCollapsed && 'items-center gap-3 overflow-y-auto overflow-x-hidden',
                 )}
               >
                 <SidebarGroup
@@ -1541,7 +1841,7 @@ export default function AgentPage(): ReactNode {
 
               <SidebarFooter
                 className={cn(
-                  'gap-2 p-4',
+                  'gap-2 p-1',
                   sidebarCollapsed && 'items-center px-2',
                 )}
               >
@@ -1718,32 +2018,6 @@ export default function AgentPage(): ReactNode {
                   </Alert>
                 ) : null}
 
-                {sessionId ? (
-                  <div className="mb-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
-                    <div className="rounded-2xl border border-border/60 bg-background/60 px-3 py-2">
-                      MCP ·{' '}
-                      {
-                        mcpServers.filter(
-                          (server) => server.status === 'connected',
-                        ).length
-                      }
-                      /{mcpServers.length} connected
-                    </div>
-                    <div className="rounded-2xl border border-border/60 bg-background/60 px-3 py-2">
-                      LSP ·{' '}
-                      {
-                        lspServers.filter(
-                          (server) => server.status === 'connected',
-                        ).length
-                      }
-                      /{lspServers.length} connected
-                    </div>
-                    <div className="rounded-2xl border border-border/60 bg-background/60 px-3 py-2">
-                      Events · {log.length}
-                    </div>
-                  </div>
-                ) : null}
-
                 <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)]">
                   <section className="flex min-h-0 flex-col">
                     <div className="min-h-0 flex-1 px-2 py-2 sm:px-4">
@@ -1865,8 +2139,8 @@ export default function AgentPage(): ReactNode {
                       </MessageScrollerProvider>
                     </div>
 
-                    <div className="rounded-3xl border border-border/60 bg-card/80 p-4 shadow-sm">
-                      <Input
+                    <div className="rounded-3xl border border-border/60 bg-card/80 pt-1.5 pb-3 shadow-sm">
+                      <Textarea
                         value={draft}
                         placeholder={
                           sessionId
@@ -1875,8 +2149,13 @@ export default function AgentPage(): ReactNode {
                         }
                         onChange={(e) => setDraft(e.target.value)}
                         onKeyDown={(e) => {
-                          if (e.key === 'Enter') void handleSend();
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            void handleSend();
+                          }
                         }}
+                        className="min-h-20 resize-none border-0 bg-transparent px-5 py-0 text-sm focus-visible:ring-0"
+                        rows={3}
                       />
 
                       {attachments.length > 0 ? (
@@ -1886,7 +2165,7 @@ export default function AgentPage(): ReactNode {
                               key={attachment.path}
                               className="flex max-w-full items-center gap-2 rounded-2xl border border-border/60 bg-background/70 px-3 py-2 text-xs"
                             >
-                              <Upload />
+                              <Upload className="size-3.5" />
                               <span className="truncate">
                                 {attachment.name}
                               </span>
@@ -1908,12 +2187,17 @@ export default function AgentPage(): ReactNode {
                         </div>
                       ) : null}
 
-                      <div className="mt-3 flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-2">
+                      <div className="mt-3 px-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-1">
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
-                              <Button variant="outline" size="icon-sm">
-                                <PlusCircle />
+                              <Button
+                                variant="ghost"
+                                size="icon-xs"
+                                aria-label={t.composer.uploadFile}
+                              >
+                                <PlusCircle className="size-3.5" />
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="start">
@@ -1943,12 +2227,21 @@ export default function AgentPage(): ReactNode {
                           {visiblePermissionModes.length > 0 ? (
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
-                                <Button variant="outline">
-                                  <Settings />
-                                  {t.permissionModes[permissionMode]}
+                                <Button
+                                  variant="ghost"
+                                  size="xs"
+                                  className={
+                                    permissionModeTriggerClasses[permissionMode]
+                                  }
+                                >
+                                  <ShieldCheck className="size-3.5" />
+                                  <span className="max-w-[7rem] truncate">
+                                    {t.permissionModes[permissionMode]}
+                                  </span>
+                                  <ChevronDown className="size-3 opacity-60" />
                                 </Button>
                               </DropdownMenuTrigger>
-                              <DropdownMenuContent>
+                              <DropdownMenuContent className="min-w-72">
                                 <DropdownMenuLabel>
                                   {t.composer.permissionMode}
                                 </DropdownMenuLabel>
@@ -1958,7 +2251,12 @@ export default function AgentPage(): ReactNode {
                                     key={mode}
                                     onSelect={() => void handleSetMode(mode)}
                                   >
-                                    {t.permissionModes[mode]}
+                                    <span className="flex flex-col items-start gap-0.5">
+                                      <span>{t.permissionModes[mode]}</span>
+                                      <span className="max-w-72 text-xs leading-5 text-muted-foreground">
+                                        {t.permissionModeDescriptions[mode]}
+                                      </span>
+                                    </span>
                                   </DropdownMenuItem>
                                 ))}
                               </DropdownMenuContent>
@@ -1966,14 +2264,14 @@ export default function AgentPage(): ReactNode {
                           ) : null}
                         </div>
 
-                        <div className="flex min-w-0 flex-1 items-end justify-end gap-2">
+                        <div className="flex items-center gap-1">
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
                                   <Button
                                     variant="ghost"
-                                    size="icon-sm"
+                                    size="icon-xs"
                                     aria-label={t.composer.contextWindow}
                                   >
                                     <CircularProgress value={contextProgress} />
@@ -1991,6 +2289,22 @@ export default function AgentPage(): ReactNode {
                                       {t.composer.contextPercent}
                                     </p>
                                   </div>
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuItem
+                                    disabled={!sessionId || compacting}
+                                    onSelect={() => void handleCompact()}
+                                  >
+                                    <span className="flex flex-col items-start gap-0.5">
+                                      <span className="text-sm">
+                                        {compacting
+                                          ? t.composer.compacting
+                                          : t.composer.compact}
+                                      </span>
+                                      <span className="text-xs text-muted-foreground">
+                                        {t.composer.compactDescription}
+                                      </span>
+                                    </span>
+                                  </DropdownMenuItem>
                                 </DropdownMenuContent>
                               </DropdownMenu>
                             </TooltipTrigger>
@@ -2002,17 +2316,20 @@ export default function AgentPage(): ReactNode {
 
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
-                              <Button variant="outline">
-                                <Database />
-                                {preset.label}
+                              <Button variant="ghost" size="xs">
+                                <Cpu className="size-3.5" />
+                                <span className="max-w-[6rem] truncate">
+                                  {preset.label}
+                                </span>
+                                <ChevronDown className="size-3 text-muted-foreground" />
                               </Button>
                             </DropdownMenuTrigger>
-                            <DropdownMenuContent>
+                            <DropdownMenuContent className="min-w-44">
                               <DropdownMenuLabel>
                                 {t.composer.model}
                               </DropdownMenuLabel>
                               <DropdownMenuSeparator />
-                              {modelPresets.map((item) => (
+                              {visibleModelPresets.map((item) => (
                                 <DropdownMenuItem
                                   key={item.id}
                                   disabled={!!sessionId}
@@ -2028,27 +2345,44 @@ export default function AgentPage(): ReactNode {
                             </DropdownMenuContent>
                           </DropdownMenu>
 
-                          {runStatus === 'running' ? (
-                            <Button
-                              variant="destructive"
-                              size="icon-sm"
-                              onClick={() => void handleCancel()}
-                            >
-                              <Square />
-                            </Button>
-                          ) : (
-                            <Button
-                              size="icon-sm"
-                              onClick={() => void handleSend()}
-                              disabled={
-                                !sessionId ||
-                                (!draft.trim() && attachments.length === 0)
+                          <Button
+                              variant="ghost"
+                              size="icon-xs"
+                              onClick={handleMicClick}
+                              aria-label="Voice input"
+                              className={
+                                listening
+                                  ? 'text-red-500 hover:text-red-500 animate-pulse'
+                                  : ''
                               }
                             >
-                              <ArrowUp />
+                              <Mic className="size-3.5" />
                             </Button>
-                          )}
+                            {runStatus === 'running' ? (
+                              <Button
+                                variant="ghost"
+                                size="icon-xs"
+                                onClick={() => void handleCancel()}
+                                className="ml-1 text-destructive hover:text-destructive"
+                              >
+                                <Square className="size-3.5" />
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="default"
+                                size="icon-xs"
+                                onClick={() => void handleSend()}
+                                disabled={
+                                  !sessionId ||
+                                  (!draft.trim() && attachments.length === 0)
+                                }
+                                className="ml-1 rounded-full bg-foreground text-background hover:bg-foreground/85"
+                              >
+                                <ArrowUp className="size-3.5" />
+                              </Button>
+                            )}
                         </div>
+                      </div>
                       </div>
                     </div>
                   </section>
@@ -2060,7 +2394,7 @@ export default function AgentPage(): ReactNode {
       </SidebarProvider>
 
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <DialogContent className="agent-compact-ui h-[min(820px,calc(100svh-3rem))] w-[min(1180px,calc(100vw-3rem))] max-w-[calc(100vw-3rem)] overflow-hidden p-0 sm:max-w-[min(1180px,calc(100vw-4rem))]">
+        <DialogContent className="agent-compact-ui h-[88svh] max-h-[calc(100svh-2rem)] min-h-[min(520px,calc(100svh-2rem))] w-[92vw] max-w-[92vw] overflow-hidden p-0 sm:h-[86svh] sm:w-[88vw] sm:max-w-[88vw] md:min-h-[min(620px,calc(100svh-2rem))]">
           <div className="grid h-full min-h-0 grid-cols-1 md:grid-cols-[240px_minmax(0,1fr)]">
             <aside className="border-b border-border/60 bg-muted/30 p-4 md:border-b-0 md:border-r">
               <div className="flex items-center gap-3 px-2 py-2">
@@ -2092,7 +2426,7 @@ export default function AgentPage(): ReactNode {
             </aside>
 
             <div className="min-w-0 overflow-y-auto px-6 py-7 md:px-10">
-              <div className="relative">
+              <div className="flex flex-col gap-4 pr-12 sm:flex-row sm:items-start sm:justify-between">
                 <DialogHeader className="max-w-3xl">
                   <DialogTitle className="text-2xl">
                     {t.settings[activeSettingsSection]}
@@ -2105,7 +2439,7 @@ export default function AgentPage(): ReactNode {
                   <Button
                     onClick={() => void handleTestModel()}
                     disabled={testingModel}
-                    className="absolute top-0 right-0"
+                    className="w-fit shrink-0 sm:mr-2"
                   >
                     <TestTube2 />
                     {testingModel ? t.settings.testing : t.settings.test}
@@ -2201,8 +2535,13 @@ export default function AgentPage(): ReactNode {
                           key={mode}
                           className="flex items-center justify-between gap-4 border-b border-border/60 px-5 py-4 last:border-b-0"
                         >
-                          <span className="text-sm">
-                            {t.permissionModes[mode]}
+                          <span className="min-w-0">
+                            <span className="block text-sm font-medium">
+                              {t.permissionModes[mode]}
+                            </span>
+                            <span className="mt-1 block max-w-2xl text-sm leading-6 text-muted-foreground">
+                              {t.permissionModeDescriptions[mode]}
+                            </span>
                           </span>
                           <Switch
                             checked={preferences.permissionModeVisibility[mode]}
@@ -2217,200 +2556,231 @@ export default function AgentPage(): ReactNode {
                   </section>
                 </div>
               ) : activeSettingsSection === 'model' ? (
-                <div className="mt-8 flex max-w-4xl flex-col gap-5">
-                  <section className="rounded-3xl border border-border/60 bg-background/70 p-5">
-                    <div className="flex flex-wrap items-start justify-between gap-4">
-                      <div>
-                        <h3 className="text-sm font-medium">
-                          {t.settings.modelTemplates}
-                        </h3>
-                        <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-                          {t.settings.modelTemplatesDescription}
-                        </p>
-                      </div>
-                      {loadingModelPresets ? (
-                        <span className="text-xs text-muted-foreground">
-                          {t.settings.fetchingModels}
-                        </span>
-                      ) : null}
+                <div className="mt-8 flex max-w-5xl flex-col gap-4">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <h3 className="text-sm font-medium">
+                        {t.settings.modelTemplates}
+                      </h3>
+                      <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
+                        {t.settings.modelTemplatesDescription}
+                      </p>
                     </div>
-
-                    <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                      {modelPresets.map((item) => (
-                        <button
-                          key={item.id}
-                          type="button"
-                          className={cn(
-                            'rounded-3xl border border-border/60 bg-muted/20 p-4 text-left transition-colors hover:bg-muted/40',
-                            presetId === item.id &&
-                              'border-primary/40 bg-primary/8',
-                          )}
-                          onClick={() => {
-                            setPresetId(item.id);
-                            setModelStatus(null);
-                            setRemoteModels([]);
-                          }}
-                        >
-                          <span className="block text-sm font-medium">
-                            {item.label}
-                          </span>
-                          <span className="mt-2 block text-xs leading-5 text-muted-foreground">
-                            {item.id === 'custom'
-                              ? t.settings.customModelDescription
-                              : t.settings.namedModelDescription}
-                          </span>
-                          {item.defaultModel ? (
-                            <span className="mt-3 block truncate font-mono text-xs text-muted-foreground">
-                              {item.defaultModel}
-                            </span>
-                          ) : null}
-                        </button>
-                      ))}
-                    </div>
-                  </section>
-
-                  <section className="rounded-3xl border border-border/60 bg-background/70 p-5">
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      {isCustom ? (
-                        <>
-                          <label className="flex flex-col gap-2 text-sm font-medium">
-                            {t.settings.protocol}
-                            <Select
-                              value={customProtocol}
-                              disabled={!!sessionId}
-                              onValueChange={(value) =>
-                                setCustomProtocol(value as ModelProtocol)
-                              }
-                            >
-                              <SelectTrigger className="w-full">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectGroup>
-                                  <SelectItem value="openai">openai</SelectItem>
-                                  <SelectItem value="anthropic">
-                                    anthropic
-                                  </SelectItem>
-                                </SelectGroup>
-                              </SelectContent>
-                            </Select>
-                          </label>
-                          <label className="flex flex-col gap-2 text-sm font-medium">
-                            {t.settings.baseUrl}
-                            <Input
-                              placeholder="https://api.example.com/v1"
-                              value={customBaseURL}
-                              disabled={!!sessionId}
-                              onChange={(e) => setCustomBaseURL(e.target.value)}
-                            />
-                          </label>
-                        </>
-                      ) : (
-                        <div className="rounded-3xl border border-border/60 bg-muted/20 p-4 sm:col-span-2">
-                          <p className="text-sm font-medium">{preset.label}</p>
-                          <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                            {t.settings.namedModelDescription}
-                          </p>
-                          {preset.baseURL || preset.defaultModel ? (
-                            <p className="mt-3 font-mono text-xs text-muted-foreground">
-                              {preset.baseURL ?? 'provider default'} ·{' '}
-                              {preset.defaultModel ?? 'model default'}
-                            </p>
-                          ) : null}
-                        </div>
-                      )}
-
-                      <label className="flex flex-col gap-2 text-sm font-medium">
-                        {t.settings.apiKey}
-                        <Input
-                          type="password"
-                          autoComplete="off"
-                          value={selectedModelApiKey}
-                          disabled={!!sessionId}
-                          onChange={(e) =>
-                            isCustom
-                              ? setCustomApiKey(e.target.value)
-                              : handleSetPresetApiKey(preset.id, e.target.value)
-                          }
-                        />
-                      </label>
-
-                      {isCustom ? (
-                        <label className="flex flex-col gap-2 text-sm font-medium">
-                          {t.settings.modelId}
-                          <Input
-                            placeholder="model-id"
-                            value={customModel}
-                            disabled={!!sessionId}
-                            onChange={(e) => setCustomModel(e.target.value)}
-                          />
-                        </label>
-                      ) : null}
-                    </div>
-
-                    <div className="mt-5 flex flex-wrap items-center gap-3">
-                      <Button
-                        variant="outline"
-                        disabled={!canFetchRemoteModels || fetchingModels}
-                        onClick={() => void handleFetchRemoteModels()}
-                      >
-                        <RefreshCw />
-                        {fetchingModels
-                          ? t.settings.fetchingModels
-                          : t.settings.fetchModels}
-                      </Button>
-
-                      {remoteModels.length > 0 ? (
-                        <Select
-                          value={selectedRemoteModel}
-                          onValueChange={(model) =>
-                            isCustom
-                              ? setCustomModel(model)
-                              : setPresetModelOverrides((prev) => ({
-                                  ...prev,
-                                  [preset.id]: model,
-                                }))
-                          }
-                          disabled={!!sessionId}
-                        >
-                          <SelectTrigger className="w-full sm:w-72">
-                            <SelectValue
-                              placeholder={t.settings.chooseRemoteModel}
-                            />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectGroup>
-                              {remoteModels.map((model) => (
-                                <SelectItem key={model} value={model}>
-                                  {model}
-                                </SelectItem>
-                              ))}
-                            </SelectGroup>
-                          </SelectContent>
-                        </Select>
-                      ) : null}
-                    </div>
-
-                    {modelStatus ? (
-                      <div
-                        className={cn(
-                          'mt-5 flex items-start gap-3 rounded-3xl border p-4 text-sm',
-                          modelStatus.type === 'success'
-                            ? 'border-primary/30 bg-primary/8'
-                            : 'border-destructive/40 bg-destructive/10 text-destructive',
-                        )}
-                      >
-                        {modelStatus.type === 'success' ? (
-                          <CheckCircle2 />
-                        ) : (
-                          <AlertCircle />
-                        )}
-                        <span className="break-words">
-                          {modelStatus.message}
-                        </span>
-                      </div>
+                    {loadingModelPresets ? (
+                      <span className="text-xs text-muted-foreground">
+                        {t.settings.fetchingModels}
+                      </span>
                     ) : null}
-                  </section>
+                  </div>
+
+                  {modelPresets.map((item) => {
+                    const itemEnabled = visibleModelPresetIds.includes(item.id);
+                    const itemSelected = preset.id === item.id;
+                    const itemCustom = item.id === 'custom';
+                    const itemApiKey = itemCustom
+                      ? customApiKey
+                      : (presetApiKeys[item.id] ?? '');
+                    const itemModel = itemCustom
+                      ? customModel
+                      : (presetModelOverrides[item.id] ?? '');
+
+                    return (
+                      <section
+                        key={item.id}
+                        className={cn(
+                          'rounded-3xl border border-border/60 bg-background/70 p-5 transition-colors',
+                          itemSelected && 'border-primary/45 bg-primary/8',
+                          !itemEnabled && 'bg-muted/20 opacity-75',
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <button
+                            type="button"
+                            className="min-w-0 flex-1 text-left"
+                            onClick={() => {
+                              setPresetId(item.id);
+                              setModelStatus(null);
+                              setRemoteModels([]);
+                            }}
+                          >
+                            <span className="block text-sm font-medium">
+                              {item.label}
+                            </span>
+                            <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+                              {itemCustom
+                                ? t.settings.customModelDescription
+                                : t.settings.namedModelDescription}
+                            </span>
+                            <span className="mt-3 block truncate font-mono text-xs text-muted-foreground">
+                              {item.baseURL ?? 'provider default'} ·{' '}
+                              {item.defaultModel ?? 'model default'}
+                            </span>
+                          </button>
+                          <div className="flex shrink-0 items-center gap-2 pt-0.5">
+                            <span className="text-xs text-muted-foreground">
+                              {itemEnabled
+                                ? t.settings.templateEnabled
+                                : t.settings.templateDisabled}
+                            </span>
+                            <Switch
+                              checked={itemEnabled}
+                              onCheckedChange={(checked) =>
+                                handleSetModelPresetVisibility(
+                                  item.id,
+                                  checked,
+                                )
+                              }
+                              aria-label={`${item.label} ${
+                                itemEnabled
+                                  ? t.settings.templateEnabled
+                                  : t.settings.templateDisabled
+                              }`}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                          {itemCustom ? (
+                            <>
+                              <label className="flex flex-col gap-2 text-sm font-medium">
+                                {t.settings.protocol}
+                                <Select
+                                  value={customProtocol}
+                                  disabled={!!sessionId}
+                                  onValueChange={(value) =>
+                                    setCustomProtocol(value as ModelProtocol)
+                                  }
+                                >
+                                  <SelectTrigger className="w-full">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectGroup>
+                                      <SelectItem value="openai">
+                                        openai
+                                      </SelectItem>
+                                      <SelectItem value="anthropic">
+                                        anthropic
+                                      </SelectItem>
+                                    </SelectGroup>
+                                  </SelectContent>
+                                </Select>
+                              </label>
+                              <label className="flex flex-col gap-2 text-sm font-medium">
+                                {t.settings.baseUrl}
+                                <Input
+                                  placeholder="https://api.example.com/v1"
+                                  value={customBaseURL}
+                                  disabled={!!sessionId}
+                                  onChange={(e) =>
+                                    setCustomBaseURL(e.target.value)
+                                  }
+                                />
+                              </label>
+                            </>
+                          ) : null}
+
+                          <label className="flex flex-col gap-2 text-sm font-medium">
+                            {t.settings.apiKey}
+                            <Input
+                              type="password"
+                              autoComplete="off"
+                              value={itemApiKey}
+                              disabled={!!sessionId}
+                              onChange={(e) =>
+                                itemCustom
+                                  ? setCustomApiKey(e.target.value)
+                                  : handleSetPresetApiKey(
+                                      item.id,
+                                      e.target.value,
+                                    )
+                              }
+                            />
+                          </label>
+
+                          <label className="flex flex-col gap-2 text-sm font-medium">
+                            {t.settings.modelId}
+                            <Input
+                              placeholder={item.defaultModel ?? 'model-id'}
+                              value={itemModel}
+                              disabled={!!sessionId}
+                              onChange={(e) =>
+                                itemCustom
+                                  ? setCustomModel(e.target.value)
+                                  : setPresetModelOverrides((prev) => ({
+                                      ...prev,
+                                      [item.id]: e.target.value,
+                                    }))
+                              }
+                            />
+                          </label>
+                        </div>
+
+                        {itemSelected ? (
+                          <div className="mt-5 flex flex-wrap items-center gap-3">
+                            <Button
+                              variant="outline"
+                              disabled={!canFetchRemoteModels || fetchingModels}
+                              onClick={() => void handleFetchRemoteModels()}
+                            >
+                              <RefreshCw />
+                              {fetchingModels
+                                ? t.settings.fetchingModels
+                                : t.settings.fetchModels}
+                            </Button>
+
+                            {remoteModels.length > 0 ? (
+                              <Select
+                                value={selectedRemoteModel}
+                                onValueChange={(model) =>
+                                  itemCustom
+                                    ? setCustomModel(model)
+                                    : setPresetModelOverrides((prev) => ({
+                                        ...prev,
+                                        [item.id]: model,
+                                      }))
+                                }
+                                disabled={!!sessionId}
+                              >
+                                <SelectTrigger className="w-full sm:w-72">
+                                  <SelectValue
+                                    placeholder={t.settings.chooseRemoteModel}
+                                  />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectGroup>
+                                    {remoteModels.map((model) => (
+                                      <SelectItem key={model} value={model}>
+                                        {model}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectGroup>
+                                </SelectContent>
+                              </Select>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </section>
+                    );
+                  })}
+
+                  {modelStatus ? (
+                    <div
+                      className={cn(
+                        'flex items-start gap-3 rounded-3xl border p-4 text-sm',
+                        modelStatus.type === 'success'
+                          ? 'border-primary/30 bg-primary/8'
+                          : 'border-destructive/40 bg-destructive/10 text-destructive',
+                      )}
+                    >
+                      {modelStatus.type === 'success' ? (
+                        <CheckCircle2 />
+                      ) : (
+                        <AlertCircle />
+                      )}
+                      <span className="break-words">{modelStatus.message}</span>
+                    </div>
+                  ) : null}
                 </div>
               ) : (
                 <div className="mt-6 rounded-3xl border border-dashed border-border/70 p-6 text-sm text-muted-foreground">
