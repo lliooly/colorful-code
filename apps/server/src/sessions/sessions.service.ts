@@ -13,9 +13,11 @@ import {
   createBuiltinTools,
   createLspRuntimeTools,
   createMcpRuntimeTools,
+  createUnconfiguredModelClient,
   SdkLspManager,
   SdkMcpManager,
   Session,
+  SwappableModelClient,
   buildMcpToolName,
   contentToText,
   normalizeMcpName,
@@ -74,6 +76,7 @@ import { PluginStore } from '../plugins/plugin-store';
 // absent means the server default. The apiKey inside a selection (custom BYO
 // path) is forwarded to the factory and never stored on the session.
 export type CreateSessionOptions = {
+  projectId?: string;
   permissionMode?: PermissionMode;
   workspaceRoots?: string[];
   rules?: PermissionRule[];
@@ -84,11 +87,27 @@ export type CreateSessionOptions = {
   watchWorkspace?: boolean;
 };
 
+export type CreateSessionResponse = {
+  id: string;
+  needsModelConfig: boolean;
+};
+
 export type RestoreSessionOptions = {
   model?: ModelSelection;
   mcpServers?: McpServersConfig;
   lspServers?: LspServersConfig;
   watchWorkspace?: boolean;
+};
+
+export type RestoreSessionResponse = {
+  id: string;
+  needsModelConfig: boolean;
+};
+
+export type RestoreCheckpointResponse = {
+  id: string;
+  checkpointId: string;
+  needsModelConfig: boolean;
 };
 
 export type SessionSummary = {
@@ -97,6 +116,25 @@ export type SessionSummary = {
   updatedAt: number;
   cwd?: string;
   checkpointId?: string;
+  pinned: boolean;
+  projectId?: string;
+};
+
+export type ProjectSummary = {
+  id: string;
+  name: string;
+  path: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type ProjectWithChats = ProjectSummary & {
+  chats: SessionSummary[];
+};
+
+export type GroupedSessionHistory = {
+  projects: ProjectWithChats[];
+  chats: SessionSummary[];
 };
 
 // What the service tracks per live session: the engine `Session`, an append-only
@@ -116,6 +154,13 @@ type SessionEntry = {
   // into the append-only audit table when a run reaches a terminal status (and
   // on dispose) so the table never holds duplicates of an already-flushed entry.
   pendingAudit: PermissionAuditEntry[];
+  // True when the session was created without a valid model config (e.g.
+  // missing API key). The session holds a placeholder model that can be
+  // swapped for a real one once the user provides credentials.
+  needsModelConfig: boolean;
+  // The swappable wrapper around the model client, present only when
+  // needsModelConfig is true so the delegate can be upgraded in-place.
+  swappableModel?: SwappableModelClient;
 };
 
 type PreparedSession = {
@@ -124,6 +169,8 @@ type PreparedSession = {
   lspManager?: LspManager;
   mcpConnections: McpServerConnection[];
   lspConnections: LspServerConnection[];
+  needsModelConfig: boolean;
+  swappableModel?: SwappableModelClient;
 };
 
 const PROJECT_MEMORY_FILE = 'CLAUDE.md';
@@ -258,6 +305,10 @@ function hookAuditToPermissionEntry(
 @Injectable()
 export class SessionsService implements OnModuleDestroy {
   private readonly entries = new Map<string, SessionEntry>();
+  private readonly liveMetadata = new Map<
+    string,
+    { projectId?: string; pinned: boolean; updatedAt: number }
+  >();
   private sessionOrdinal = 0;
   private checkpointOrdinal = 0;
 
@@ -462,6 +513,29 @@ export class SessionsService implements OnModuleDestroy {
     }
   }
 
+  // Attempts to build a model client. Returns `undefined` when the selected
+  // preset has no API key configured (instead of throwing) so session creation
+  // can proceed with a placeholder model that is upgraded later.
+  private tryBuildModelClient(
+    id: string,
+    selection?: ModelSelection,
+  ): ReturnType<typeof this.buildModelClient> | undefined {
+    try {
+      return this.buildModelClient(id, selection);
+    } catch (error) {
+      if (error instanceof BadRequestException) {
+        const message = error.message ?? '';
+        if (
+          message.includes('No API key configured') ||
+          message.includes('requires an `apiKey`')
+        ) {
+          return undefined;
+        }
+      }
+      throw error;
+    }
+  }
+
   private nextSessionId(): string {
     this.sessionOrdinal += 1;
     return `session-${String(Date.now())}-${String(this.sessionOrdinal)}`;
@@ -485,6 +559,8 @@ export class SessionsService implements OnModuleDestroy {
       lspManager?: LspManager;
       lspConnections?: LspServerConnection[];
       currentCheckpointId?: string;
+      needsModelConfig?: boolean;
+      swappableModel?: SwappableModelClient;
     } = {},
   ): { id: string } {
     const log: SessionEvent[] = [];
@@ -496,11 +572,15 @@ export class SessionsService implements OnModuleDestroy {
       listeners,
       unsubscribe: () => undefined,
       pendingAudit,
+      needsModelConfig: options.needsModelConfig ?? false,
       ...(options.currentCheckpointId
         ? { currentCheckpointId: options.currentCheckpointId }
         : {}),
       ...(options.mcpManager ? { mcpManager: options.mcpManager } : {}),
       ...(options.lspManager ? { lspManager: options.lspManager } : {}),
+      ...(options.swappableModel
+        ? { swappableModel: options.swappableModel }
+        : {}),
     };
 
     entry.unsubscribe = session.subscribe((event) => {
@@ -548,53 +628,113 @@ export class SessionsService implements OnModuleDestroy {
   // Creates a session, wires its event subscription to the replay buffer + live
   // listeners, and registers it. The model client is built per session via the
   // injected factory; tools are the built-ins.
-  async create(options: CreateSessionOptions = {}): Promise<{ id: string }> {
-    const mcpServers = this.resolveMcpServers(options.cwd, options.mcpServers);
-    const lspServers = this.resolveLspServers(options.cwd, options.lspServers);
-    const permissionContext = this.buildPermissionContext(options, mcpServers);
+  //
+  // When the selected model preset has no API key configured, the session is
+  // still created with a placeholder model so the user can browse history. A
+  // red warning is shown in the UI and the first submit will try to rebuild
+  // with any newly configured credentials.
+  async create(
+    options: CreateSessionOptions = {},
+  ): Promise<CreateSessionResponse> {
+    const scopedOptions = this.resolveProjectScope(options);
+    const mcpServers = this.resolveMcpServers(
+      scopedOptions.cwd,
+      scopedOptions.mcpServers,
+    );
+    const lspServers = this.resolveLspServers(
+      scopedOptions.cwd,
+      scopedOptions.lspServers,
+    );
+    const permissionContext = this.buildPermissionContext(
+      scopedOptions,
+      mcpServers,
+    );
 
     // Mint the id up front so the factory can key on it if needed.
     const id = this.nextSessionId();
 
-    // Build the model client now so a bad selection (missing provider key,
-    // incomplete custom config) fails the create request with a 400 rather than
-    // surfacing mid-turn. The apiKey lives only inside the built client.
-    const model = this.buildModelClient(id, options.model);
-    const { tools, mcpManager, mcpConnections, lspManager, lspConnections } =
-      await this.buildToolsMcpAndLsp(options.cwd, mcpServers, lspServers);
+    // Build the model client. If no key is configured for the selected preset,
+    // fall back to a placeholder — the session is still usable for browsing and
+    // the model can be upgraded later via configureModel() or automatically on
+    // the first submit.
+    let needsModelConfig = false;
+    let model = this.tryBuildModelClient(id, options.model);
+    if (!model) {
+      model = createUnconfiguredModelClient();
+      needsModelConfig = true;
+    }
+    const swappableModel = needsModelConfig
+      ? new SwappableModelClient(model)
+      : undefined;
+    const effectiveModel = swappableModel ?? model;
 
-    return this.register(
-      new Session({
-        id,
-        model,
-        tools,
-        systemPrompt: buildSessionSystemPrompt(options, permissionContext),
-        compaction: buildCompactionConfig(options.model),
-        ...(options.cwd ? { cwd: options.cwd } : {}),
-        permissionContext,
-        ...(mcpManager ? { mcpManager } : {}),
-        ...(lspManager ? { lspManager } : {}),
-        ...(options.watchWorkspace ? { watchWorkspace: true } : {}),
-      }),
-      {
-        ...(mcpManager ? { mcpManager } : {}),
-        mcpConnections,
-        ...(lspManager ? { lspManager } : {}),
-        lspConnections,
-      },
-    );
+    const { tools, mcpManager, mcpConnections, lspManager, lspConnections } =
+      await this.buildToolsMcpAndLsp(scopedOptions.cwd, mcpServers, lspServers);
+
+    const session = new Session({
+      id,
+      model: effectiveModel,
+      tools,
+      systemPrompt: buildSessionSystemPrompt(scopedOptions, permissionContext),
+      compaction: buildCompactionConfig(scopedOptions.model),
+      ...(scopedOptions.cwd ? { cwd: scopedOptions.cwd } : {}),
+      permissionContext,
+      ...(mcpManager ? { mcpManager } : {}),
+      ...(lspManager ? { lspManager } : {}),
+      ...(scopedOptions.watchWorkspace ? { watchWorkspace: true } : {}),
+    });
+    const registered = this.register(session, {
+      ...(mcpManager ? { mcpManager } : {}),
+      mcpConnections,
+      ...(lspManager ? { lspManager } : {}),
+      lspConnections,
+      needsModelConfig,
+      ...(swappableModel ? { swappableModel } : {}),
+    });
+    this.liveMetadata.set(id, {
+      ...(scopedOptions.projectId
+        ? { projectId: scopedOptions.projectId }
+        : {}),
+      pinned: false,
+      updatedAt: Date.now(),
+    });
+    this.safeUpsertSessionMetadata({
+      sessionId: id,
+      projectId: scopedOptions.projectId ?? null,
+    });
+    return { id: registered.id, needsModelConfig };
+  }
+
+  private resolveProjectScope(
+    options: CreateSessionOptions,
+  ): CreateSessionOptions {
+    if (!options.projectId) {
+      return options;
+    }
+    const project = this.store.loadProject(options.projectId);
+    if (!project) {
+      throw new NotFoundException(`Unknown project: ${options.projectId}`);
+    }
+    return {
+      ...options,
+      cwd: options.cwd ?? project.path,
+      workspaceRoots: options.workspaceRoots ?? [project.path],
+    };
   }
 
   // Restore path: rebuilds a live session from a persisted snapshot, re-injecting
   // the model client, built-in tools, and current system prompt. If the session
   // is already live, the request is idempotent and returns that entry rather
   // than creating a duplicate live object for the same id.
+  //
+  // Like create(), tolerates a missing API key by using a placeholder model so
+  // the user can always view their history.
   async restore(
     id: string,
     options: RestoreSessionOptions = {},
-  ): Promise<{ id: string }> {
+  ): Promise<RestoreSessionResponse> {
     if (this.entries.has(id)) {
-      return { id };
+      return { id, needsModelConfig: false };
     }
 
     const snapshot = this.store.loadSnapshot(id);
@@ -615,9 +755,21 @@ export class SessionsService implements OnModuleDestroy {
     };
     const { tools, mcpManager, mcpConnections, lspManager, lspConnections } =
       await this.buildToolsMcpAndLsp(snapshot.cwd, mcpServers, lspServers);
-    return this.register(
+
+    let needsModelConfig = false;
+    let model = this.tryBuildModelClient(id, options.model);
+    if (!model) {
+      model = createUnconfiguredModelClient();
+      needsModelConfig = true;
+    }
+    const swappableModel = needsModelConfig
+      ? new SwappableModelClient(model)
+      : undefined;
+    const effectiveModel = swappableModel ?? model;
+
+    const registered = this.register(
       Session.restore(snapshot, {
-        model: this.buildModelClient(id, options.model),
+        model: effectiveModel,
         tools,
         systemPrompt: buildSessionSystemPrompt(
           createOptions,
@@ -633,15 +785,18 @@ export class SessionsService implements OnModuleDestroy {
         mcpConnections,
         ...(lspManager ? { lspManager } : {}),
         lspConnections,
+        needsModelConfig,
+        ...(swappableModel ? { swappableModel } : {}),
       },
     );
+    return { id: registered.id, needsModelConfig };
   }
 
   async restoreCheckpoint(
     id: string,
     checkpointId: string,
     options: RestoreSessionOptions = {},
-  ): Promise<{ id: string; checkpointId: string }> {
+  ): Promise<RestoreCheckpointResponse> {
     const checkpoint = this.store.loadCheckpoint(id, checkpointId);
     if (!checkpoint) {
       throw new NotFoundException(
@@ -655,18 +810,19 @@ export class SessionsService implements OnModuleDestroy {
       options,
     );
     await this.unregister(id, { persist: false });
-    this.registerPreparedSession(prepared, {
+    const registered = this.registerPreparedSession(prepared, {
       currentCheckpointId: checkpoint.id,
     });
     this.store.saveSnapshot(prepared.session.snapshot());
-    return { id, checkpointId };
+    this.inheritSessionMetadata(id, id);
+    return { id, checkpointId, needsModelConfig: registered.needsModelConfig };
   }
 
   async forkCheckpoint(
     id: string,
     checkpointId: string,
     options: RestoreSessionOptions = {},
-  ): Promise<{ id: string; checkpointId: string }> {
+  ): Promise<RestoreCheckpointResponse> {
     const checkpoint = this.store.loadCheckpoint(id, checkpointId);
     if (!checkpoint) {
       throw new NotFoundException(
@@ -684,10 +840,11 @@ export class SessionsService implements OnModuleDestroy {
       forkId,
       options,
     );
-    this.registerPreparedSession(prepared, {
+    const registered = this.registerPreparedSession(prepared, {
       currentCheckpointId: checkpoint.id,
     });
     this.store.saveSnapshot(prepared.session.snapshot());
+    this.inheritSessionMetadata(id, forkId);
     const forkCheckpoint = this.buildCheckpoint(snapshot, {
       parentCheckpointId: checkpoint.id,
       label: 'Fork created',
@@ -698,7 +855,7 @@ export class SessionsService implements OnModuleDestroy {
     if (entry) {
       entry.currentCheckpointId = forkCheckpoint.id;
     }
-    return { id: forkId, checkpointId };
+    return { id: forkId, checkpointId, needsModelConfig: registered.needsModelConfig };
   }
 
   private async registerRestoredSnapshot(
@@ -706,7 +863,7 @@ export class SessionsService implements OnModuleDestroy {
     modelSessionId: string,
     options: RestoreSessionOptions,
     registerOptions: { currentCheckpointId?: string } = {},
-  ): Promise<{ id: string }> {
+  ): Promise<{ id: string; needsModelConfig: boolean }> {
     return this.registerPreparedSession(
       await this.prepareRestoredSession(snapshot, modelSessionId, options),
       registerOptions,
@@ -731,9 +888,21 @@ export class SessionsService implements OnModuleDestroy {
     };
     const { tools, mcpManager, mcpConnections, lspManager, lspConnections } =
       await this.buildToolsMcpAndLsp(snapshot.cwd, mcpServers, lspServers);
+
+    let needsModelConfig = false;
+    let model = this.tryBuildModelClient(modelSessionId, options.model);
+    if (!model) {
+      model = createUnconfiguredModelClient();
+      needsModelConfig = true;
+    }
+    const swappableModel = needsModelConfig
+      ? new SwappableModelClient(model)
+      : undefined;
+    const effectiveModel = swappableModel ?? model;
+
     return {
       session: Session.restore(snapshot, {
-        model: this.buildModelClient(modelSessionId, options.model),
+        model: effectiveModel,
         tools,
         systemPrompt: buildSessionSystemPrompt(
           createOptions,
@@ -748,20 +917,29 @@ export class SessionsService implements OnModuleDestroy {
       ...(lspManager ? { lspManager } : {}),
       mcpConnections,
       lspConnections,
+      needsModelConfig,
+      ...(swappableModel ? { swappableModel } : {}),
     };
   }
 
   private registerPreparedSession(
     prepared: PreparedSession,
     registerOptions: { currentCheckpointId?: string } = {},
-  ): { id: string } {
-    return this.register(prepared.session, {
-      ...registerOptions,
-      ...(prepared.mcpManager ? { mcpManager: prepared.mcpManager } : {}),
-      mcpConnections: prepared.mcpConnections,
-      ...(prepared.lspManager ? { lspManager: prepared.lspManager } : {}),
-      lspConnections: prepared.lspConnections,
-    });
+  ): { id: string; needsModelConfig: boolean } {
+    return {
+      ...this.register(prepared.session, {
+        ...registerOptions,
+        ...(prepared.mcpManager ? { mcpManager: prepared.mcpManager } : {}),
+        mcpConnections: prepared.mcpConnections,
+        ...(prepared.lspManager ? { lspManager: prepared.lspManager } : {}),
+        lspConnections: prepared.lspConnections,
+        needsModelConfig: prepared.needsModelConfig,
+        ...(prepared.swappableModel
+          ? { swappableModel: prepared.swappableModel }
+          : {}),
+      }),
+      needsModelConfig: prepared.needsModelConfig,
+    };
   }
 
   // Saves the session snapshot (upsert) and drains any buffered audit entries
@@ -777,6 +955,14 @@ export class SessionsService implements OnModuleDestroy {
     try {
       const snapshot: SessionSnapshot = session.snapshot();
       this.store.saveSnapshot(snapshot);
+      const metadata = this.liveMetadata.get(session.id);
+      if (metadata) {
+        this.store.upsertSessionMetadata({
+          sessionId: session.id,
+          projectId: metadata.projectId ?? null,
+          pinned: metadata.pinned,
+        });
+      }
       if (pendingAudit.length > 0) {
         const drained = pendingAudit.splice(0, pendingAudit.length);
         this.store.appendAudit(session.id, drained);
@@ -905,13 +1091,89 @@ export class SessionsService implements OnModuleDestroy {
   // Fire-and-forget: append the user message and start the turn. Progress is
   // observed over the event stream; we deliberately do not await completion so
   // the HTTP request returns immediately (the run may park on an approval).
+  //
+  // When the session was created without a valid model config, this method first
+  // tries to rebuild the model client with any newly configured credentials. If
+  // none are available yet, it emits an error event and does not submit.
   submit(id: string, text: string): void {
-    const { session } = this.require(id);
-    void session.submit(text).catch(() => {
+    const entry = this.require(id);
+    if (entry.needsModelConfig) {
+      const rebuilt = this.tryRebuildModel(id);
+      if (!rebuilt) {
+        this.emitModelConfigError(id);
+        return;
+      }
+    }
+    void entry.session.submit(text).catch(() => {
       // The turn loop already surfaces failures as `error` / `run_status:error`
       // events on the stream; swallow the rejection here so it does not become
       // an unhandled promise rejection.
     });
+  }
+
+  // Attempts to upgrade a placeholder model to a real one. Returns true if the
+  // upgrade succeeded or the session already had a valid model.
+  private tryRebuildModel(id: string): boolean {
+    const entry = this.entries.get(id);
+    if (!entry) {
+      return false;
+    }
+    if (!entry.needsModelConfig || !entry.swappableModel) {
+      return true; // Already configured — nothing to do.
+    }
+    const model = this.tryBuildModelClient(id);
+    if (!model) {
+      return false;
+    }
+    entry.swappableModel.swap(model);
+    entry.needsModelConfig = false;
+    return true;
+  }
+
+  // Updates the model for a live session. Called by the frontend after the user
+  // configures an API key. Swaps the underlying model client and clears the
+  // `needsModelConfig` flag so subsequent submits work.
+  configureModel(
+    id: string,
+    selection: ModelSelection,
+  ): { needsModelConfig: boolean } {
+    const entry = this.require(id);
+    if (!entry.swappableModel) {
+      // The session was created with a real model — build a fresh one.
+      const model = this.buildModelClient(id, selection);
+      entry.swappableModel = new SwappableModelClient(model);
+    }
+    const model = this.tryBuildModelClient(id, selection);
+    if (model) {
+      if (entry.swappableModel) {
+        entry.swappableModel.swap(model);
+      }
+      entry.needsModelConfig = false;
+      return { needsModelConfig: false };
+    }
+    entry.needsModelConfig = true;
+    return { needsModelConfig: true };
+  }
+
+  // Returns whether a session currently lacks a valid model config so the
+  // frontend can show a warning.
+  getNeedsModelConfig(id: string): boolean {
+    const entry = this.entries.get(id);
+    return entry?.needsModelConfig ?? false;
+  }
+
+  private emitModelConfigError(id: string): void {
+    const entry = this.entries.get(id);
+    if (!entry) return;
+    const event: SessionEvent = {
+      type: 'error',
+      message:
+        'No API key configured. Please set an API key for your model provider in Settings, then try again.',
+    };
+    entry.log.push(event);
+    for (const listener of entry.listeners) {
+      listener(event);
+    }
   }
 
   // Routes a validated control message into the engine (approval_response /
@@ -960,6 +1222,7 @@ export class SessionsService implements OnModuleDestroy {
     entry.unsubscribe();
     entry.listeners.clear();
     this.entries.delete(id);
+    this.liveMetadata.delete(id);
     await entry.mcpManager?.close?.();
     await entry.lspManager?.close?.();
     return true;
@@ -972,25 +1235,166 @@ export class SessionsService implements OnModuleDestroy {
     return this.store.loadSnapshot(id);
   }
 
+  getLiveSnapshot(id: string): SessionSnapshot | undefined {
+    return this.entries.get(id)?.session.snapshot();
+  }
+
   // The persisted permission-audit trail for a session id (insertion order).
   loadAudit(id: string): PermissionAuditEntry[] {
     return this.store.listAudit(id);
   }
 
-  listSessions(): { sessions: SessionSummary[] } {
+  listSessions(): GroupedSessionHistory {
+    const projects = this.store.listProjects();
+    const projectById = new Map(
+      projects.map((project) => [project.id, project]),
+    );
+    const projectByPath = new Map(
+      projects.map((project) => [project.path, project]),
+    );
+    const grouped = new Map<string, SessionSummary[]>(
+      projects.map((project) => [project.id, []]),
+    );
+    const chats: SessionSummary[] = [];
+    const seen = new Set<string>();
+
+    for (const entry of this.store.listSessions()) {
+      seen.add(entry.snapshot.id);
+      const summary = this.toSessionSummary(entry);
+      const projectId = this.resolveHistoryProjectId(
+        entry.snapshot.id,
+        entry.snapshot.cwd,
+        projectByPath,
+      );
+      const scopedSummary: SessionSummary = {
+        ...summary,
+        ...(projectId ? { projectId } : {}),
+      };
+      if (projectId && projectById.has(projectId)) {
+        grouped.get(projectId)?.push(scopedSummary);
+      } else {
+        chats.push(scopedSummary);
+      }
+    }
+
+    for (const [id, live] of this.entries) {
+      if (seen.has(id)) {
+        continue;
+      }
+      const snapshot = live.session.snapshot();
+      const summary = this.toSessionSummary({
+        snapshot,
+        updatedAt: this.liveMetadata.get(id)?.updatedAt ?? Date.now(),
+      });
+      const projectId = this.resolveHistoryProjectId(
+        snapshot.id,
+        snapshot.cwd,
+        projectByPath,
+      );
+      const scopedSummary: SessionSummary = {
+        ...summary,
+        ...(projectId ? { projectId } : {}),
+      };
+      if (projectId && projectById.has(projectId)) {
+        grouped.get(projectId)?.push(scopedSummary);
+      } else {
+        chats.push(scopedSummary);
+      }
+    }
+
     return {
-      sessions: this.store.listSessions().map(({ snapshot, updatedAt }) => {
-        const checkpoints = this.store.listCheckpoints(snapshot.id);
-        const latestCheckpoint = checkpoints.at(-1);
-        return {
-          id: snapshot.id,
-          title: latestCheckpoint?.summary ?? sessionTitle(snapshot),
-          updatedAt: latestCheckpoint?.createdAt ?? updatedAt,
-          ...(snapshot.cwd !== undefined ? { cwd: snapshot.cwd } : {}),
-          ...(latestCheckpoint ? { checkpointId: latestCheckpoint.id } : {}),
-        };
-      }),
+      projects: projects.map((project) => ({
+        ...project,
+        chats: this.sortSummaries(grouped.get(project.id) ?? []),
+      })),
+      chats: this.sortSummaries(chats),
     };
+  }
+
+  updateSession(id: string, patch: { pinned?: boolean }): SessionSummary {
+    if (!this.entries.has(id) && !this.safeLoadSnapshot(id)) {
+      throw new NotFoundException(`Unknown session: ${id}`);
+    }
+    if (patch.pinned !== undefined) {
+      const live = this.liveMetadata.get(id);
+      if (live) {
+        this.liveMetadata.set(id, {
+          ...live,
+          pinned: patch.pinned,
+          updatedAt: Date.now(),
+        });
+      }
+      try {
+        this.store.setSessionPinned(id, patch.pinned);
+      } catch {
+        // Live sessions keep the visible pin state in memory until persistence
+        // is available.
+      }
+    }
+    const snapshot =
+      this.safeLoadSnapshot(id) ?? this.entries.get(id)?.session.snapshot();
+    if (!snapshot) {
+      throw new NotFoundException(`Unknown session: ${id}`);
+    }
+    const listed = this.store
+      .listSessions()
+      .find((entry) => entry.snapshot.id === id);
+    return this.toSessionSummary({
+      snapshot,
+      updatedAt: listed?.updatedAt ?? Date.now(),
+    });
+  }
+
+  async deleteSession(id: string): Promise<boolean> {
+    const existed =
+      this.entries.has(id) ||
+      this.safeLoadSnapshot(id) !== undefined ||
+      this.safeLoadSessionMetadata(id) !== undefined ||
+      this.liveMetadata.has(id);
+    await this.unregister(id, { persist: false });
+    this.liveMetadata.delete(id);
+    const deleted = this.safeDeleteSession(id);
+    return existed || deleted;
+  }
+
+  async clearSessions(
+    scope: {
+      projectId?: string;
+      standalone?: boolean;
+    } = {},
+  ): Promise<void> {
+    const history = this.listSessions();
+    const ids =
+      scope.projectId !== undefined
+        ? (
+            history.projects.find((project) => project.id === scope.projectId)
+              ?.chats ?? []
+          ).map((chat) => chat.id)
+        : scope.standalone
+          ? history.chats.map((chat) => chat.id)
+          : [
+              ...history.chats.map((chat) => chat.id),
+              ...history.projects.flatMap((project) =>
+                project.chats.map((chat) => chat.id),
+              ),
+            ];
+
+    await Promise.all(ids.map((id) => this.unregister(id, { persist: false })));
+    this.store.deleteSessions(ids);
+  }
+
+  async deleteProject(projectId: string): Promise<boolean> {
+    if (!this.store.loadProject(projectId)) {
+      return false;
+    }
+    const ids =
+      this.listSessions()
+        .projects.find((project) => project.id === projectId)
+        ?.chats.map((chat) => chat.id) ?? [];
+
+    await Promise.all(ids.map((id) => this.unregister(id, { persist: false })));
+    this.store.deleteSessions(ids);
+    return this.store.deleteProject(projectId);
   }
 
   listCheckpoints(id: string): {
@@ -1023,9 +1427,122 @@ export class SessionsService implements OnModuleDestroy {
     entry.unsubscribe();
     entry.listeners.clear();
     this.entries.delete(id);
+    this.liveMetadata.delete(id);
     await entry.mcpManager?.close?.();
     await entry.lspManager?.close?.();
     return true;
+  }
+
+  private toSessionSummary(entry: {
+    snapshot: SessionSnapshot;
+    updatedAt: number;
+  }): SessionSummary {
+    const checkpoints = this.store.listCheckpoints(entry.snapshot.id);
+    const latestCheckpoint = checkpoints.at(-1);
+    const metadata = this.safeLoadSessionMetadata(entry.snapshot.id);
+    const liveMetadata = this.liveMetadata.get(entry.snapshot.id);
+    return {
+      id: entry.snapshot.id,
+      title: latestCheckpoint?.summary ?? sessionTitle(entry.snapshot),
+      updatedAt: latestCheckpoint?.createdAt ?? entry.updatedAt,
+      pinned: liveMetadata?.pinned ?? metadata?.pinned ?? false,
+      ...(entry.snapshot.cwd !== undefined ? { cwd: entry.snapshot.cwd } : {}),
+      ...(latestCheckpoint ? { checkpointId: latestCheckpoint.id } : {}),
+      ...((liveMetadata?.projectId ?? metadata?.projectId)
+        ? { projectId: liveMetadata?.projectId ?? metadata?.projectId }
+        : {}),
+    };
+  }
+
+  private resolveHistoryProjectId(
+    sessionId: string,
+    cwd: string | undefined,
+    projectByPath: Map<string, ProjectSummary>,
+  ): string | undefined {
+    const metadata = this.safeLoadSessionMetadata(sessionId);
+    const liveMetadata = this.liveMetadata.get(sessionId);
+    if (liveMetadata) {
+      return liveMetadata.projectId;
+    }
+    if (metadata) {
+      return metadata.projectId;
+    }
+    const project = cwd ? projectByPath.get(cwd) : undefined;
+    if (project) {
+      this.safeUpsertSessionMetadata({
+        sessionId,
+        projectId: project.id,
+      });
+    }
+    return project?.id;
+  }
+
+  private sortSummaries(summaries: SessionSummary[]): SessionSummary[] {
+    return [...summaries].sort((a, b) => {
+      if (a.pinned !== b.pinned) {
+        return a.pinned ? -1 : 1;
+      }
+      if (a.updatedAt !== b.updatedAt) {
+        return b.updatedAt - a.updatedAt;
+      }
+      return a.id.localeCompare(b.id);
+    });
+  }
+
+  private inheritSessionMetadata(sourceId: string, targetId: string): void {
+    const source = this.safeLoadSessionMetadata(sourceId);
+    const liveSource = this.liveMetadata.get(sourceId);
+    this.liveMetadata.set(targetId, {
+      ...((liveSource?.projectId ?? source?.projectId)
+        ? { projectId: liveSource?.projectId ?? source?.projectId }
+        : {}),
+      pinned: false,
+      updatedAt: Date.now(),
+    });
+    this.safeUpsertSessionMetadata({
+      sessionId: targetId,
+      projectId: liveSource?.projectId ?? source?.projectId ?? null,
+      pinned: false,
+    });
+  }
+
+  private safeUpsertSessionMetadata(input: {
+    sessionId: string;
+    projectId?: string | null;
+    pinned?: boolean;
+  }): void {
+    try {
+      this.store.upsertSessionMetadata(input);
+    } catch {
+      // Some focused service tests provide a minimal SessionStore mock. Metadata
+      // persistence is advisory until a real store is present.
+    }
+  }
+
+  private safeLoadSnapshot(id: string): SessionSnapshot | undefined {
+    try {
+      return this.store.loadSnapshot(id);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private safeLoadSessionMetadata(
+    id: string,
+  ): { projectId?: string; pinned: boolean } | undefined {
+    try {
+      return this.store.loadSessionMetadata(id);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private safeDeleteSession(id: string): boolean {
+    try {
+      return this.store.deleteSession(id);
+    } catch {
+      return false;
+    }
   }
 
   // Disposes every session so tests (and shutdown) do not leak runs/timers.

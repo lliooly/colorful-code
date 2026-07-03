@@ -87,6 +87,41 @@ export function createScriptedModelClient(
   };
 }
 
+// A ModelClient wrapper whose underlying delegate can be swapped at runtime.
+// Used so sessions can start with a placeholder model (when no API key is
+// configured yet) and be upgraded to a real model later without destroying and
+// recreating the Session object.
+export class SwappableModelClient implements ModelClient {
+  private _delegate: ModelClient;
+
+  constructor(initial: ModelClient) {
+    this._delegate = initial;
+  }
+
+  swap(delegate: ModelClient): void {
+    this._delegate = delegate;
+  }
+
+  run(input: ModelTurnInput): AsyncIterable<ModelTurnEvent> {
+    return this._delegate.run(input);
+  }
+}
+
+// A placeholder model that returns a single message guiding the user to
+// configure an API key. Used when session creation happens without a valid
+// model config so the session is browsable and the conversation shows a clear
+// call-to-action.
+export function createUnconfiguredModelClient(): ModelClient {
+  return createScriptedModelClient([
+    [
+      {
+        type: 'text',
+        text: '⚠️ No model is configured yet. Please set an API key for your chosen model provider in Settings, then try sending a message again.',
+      },
+    ],
+  ]);
+}
+
 async function* scriptedCompletion(
   events: ModelTurnEvent[],
   signal: AbortSignal,

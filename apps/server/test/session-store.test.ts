@@ -269,3 +269,61 @@ test('a reopened file DB still sees previously persisted data', async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('projects are imported idempotently by normalized path', async () => {
+  await withTempStore((store) => {
+    const first = store.upsertProject('/work/project/');
+    const second = store.upsertProject('/work/project');
+
+    assert.equal(second.id, first.id);
+    assert.equal(second.path, '/work/project');
+    assert.equal(second.name, 'project');
+    assert.deepEqual(
+      store.listProjects().map((project) => project.id),
+      [first.id],
+    );
+  });
+});
+
+test('session metadata stores project scope and pinned state', async () => {
+  await withTempStore((store) => {
+    const project = store.upsertProject('/work/project');
+    store.saveSnapshot(sampleSnapshot({ id: 'project-session' }));
+    store.upsertSessionMetadata({
+      sessionId: 'project-session',
+      projectId: project.id,
+    });
+    store.setSessionPinned('project-session', true);
+
+    const metadata = store.loadSessionMetadata('project-session');
+    assert.equal(metadata?.projectId, project.id);
+    assert.equal(metadata?.pinned, true);
+  });
+});
+
+test('deleteSession hard-deletes snapshot, checkpoints, audit, and metadata', async () => {
+  await withTempStore((store) => {
+    const project = store.upsertProject('/work/project');
+    store.saveSnapshot(sampleSnapshot({ id: 'session-delete' }));
+    store.upsertSessionMetadata({
+      sessionId: 'session-delete',
+      projectId: project.id,
+    });
+    store.saveCheckpoint({
+      id: 'checkpoint-delete',
+      sessionId: 'session-delete',
+      createdAt: 1,
+      snapshot: sampleSnapshot({ id: 'session-delete' }),
+    });
+    store.appendAudit('session-delete', [
+      { toolUseId: 'call-delete', toolName: 'Read', behavior: 'allow', at: 1 },
+    ]);
+
+    assert.equal(store.deleteSession('session-delete'), true);
+
+    assert.equal(store.loadSnapshot('session-delete'), undefined);
+    assert.deepEqual(store.listCheckpoints('session-delete'), []);
+    assert.deepEqual(store.listAudit('session-delete'), []);
+    assert.equal(store.loadSessionMetadata('session-delete'), undefined);
+  });
+});

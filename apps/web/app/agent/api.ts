@@ -13,6 +13,8 @@ import type {
   PermissionMode,
   PluginKind,
   PluginTrust,
+  SessionCreateResponse,
+  SessionRestoreResponse,
 } from './types';
 
 // The agent server base URL. Read at module load from the public env var with a
@@ -83,6 +85,7 @@ async function getJson(path: string): Promise<Response> {
 }
 
 export type CreateSessionRequest = {
+  projectId?: string;
   permissionMode?: PermissionMode;
   cwd?: string;
   workspaceRoots?: string[];
@@ -143,22 +146,66 @@ export type UpdateInstalledPluginRequest = {
   trust?: PluginTrust;
 };
 
-// POST /sessions -> { id }
+export type ImportProjectRequest = {
+  path: string;
+};
+
+export type ClearSessionsRequest = {
+  scope?: 'standalone';
+  projectId?: string;
+};
+
+// POST /sessions -> { id, needsModelConfig }
 export async function createSession(
   req: CreateSessionRequest,
-): Promise<string> {
+): Promise<SessionCreateResponse> {
   const res = await postJson('/sessions', req);
-  const data = (await res.json()) as { id?: unknown };
+  const data = (await res.json()) as SessionCreateResponse;
   if (typeof data.id !== 'string') {
     throw new Error('POST /sessions did not return a string id.');
   }
-  return data.id;
+  return data;
+}
+
+// POST /projects -> persisted imported project.
+export async function importProject(
+  path: string,
+): Promise<{ id: string; name: string; path: string }> {
+  const res = await postJson('/projects', {
+    path,
+  } satisfies ImportProjectRequest);
+  return (await res.json()) as { id: string; name: string; path: string };
+}
+
+export async function deleteProject(projectId: string): Promise<void> {
+  await deleteJson(`/projects/${encodeURIComponent(projectId)}`);
 }
 
 // GET /sessions -> persisted session summaries.
 export async function listSessions(): Promise<ListSessionsResponse> {
   const res = await getJson('/sessions');
   return (await res.json()) as ListSessionsResponse;
+}
+
+export async function pinSession(
+  sessionId: string,
+  pinned: boolean,
+): Promise<void> {
+  await patchJson(`/sessions/${encodeURIComponent(sessionId)}`, { pinned });
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  await deleteJson(`/sessions/${encodeURIComponent(sessionId)}`);
+}
+
+export async function clearSessions(
+  req: ClearSessionsRequest = {},
+): Promise<void> {
+  const params = new URLSearchParams();
+  if (req.scope) params.set('scope', req.scope);
+  if (req.projectId) params.set('projectId', req.projectId);
+  const suffix = params.toString();
+  await deleteJson(`/sessions${suffix ? `?${suffix}` : ''}`);
 }
 
 // POST /sessions/:id/messages { text }
@@ -225,19 +272,31 @@ export async function restoreCheckpoint(
   return (await res.json()) as CheckpointSessionResponse;
 }
 
-// POST /sessions/:id/restore -> { id }
+// POST /sessions/:id/restore -> { id, needsModelConfig }
 export async function restoreSession(
   sessionId: string,
   req: RestoreCheckpointRequest = {},
-): Promise<{ id: string }> {
+): Promise<SessionRestoreResponse> {
   const res = await postJson(
     `/sessions/${encodeURIComponent(sessionId)}/restore`,
     req,
   );
-  return (await res.json()) as { id: string };
+  return (await res.json()) as SessionRestoreResponse;
 }
 
-// POST /sessions/:id/checkpoints/:checkpointId/fork -> { id, checkpointId }
+// POST /sessions/:id/configure-model -> { needsModelConfig }
+export async function configureSessionModel(
+  sessionId: string,
+  model: ModelConfig,
+): Promise<{ needsModelConfig: boolean }> {
+  const res = await postJson(
+    `/sessions/${encodeURIComponent(sessionId)}/configure-model`,
+    { model },
+  );
+  return (await res.json()) as { needsModelConfig: boolean };
+}
+
+// POST /sessions/:id/checkpoints/:checkpointId/fork -> { id, checkpointId, needsModelConfig }
 export async function forkCheckpoint(
   sessionId: string,
   checkpointId: string,

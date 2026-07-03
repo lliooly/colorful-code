@@ -1,5 +1,7 @@
 import { Inject, Injectable, OnModuleDestroy } from '@nestjs/common';
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
+import { basename, resolve } from 'node:path';
+import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import type {
   Checkpoint,
   FileChangeMetadata,
@@ -13,10 +15,46 @@ import { openDatabase, type PersistenceDatabase } from './database';
 import {
   audit,
   checkpoints,
+  projects,
   sessions,
+  sessionMetadata,
   type AuditRow,
   type CheckpointRow,
+  type ProjectRow,
+  type SessionMetadataRow,
 } from './schema';
+
+export type ProjectRecord = {
+  id: string;
+  name: string;
+  path: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type SessionMetadataRecord = {
+  sessionId: string;
+  projectId?: string;
+  pinned: boolean;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type UpsertSessionMetadataInput = {
+  sessionId: string;
+  projectId?: string | null;
+  pinned?: boolean;
+};
+
+function normalizeProjectPath(path: string): string {
+  return resolve(path.trim());
+}
+
+function projectIdForPath(path: string): string {
+  return (
+    'project-' + createHash('sha256').update(path).digest('hex').slice(0, 20)
+  );
+}
 
 // The persistence boundary over the drizzle/SQLite database. The session
 // snapshot is stored as one upserted JSON row; the permission audit is appended
@@ -92,6 +130,132 @@ export class SessionStore implements OnModuleDestroy {
         snapshot: JSON.parse(row.snapshot) as SessionSnapshot,
         updatedAt: row.updatedAt,
       }));
+  }
+
+  upsertProject(path: string): ProjectRecord {
+    const normalized = normalizeProjectPath(path);
+    const existing = this.loadProjectByPath(normalized);
+    if (existing) {
+      this.db
+        .update(projects)
+        .set({ updatedAt: Date.now() })
+        .where(eq(projects.id, existing.id))
+        .run();
+      return this.loadProject(existing.id) as ProjectRecord;
+    }
+
+    const now = Date.now();
+    const row = {
+      id: projectIdForPath(normalized),
+      name: basename(normalized) || normalized,
+      path: normalized,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.db.insert(projects).values(row).run();
+    return this.toProjectRecord(row);
+  }
+
+  listProjects(): ProjectRecord[] {
+    return this.db
+      .select()
+      .from(projects)
+      .orderBy(asc(projects.name), asc(projects.path))
+      .all()
+      .map((row) => this.toProjectRecord(row));
+  }
+
+  loadProject(id: string): ProjectRecord | undefined {
+    const rows = this.db
+      .select()
+      .from(projects)
+      .where(eq(projects.id, id))
+      .limit(1)
+      .all();
+    const row = rows[0];
+    return row ? this.toProjectRecord(row) : undefined;
+  }
+
+  loadProjectByPath(path: string): ProjectRecord | undefined {
+    const normalized = normalizeProjectPath(path);
+    const rows = this.db
+      .select()
+      .from(projects)
+      .where(eq(projects.path, normalized))
+      .limit(1)
+      .all();
+    const row = rows[0];
+    return row ? this.toProjectRecord(row) : undefined;
+  }
+
+  deleteProject(id: string): boolean {
+    const existing = this.loadProject(id);
+    if (!existing) {
+      return false;
+    }
+    this.db
+      .update(sessionMetadata)
+      .set({ projectId: null, updatedAt: Date.now() })
+      .where(eq(sessionMetadata.projectId, id))
+      .run();
+    this.db.delete(projects).where(eq(projects.id, id)).run();
+    return true;
+  }
+
+  upsertSessionMetadata(
+    input: UpsertSessionMetadataInput,
+  ): SessionMetadataRecord {
+    const existing = this.loadSessionMetadata(input.sessionId);
+    const now = Date.now();
+    const row = {
+      sessionId: input.sessionId,
+      projectId:
+        input.projectId === undefined
+          ? (existing?.projectId ?? null)
+          : input.projectId,
+      pinned: (input.pinned ?? existing?.pinned) === true ? 1 : 0,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+
+    this.db
+      .insert(sessionMetadata)
+      .values(row)
+      .onConflictDoUpdate({
+        target: sessionMetadata.sessionId,
+        set: {
+          projectId: row.projectId,
+          pinned: row.pinned,
+          updatedAt: row.updatedAt,
+        },
+      })
+      .run();
+
+    return this.loadSessionMetadata(input.sessionId) as SessionMetadataRecord;
+  }
+
+  loadSessionMetadata(sessionId: string): SessionMetadataRecord | undefined {
+    const rows = this.db
+      .select()
+      .from(sessionMetadata)
+      .where(eq(sessionMetadata.sessionId, sessionId))
+      .limit(1)
+      .all();
+    const row = rows[0];
+    return row ? this.toSessionMetadataRecord(row) : undefined;
+  }
+
+  setSessionPinned(sessionId: string, pinned: boolean): boolean {
+    const existing = this.loadSessionMetadata(sessionId);
+    if (!existing && !this.loadSnapshot(sessionId)) {
+      return false;
+    }
+    this.upsertSessionMetadata({
+      sessionId,
+      projectId: existing?.projectId ?? null,
+      pinned,
+    });
+    return true;
   }
 
   saveCheckpoint(checkpoint: Checkpoint): void {
@@ -187,6 +351,42 @@ export class SessionStore implements OnModuleDestroy {
     return rows.map((row) => this.toAuditEntry(row));
   }
 
+  deleteSession(sessionId: string): boolean {
+    const hadSession =
+      this.loadSnapshot(sessionId) !== undefined ||
+      this.loadSessionMetadata(sessionId) !== undefined ||
+      this.listCheckpoints(sessionId).length > 0 ||
+      this.listAudit(sessionId).length > 0;
+    this.db.delete(audit).where(eq(audit.sessionId, sessionId)).run();
+    this.db
+      .delete(checkpoints)
+      .where(eq(checkpoints.sessionId, sessionId))
+      .run();
+    this.db
+      .delete(sessionMetadata)
+      .where(eq(sessionMetadata.sessionId, sessionId))
+      .run();
+    this.db.delete(sessions).where(eq(sessions.id, sessionId)).run();
+    return hadSession;
+  }
+
+  deleteSessions(sessionIds: string[]): number {
+    if (sessionIds.length === 0) {
+      return 0;
+    }
+    this.db.delete(audit).where(inArray(audit.sessionId, sessionIds)).run();
+    this.db
+      .delete(checkpoints)
+      .where(inArray(checkpoints.sessionId, sessionIds))
+      .run();
+    this.db
+      .delete(sessionMetadata)
+      .where(inArray(sessionMetadata.sessionId, sessionIds))
+      .run();
+    this.db.delete(sessions).where(inArray(sessions.id, sessionIds)).run();
+    return sessionIds.length;
+  }
+
   private toAuditEntry(row: AuditRow): PermissionAuditEntry {
     const reason =
       row.reason === null
@@ -218,6 +418,28 @@ export class SessionStore implements OnModuleDestroy {
       ...(row.summary !== null ? { summary: row.summary } : {}),
       snapshot: JSON.parse(row.snapshot) as SessionSnapshot,
       ...(fileChanges !== undefined ? { fileChanges } : {}),
+    };
+  }
+
+  private toProjectRecord(row: ProjectRow): ProjectRecord {
+    return {
+      id: row.id,
+      name: row.name,
+      path: row.path,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  private toSessionMetadataRecord(
+    row: SessionMetadataRow,
+  ): SessionMetadataRecord {
+    return {
+      sessionId: row.sessionId,
+      ...(row.projectId !== null ? { projectId: row.projectId } : {}),
+      pinned: row.pinned === 1,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
     };
   }
 

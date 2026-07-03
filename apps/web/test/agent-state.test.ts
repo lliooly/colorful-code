@@ -7,8 +7,10 @@ import {
   conversationItemsFromHistory,
   createWorkspaceProject,
   createAgentViewState,
+  hasGroupedHistory,
+  selectedScopeForSession,
 } from '../app/agent/state';
-import type { SessionEvent } from '../app/agent/types';
+import type { SessionEvent, SessionSummary } from '../app/agent/types';
 
 test('applyAgentEvent captures approval requests as actionable state', () => {
   const event: SessionEvent = {
@@ -116,6 +118,67 @@ test('createWorkspaceProject normalizes a picked workspace folder into a project
   assert.equal(project.name, 'colorful-code');
   assert.equal(project.path, '/Users/example/work/colorful-code');
   assert.deepEqual(project.chats, []);
+});
+
+test('hasGroupedHistory is true for project-only or standalone history', () => {
+  assert.equal(hasGroupedHistory([], []), false);
+  assert.equal(
+    hasGroupedHistory(
+      [
+        {
+          id: 'project-1',
+          name: 'Project',
+          path: '/work/project',
+          chats: [
+            {
+              id: 'session-1',
+              title: 'Project chat',
+              updatedAt: 1,
+              pinned: false,
+            },
+          ],
+        },
+      ],
+      [],
+    ),
+    true,
+  );
+  assert.equal(
+    hasGroupedHistory(
+      [],
+      [
+        {
+          id: 'session-2',
+          title: 'Standalone chat',
+          updatedAt: 2,
+          pinned: false,
+        },
+      ],
+    ),
+    true,
+  );
+});
+
+test('selectedScopeForSession keeps new chat creation near restored history', () => {
+  const projectChat: SessionSummary = {
+    id: 'project-chat',
+    title: 'Project chat',
+    updatedAt: 1,
+    pinned: false,
+    projectId: 'project-1',
+  };
+  const standaloneChat: SessionSummary = {
+    id: 'standalone-chat',
+    title: 'Standalone chat',
+    updatedAt: 2,
+    pinned: false,
+  };
+
+  assert.deepEqual(
+    selectedScopeForSession(projectChat),
+    { type: 'project', projectId: 'project-1' },
+  );
+  assert.deepEqual(selectedScopeForSession(standaloneChat), { type: 'chats' });
 });
 
 test('composeMessageWithAttachments includes selected local files as agent context', () => {

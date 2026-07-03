@@ -7,7 +7,9 @@ import {
   HttpCode,
   NotFoundException,
   Param,
+  Patch,
   Post,
+  Query,
   Sse,
 } from '@nestjs/common';
 import type { MessageEvent } from '@nestjs/common';
@@ -26,7 +28,11 @@ import type {
 import {
   SessionsService,
   type CreateSessionOptions,
+  type CreateSessionResponse,
+  type GroupedSessionHistory,
+  type RestoreCheckpointResponse,
   type RestoreSessionOptions,
+  type RestoreSessionResponse,
   type SessionSummary,
 } from './sessions.service';
 import {
@@ -48,6 +54,7 @@ import {
 // All fields are untrusted JSON until validated below — typed `unknown` so the
 // validators are forced to narrow them.
 type CreateSessionBody = {
+  projectId?: unknown;
   permissionMode?: unknown;
   workspaceRoots?: unknown;
   rules?: unknown;
@@ -65,6 +72,10 @@ type RestoreSessionBody = {
   watchWorkspace?: unknown;
 };
 
+type ConfigureModelBody = {
+  model?: unknown;
+};
+
 type MessageBody = {
   text?: unknown;
 };
@@ -80,6 +91,10 @@ type VoiceAudioBody = {
   audio?: unknown;
   sampleRate?: unknown;
   numChannels?: unknown;
+};
+
+type PatchSessionBody = {
+  pinned?: unknown;
 };
 
 // Mirrors the engine's ControlMessage union as a wire shape; `validateControl`
@@ -306,6 +321,26 @@ function validateWatchWorkspace(value: unknown): boolean | undefined {
   return value;
 }
 
+function validateProjectId(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new BadRequestException('`projectId` must be a non-empty string.');
+  }
+  return value;
+}
+
+function validatePinned(value: unknown): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'boolean') {
+    throw new BadRequestException('`pinned` must be a boolean.');
+  }
+  return value;
+}
+
 function validateRequestId(value: unknown): string {
   if (typeof value !== 'string' || value.trim().length === 0) {
     throw new BadRequestException('voice transcription requires `requestId`.');
@@ -416,14 +451,17 @@ export class SessionsController {
   constructor(private readonly sessions: SessionsService) {}
 
   @Get()
-  list(): { sessions: SessionSummary[] } {
+  list(): GroupedSessionHistory {
     return this.sessions.listSessions();
   }
 
   // POST /sessions -> create a session (optionally seeding its PermissionContext)
-  // and return its id.
+  // and return its id + needsModelConfig flag.
   @Post()
-  async create(@Body() body: CreateSessionBody = {}): Promise<{ id: string }> {
+  async create(
+    @Body() body: CreateSessionBody = {},
+  ): Promise<CreateSessionResponse> {
+    const projectId = validateProjectId(body.projectId);
     const permissionMode = validatePermissionMode(body.permissionMode);
     const workspaceRoots = validateWorkspaceRoots(body.workspaceRoots);
     const rules = validateRules(body.rules);
@@ -432,6 +470,7 @@ export class SessionsController {
     const lspServers = validateLspServers(body.lspServers);
     const watchWorkspace = validateWatchWorkspace(body.watchWorkspace);
     const options: CreateSessionOptions = {
+      ...(projectId !== undefined ? { projectId } : {}),
       ...(permissionMode !== undefined ? { permissionMode } : {}),
       ...(workspaceRoots !== undefined ? { workspaceRoots } : {}),
       ...(rules !== undefined ? { rules } : {}),
@@ -444,6 +483,17 @@ export class SessionsController {
     return await this.sessions.create(options);
   }
 
+  @Patch(':id')
+  patch(
+    @Param('id') id: string,
+    @Body() body: PatchSessionBody = {},
+  ): SessionSummary {
+    const pinned = validatePinned(body.pinned);
+    return this.sessions.updateSession(id, {
+      ...(pinned !== undefined ? { pinned } : {}),
+    });
+  }
+
   // POST /sessions/:id/restore -> restore a disposed/non-live session from its
   // persisted snapshot. The snapshot does not contain secrets; if a client needs
   // a custom model key it can provide a fresh `model` selection here. If the
@@ -452,7 +502,7 @@ export class SessionsController {
   restore(
     @Param('id') id: string,
     @Body() body: RestoreSessionBody = {},
-  ): Promise<{ id: string }> {
+  ): Promise<RestoreSessionResponse> {
     const model = validateModelSelection(body.model);
     const mcpServers = validateMcpServers(body.mcpServers);
     const lspServers = validateLspServers(body.lspServers);
@@ -576,7 +626,7 @@ export class SessionsController {
     @Param('id') id: string,
     @Param('checkpointId') checkpointId: string,
     @Body() body: RestoreSessionBody = {},
-  ): Promise<{ id: string; checkpointId: string }> {
+  ): Promise<RestoreCheckpointResponse> {
     const model = validateModelSelection(body.model);
     const mcpServers = validateMcpServers(body.mcpServers);
     const lspServers = validateLspServers(body.lspServers);
@@ -595,7 +645,7 @@ export class SessionsController {
     @Param('id') id: string,
     @Param('checkpointId') checkpointId: string,
     @Body() body: RestoreSessionBody = {},
-  ): Promise<{ id: string; checkpointId: string }> {
+  ): Promise<RestoreCheckpointResponse> {
     const model = validateModelSelection(body.model);
     const mcpServers = validateMcpServers(body.mcpServers);
     const lspServers = validateLspServers(body.lspServers);
@@ -609,11 +659,48 @@ export class SessionsController {
     return this.sessions.forkCheckpoint(id, checkpointId, options);
   }
 
-  // DELETE /sessions/:id -> dispose. 404 if unknown.
+  // POST /sessions/:id/configure-model -> update or upgrade the model for a live
+  // session. Used after the user sets an API key so the session can start running
+  // turns without a full restore.
+  @Post(':id/configure-model')
+  configureModel(
+    @Param('id') id: string,
+    @Body() body: ConfigureModelBody = {},
+  ): { needsModelConfig: boolean } {
+    const model = validateModelSelection(body.model);
+    if (!model) {
+      throw new BadRequestException(
+        '`model` is required when configuring a session model.',
+      );
+    }
+    return this.sessions.configureModel(id, model);
+  }
+
+  @Delete()
+  @HttpCode(204)
+  async clear(
+    @Query('scope') scope?: string,
+    @Query('projectId') projectId?: string,
+  ): Promise<void> {
+    if (scope !== undefined && scope !== 'standalone') {
+      throw new BadRequestException('`scope` must be `standalone`.');
+    }
+    if (scope === 'standalone' && projectId !== undefined) {
+      throw new BadRequestException(
+        '`scope=standalone` cannot be combined with `projectId`.',
+      );
+    }
+    await this.sessions.clearSessions({
+      ...(scope === 'standalone' ? { standalone: true } : {}),
+      ...(projectId !== undefined ? { projectId } : {}),
+    });
+  }
+
+  // DELETE /sessions/:id -> hard delete. 404 if unknown.
   @Delete(':id')
   @HttpCode(204)
   async remove(@Param('id') id: string): Promise<void> {
-    if (!(await this.sessions.dispose(id))) {
+    if (!(await this.sessions.deleteSession(id))) {
       throw new NotFoundException(`Unknown session: ${id}`);
     }
   }

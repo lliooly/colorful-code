@@ -318,6 +318,7 @@ export async function runTurn(deps: TurnDeps): Promise<void> {
             content: result.content,
             ...(result.isError ? { isError: true } : {}),
             ...(source ? { source } : {}),
+            ...(result.metadata ? { metadata: result.metadata } : {}),
           });
         },
       });

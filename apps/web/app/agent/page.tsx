@@ -10,12 +10,14 @@ import {
   type ReactNode,
 } from 'react';
 import type { PanelImperativeHandle } from 'react-resizable-panels';
+import { toast } from 'sonner';
 import {
+  Plus,
   PlusCircle,
   Search,
   Puzzle,
-  FolderRoot,
-  MessageCirclePlus,
+  Folder,
+  MessageSquare,
   Settings,
   FileDiff,
   Ellipsis,
@@ -38,11 +40,20 @@ import {
   CheckCircle2,
   AlertCircle,
   ChevronDown,
+  ChevronRight,
   Mic,
   Trash2,
+  Pin,
+  PinOff,
 } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Badge } from '@/components/ui/badge';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -68,6 +79,7 @@ import {
   EmptyTitle,
 } from '@/components/ui/empty';
 import { Input } from '@/components/ui/input';
+import { Marker, MarkerContent, MarkerIcon } from '@/components/ui/marker';
 import { Textarea } from '@/components/ui/textarea';
 import {
   Message,
@@ -142,9 +154,12 @@ import {
 import {
   appendVoiceAudio,
   createSession,
+  deleteProject as deleteProjectRequest,
+  deleteSession,
   deleteInstalledPlugin,
   eventsUrl,
   forkCheckpoint,
+  importProject,
   installPlugin,
   listModelPresets,
   listInstalledPlugins,
@@ -154,6 +169,7 @@ import {
   listSkillRegistryPlugins,
   listCheckpoints,
   listSessions,
+  pinSession,
   restoreCheckpoint,
   restoreSession,
   sendControl,
@@ -184,18 +200,19 @@ import {
 } from './preferences';
 import {
   applyAgentEvent,
-  checkpointsToChats,
   composeMessageWithAttachments,
   composeVisibleMessageWithAttachments,
   conversationItemsFromHistory,
   createAgentViewState,
-  createWorkspaceProject,
   formatToolSourceLabel,
   patchCounts,
   patchStatusLabel,
+  selectedScopeForSession,
   sortedEditProposals,
+  type ApprovalState,
   type ConversationItem,
   type LocalFileAttachment,
+  type SelectedScope,
   type WorkspaceProject,
 } from './state';
 import {
@@ -219,8 +236,6 @@ const sidebarItems = [
   { key: 'plugins', icon: Puzzle, href: '#plugins' },
 ] as const;
 
-const WORKSPACE_PATH = '/Users/shishishi/Desktop/colorful-code';
-
 function subscribeDesktopRuntime(): () => void {
   return () => {};
 }
@@ -232,15 +247,6 @@ function getDesktopRuntimeSnapshot(): boolean {
 function getDesktopRuntimeServerSnapshot(): boolean {
   return false;
 }
-
-const defaultProjects: WorkspaceProject[] = [
-  {
-    id: 'local',
-    name: 'Local project',
-    path: WORKSPACE_PATH,
-    chats: [],
-  },
-];
 
 type ModelPreset = {
   id: string;
@@ -403,6 +409,13 @@ const copy = {
       sidebarReady: '',
       scrollerReady: '',
     },
+    feedback: {
+      chatDeleted: 'Chat deleted',
+      chatDeleteFailed: 'Could not delete chat',
+      folderDeleted: 'Folder deleted',
+      folderDeleteFailed: 'Could not delete folder',
+      modelsFound: 'models found',
+    },
     composer: {
       placeholderReady: 'Type a message...',
       placeholderCreate: 'Create a session first',
@@ -536,6 +549,13 @@ const copy = {
       sidebarReady: '',
       scrollerReady: '',
     },
+    feedback: {
+      chatDeleted: '会话已删除',
+      chatDeleteFailed: '删除会话失败',
+      folderDeleted: '文件夹已删除',
+      folderDeleteFailed: '删除文件夹失败',
+      modelsFound: '个模型可用',
+    },
     composer: {
       placeholderReady: '输入消息...',
       placeholderCreate: '请先创建会话',
@@ -634,6 +654,12 @@ function formatTokenCount(tokens: number): string {
   return String(tokens);
 }
 
+function formatHistoryTime(value: number): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString();
+}
+
 const CONTEXT_WINDOW_TOKENS: Record<string, number> = {
   claude: 1_000_000,
   deepseek: 1_000_000,
@@ -641,32 +667,229 @@ const CONTEXT_WINDOW_TOKENS: Record<string, number> = {
 };
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 1_000_000;
 
+type ToolConversationItem = Extract<ConversationItem, { kind: 'tool' }>;
+
+function toolStatus(item: ToolConversationItem): {
+  label: string;
+  icon: typeof RefreshCw;
+} {
+  if (!item.result) return { label: 'Running tool', icon: RefreshCw };
+  if (item.result.isError) {
+    return { label: 'Tool error', icon: AlertCircle };
+  }
+  return { label: 'Tool complete', icon: CheckCircle2 };
+}
+
+function toolSummary(item: ToolConversationItem): string {
+  const sourceLabel = formatToolSourceLabel(item.source);
+  const status = toolStatus(item);
+  return [
+    `${status.label}: ${item.name}`,
+    sourceLabel ? sourceLabel : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+function ThinkingBlock({ thinking }: { thinking: string }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <div className="mb-2 flex min-w-0 items-center gap-1">
+        <Marker
+          variant={open ? 'border' : 'default'}
+          className="min-w-0 flex-1 cursor-pointer"
+          onClick={() => setOpen((prev) => !prev)}
+        >
+          <MarkerIcon>
+            <Sparkles className="size-3.5" />
+          </MarkerIcon>
+          <MarkerContent className="truncate text-xs">
+            Thinking
+          </MarkerContent>
+        </Marker>
+        <CollapsibleTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Thinking details"
+            className="shrink-0 text-muted-foreground hover:text-foreground"
+          >
+            <ChevronRight
+              className={cn(
+                'size-3.5 transition-transform',
+                open && 'rotate-90',
+              )}
+            />
+          </Button>
+        </CollapsibleTrigger>
+      </div>
+      <CollapsibleContent>
+        <p className="mt-1 whitespace-pre-wrap text-xs leading-6 text-muted-foreground">
+          {thinking}
+        </p>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function ToolInvocationItem({ item }: { item: ToolConversationItem }) {
+  const [open, setOpen] = useState(false);
+  const status = toolStatus(item);
+  const summary = toolSummary(item);
+  const StatusIcon = status.icon;
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <div className="flex min-w-0 items-center gap-1">
+        <Marker
+          role={!item.result ? 'status' : undefined}
+          variant={open ? 'border' : 'default'}
+          className="min-w-0 flex-1 cursor-pointer"
+          onClick={() => setOpen((prev) => !prev)}
+        >
+          <MarkerIcon>
+            <StatusIcon
+              className={cn('size-3.5', !item.result && 'animate-spin')}
+            />
+          </MarkerIcon>
+          <MarkerContent className="truncate text-xs">
+            {summary}
+          </MarkerContent>
+        </Marker>
+        <CollapsibleTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Tool details"
+            className="shrink-0 text-muted-foreground hover:text-foreground"
+          >
+            <ChevronRight
+              className={cn(
+                'size-3.5 transition-transform',
+                open && 'rotate-90',
+              )}
+            />
+          </Button>
+        </CollapsibleTrigger>
+      </div>
+      <CollapsibleContent>
+        <div className="mt-2 flex flex-col gap-2">
+          <div>
+            <p className="mb-1 text-xs font-medium text-muted-foreground">
+              Input
+            </p>
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-border/60 bg-muted/30 p-3 text-xs text-foreground/80">
+              {JSON.stringify(item.input, null, 2)}
+            </pre>
+          </div>
+          {item.result ? (
+            <div>
+              <p className="mb-1 text-xs font-medium text-muted-foreground">
+                Result
+              </p>
+              <pre
+                className={cn(
+                  'max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-border/60 bg-muted/30 p-3 text-xs text-foreground/80',
+                  item.result.isError && 'text-destructive',
+                )}
+              >
+                {item.result.content}
+              </pre>
+            </div>
+          ) : null}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function ApprovalRequestBar({
+  approval,
+  onDecision,
+}: {
+  approval: ApprovalState;
+  onDecision: (approved: boolean) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const sourceLabel = formatToolSourceLabel(approval.source);
+
+  return (
+    <Alert className="mb-2 border-border/60 bg-card/80">
+      <ShieldCheck />
+      <AlertTitle className="flex min-w-0 items-center gap-2">
+        <span className="truncate">Allow {approval.name}?</span>
+        {sourceLabel ? (
+          <Badge variant="outline" className="shrink-0">
+            {sourceLabel}
+          </Badge>
+        ) : null}
+      </AlertTitle>
+      <AlertDescription>
+        <div className="mt-1 flex flex-col gap-2">
+          <p className="line-clamp-2 text-xs">{approval.message}</p>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Collapsible open={open} onOpenChange={setOpen}>
+              <CollapsibleTrigger asChild>
+                <Button variant="ghost" size="xs">
+                  <ChevronRight
+                    className={cn(
+                      'transition-transform',
+                      open && 'rotate-90',
+                    )}
+                  />
+                  Details
+                </Button>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-border/60 bg-background/70 p-3 text-xs text-foreground/80">
+                  {JSON.stringify(approval.input, null, 2)}
+                </pre>
+              </CollapsibleContent>
+            </Collapsible>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => onDecision(false)}
+              >
+                Deny
+              </Button>
+              <Button size="xs" onClick={() => onDecision(true)}>
+                Approve
+              </Button>
+            </div>
+          </div>
+        </div>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
 export default function AgentPage(): ReactNode {
   const [permissionMode, setPermissionMode] =
     useState<PermissionMode>('default');
-  const [presetId, setPresetId] = useState<string>('claude');
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [needsModelConfig, setNeedsModelConfig] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [, setAgentServer] = useState<AgentServerStatus | null>(null);
   const [draft, setDraft] = useState('');
   const [viewState, setViewState] = useState(() => createAgentViewState());
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
-  const [sessionHistory, setSessionHistory] = useState<SessionSummary[]>([]);
+  const [standaloneChats, setStandaloneChats] = useState<SessionSummary[]>([]);
   const [loadingSessionHistory, setLoadingSessionHistory] = useState(false);
   const [restoringSessionId, setRestoringSessionId] = useState<string | null>(
     null,
   );
+  const [historyActionId, setHistoryActionId] = useState<string | null>(null);
   const [currentCheckpointId, setCurrentCheckpointId] = useState<string | null>(
     null,
   );
   const [loadingCheckpoints, setLoadingCheckpoints] = useState(false);
-  const [checkpointAction, setCheckpointAction] = useState<{
-    id: string;
-    type: 'restore' | 'fork';
-  } | null>(null);
   const [diffOpen, setDiffOpen] = useState(false);
   const [pluginsOpen, setPluginsOpen] = useState(false);
   const [mcpRegistryPlugins, setMcpRegistryPlugins] = useState<CatalogPlugin[]>(
@@ -697,10 +920,13 @@ export default function AgentPage(): ReactNode {
   const [selectedPatchPath, setSelectedPatchPath] = useState<string | null>(
     null,
   );
-  const [selectedProjectId, setSelectedProjectId] = useState<string>(
-    defaultProjects[0]?.id ?? 'local',
+  const [selectedScope, setSelectedScope] = useState<SelectedScope>({
+    type: 'chats',
+  });
+  const [projects, setProjects] = useState<WorkspaceProject[]>([]);
+  const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(
+    () => new Set(),
   );
-  const [projects, setProjects] = useState<WorkspaceProject[]>(defaultProjects);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activeSettingsSection, setActiveSettingsSection] =
@@ -715,26 +941,97 @@ export default function AgentPage(): ReactNode {
     }
   });
 
-  const [customProtocol, setCustomProtocol] = useState<ModelProtocol>('openai');
-  const [customBaseURL, setCustomBaseURL] = useState('');
-  const [customModel, setCustomModel] = useState('');
-  const [customApiKey, setCustomApiKey] = useState('');
+  // Persisted model configuration so users don't have to re-enter API keys
+  // every time they open the app.
+  const MODEL_CONFIG_STORAGE_KEY = 'colorful-code.agent.model-config';
+  type PersistedModelConfig = {
+    presetId: string;
+    presetApiKeys: Record<string, string>;
+    presetModelOverrides: Record<string, string>;
+    customProtocol: string;
+    customBaseURL: string;
+    customModel: string;
+    customApiKey?: string;
+  };
+
+  function loadModelConfig(): PersistedModelConfig {
+    if (typeof window === 'undefined') {
+      return {
+        presetId: 'claude',
+        presetApiKeys: {},
+        presetModelOverrides: {},
+        customProtocol: 'openai',
+        customBaseURL: '',
+        customModel: '',
+        customApiKey: '',
+      };
+    }
+    try {
+      const raw = window.localStorage.getItem(MODEL_CONFIG_STORAGE_KEY);
+      if (!raw) throw new Error('no stored model config');
+      const parsed = JSON.parse(raw) as Partial<PersistedModelConfig>;
+      return {
+        presetId: typeof parsed.presetId === 'string' ? parsed.presetId : 'claude',
+        presetApiKeys:
+          parsed.presetApiKeys && typeof parsed.presetApiKeys === 'object'
+            ? (parsed.presetApiKeys as Record<string, string>)
+            : {},
+        presetModelOverrides:
+          parsed.presetModelOverrides &&
+          typeof parsed.presetModelOverrides === 'object'
+            ? (parsed.presetModelOverrides as Record<string, string>)
+            : {},
+        customProtocol:
+          parsed.customProtocol === 'anthropic' ||
+          parsed.customProtocol === 'openai'
+            ? parsed.customProtocol
+            : 'openai',
+        customBaseURL:
+          typeof parsed.customBaseURL === 'string' ? parsed.customBaseURL : '',
+        customModel:
+          typeof parsed.customModel === 'string' ? parsed.customModel : '',
+        customApiKey:
+          typeof parsed.customApiKey === 'string' ? parsed.customApiKey : '',
+      };
+    } catch {
+      return {
+        presetId: 'claude',
+        presetApiKeys: {},
+        presetModelOverrides: {},
+        customProtocol: 'openai',
+        customBaseURL: '',
+        customModel: '',
+        customApiKey: '',
+      };
+    }
+  }
+
+  const savedModelConfig = loadModelConfig();
+
+  const [presetId, setPresetId] = useState<string>(savedModelConfig.presetId);
+
+  const [customProtocol, setCustomProtocol] = useState<ModelProtocol>(
+    savedModelConfig.customProtocol as ModelProtocol,
+  );
+  const [customBaseURL, setCustomBaseURL] = useState(
+    savedModelConfig.customBaseURL,
+  );
+  const [customModel, setCustomModel] = useState(savedModelConfig.customModel);
+  const [customApiKey, setCustomApiKey] = useState(
+    savedModelConfig.customApiKey ?? '',
+  );
   const [presetApiKeys, setPresetApiKeys] = useState<Record<string, string>>(
-    {},
+    savedModelConfig.presetApiKeys,
   );
   const [presetModelOverrides, setPresetModelOverrides] = useState<
     Record<string, string>
-  >({});
+  >(savedModelConfig.presetModelOverrides);
   const [modelPresets, setModelPresets] = useState<PublicModelPreset[]>(() => [
     ...PRESETS,
   ]);
   const [loadingModelPresets, setLoadingModelPresets] = useState(false);
   const [testingModel, setTestingModel] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
-  const [modelStatus, setModelStatus] = useState<{
-    type: 'success' | 'error';
-    message: string;
-  } | null>(null);
   const [remoteModels, setRemoteModels] = useState<string[]>([]);
   const [listening, setListening] = useState(false);
 
@@ -796,28 +1093,6 @@ export default function AgentPage(): ReactNode {
     getDesktopRuntimeSnapshot,
     getDesktopRuntimeServerSnapshot,
   );
-  const selectedProject =
-    projects.find((project) => project.id === selectedProjectId) ?? projects[0];
-  const checkpointChats = useMemo(
-    () => checkpointsToChats(checkpoints),
-    [checkpoints],
-  );
-  const persistedChats = useMemo(
-    () =>
-      sessionHistory
-        .filter((summary) => summary.id !== sessionId)
-        .map((summary) => ({
-          id: summary.id,
-          title: summary.title,
-          updatedAt: new Date(summary.updatedAt).toLocaleString(),
-          session: summary,
-        })),
-    [sessionHistory, sessionId],
-  );
-  const displayedChats =
-    checkpointChats.length > 0
-      ? checkpointChats.map((chat) => ({ ...chat, session: null }))
-      : persistedChats;
   const orderedEditProposals = useMemo(
     () => sortedEditProposals(editProposals),
     [editProposals],
@@ -971,6 +1246,32 @@ export default function AgentPage(): ReactNode {
     );
   }, [preferences]);
 
+  // Persist model configuration to localStorage so users don't have to
+  // re-enter API keys every time they open the app.
+  useEffect(() => {
+    const config: PersistedModelConfig = {
+      presetId,
+      presetApiKeys,
+      presetModelOverrides,
+      customProtocol,
+      customBaseURL,
+      customModel,
+      customApiKey,
+    };
+    window.localStorage.setItem(
+      MODEL_CONFIG_STORAGE_KEY,
+      JSON.stringify(config),
+    );
+  }, [
+    presetId,
+    presetApiKeys,
+    presetModelOverrides,
+    customProtocol,
+    customBaseURL,
+    customModel,
+    customApiKey,
+  ]);
+
   useEffect(() => {
     if (!desktopRuntime) return;
     let cancelled = false;
@@ -1010,9 +1311,8 @@ export default function AgentPage(): ReactNode {
         );
       } catch (err) {
         if (cancelled) return;
-        setModelStatus({
-          type: 'error',
-          message: err instanceof Error ? err.message : String(err),
+        toast.error(t.settings.modelListFailed, {
+          description: err instanceof Error ? err.message : String(err),
         });
       } finally {
         if (!cancelled) setLoadingModelPresets(false);
@@ -1022,7 +1322,7 @@ export default function AgentPage(): ReactNode {
     return () => {
       cancelled = true;
     };
-  }, [settingsOpen]);
+  }, [settingsOpen, t.settings.modelListFailed]);
 
   const resetConversation = useCallback(
     (seedItems: ConversationItem[] = []) => {
@@ -1036,7 +1336,17 @@ export default function AgentPage(): ReactNode {
     setLoadingSessionHistory(true);
     try {
       const data = await listSessions();
-      setSessionHistory(data.sessions);
+      setProjects(data.projects);
+      setStandaloneChats(data.chats);
+      setSelectedScope((current) => {
+        if (
+          current.type === 'project' &&
+          !data.projects.some((project) => project.id === current.projectId)
+        ) {
+          return { type: 'chats' };
+        }
+        return current;
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1302,7 +1612,10 @@ export default function AgentPage(): ReactNode {
     let cancelled = false;
     void listSessions()
       .then((data) => {
-        if (!cancelled) setSessionHistory(data.sessions);
+        if (!cancelled) {
+          setProjects(data.projects);
+          setStandaloneChats(data.chats);
+        }
       })
       .catch((err: unknown) => {
         if (!cancelled) {
@@ -1423,40 +1736,51 @@ export default function AgentPage(): ReactNode {
     customApiKey,
   ]);
 
-  const handleCreate = useCallback(async () => {
-    setError(null);
-    setConnecting(true);
-    try {
-      const id = await createSession({
-        permissionMode,
-        cwd: selectedProject?.path,
-        workspaceRoots: selectedProject ? [selectedProject.path] : undefined,
-        model: buildModelConfig(),
-        watchWorkspace: true,
-      });
-      resetConversation();
-      setCheckpoints([]);
-      setCurrentCheckpointId(null);
-      setSessionId(id);
-      sessionIdRef.current = id;
-      void refreshCheckpoints(id);
-      openStream(id);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setConnecting(false);
-    }
-  }, [
-    permissionMode,
-    selectedProject,
-    buildModelConfig,
-    refreshCheckpoints,
-    openStream,
-    resetConversation,
-  ]);
+  const handleCreate = useCallback(
+    async (scope: SelectedScope = selectedScope) => {
+      setError(null);
+      setConnecting(true);
+      setSelectedScope(scope);
+      try {
+        const result = await createSession({
+          permissionMode,
+          ...(scope.type === 'project' ? { projectId: scope.projectId } : {}),
+          model: buildModelConfig(),
+          watchWorkspace: true,
+        });
+        resetConversation();
+        setCheckpoints([]);
+        setCurrentCheckpointId(null);
+        setNeedsModelConfig(result.needsModelConfig);
+        setSessionId(result.id);
+        sessionIdRef.current = result.id;
+        void refreshCheckpoints(result.id);
+        openStream(result.id);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setConnecting(false);
+      }
+    },
+    [
+      permissionMode,
+      selectedScope,
+      buildModelConfig,
+      refreshCheckpoints,
+      openStream,
+      resetConversation,
+    ],
+  );
 
   const handleSend = useCallback(async () => {
     if (!sessionId || (!draft.trim() && attachments.length === 0)) return;
+    if (needsModelConfig) {
+      setError(
+        'No API key configured. Please set an API key for your model provider in Settings, then try again.',
+      );
+      setSettingsOpen(true);
+      return;
+    }
     const text = composeMessageWithAttachments(draft, attachments);
     const visibleText = composeVisibleMessageWithAttachments(
       draft,
@@ -1473,7 +1797,7 @@ export default function AgentPage(): ReactNode {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [sessionId, draft, attachments]);
+  }, [sessionId, draft, attachments, needsModelConfig]);
 
   const handleSetMode = useCallback(
     async (mode: PermissionMode) => {
@@ -1504,21 +1828,16 @@ export default function AgentPage(): ReactNode {
 
   const handleTestModel = useCallback(async () => {
     setTestingModel(true);
-    setModelStatus(null);
     try {
       const result = await testModelConfig(buildModelConfig());
-      setModelStatus({
-        type: 'success',
-        message: `${t.settings.connectionOk}: ${result.model}${
-          result.sample ? ` · ${result.sample}` : ''
-        }`,
+      toast.success(t.settings.connectionOk, {
+        description: result.sample
+          ? `${result.model} · ${result.sample}`
+          : result.model,
       });
     } catch (err) {
-      setModelStatus({
-        type: 'error',
-        message: `${
-          t.settings.connectionFailed
-        }: ${err instanceof Error ? err.message : String(err)}`,
+      toast.error(t.settings.connectionFailed, {
+        description: err instanceof Error ? err.message : String(err),
       });
     } finally {
       setTestingModel(false);
@@ -1527,26 +1846,22 @@ export default function AgentPage(): ReactNode {
 
   const handleFetchRemoteModels = useCallback(async () => {
     setFetchingModels(true);
-    setModelStatus(null);
     try {
       const models = await listRemoteModels(buildModelConfig());
       setRemoteModels(models);
-      setModelStatus({
-        type: 'success',
-        message: `${models.length} ${t.settings.chooseRemoteModel}`,
+      toast.success(t.settings.chooseRemoteModel, {
+        description: `${models.length} ${t.feedback.modelsFound}`,
       });
     } catch (err) {
-      setModelStatus({
-        type: 'error',
-        message: `${
-          t.settings.modelListFailed
-        }: ${err instanceof Error ? err.message : String(err)}`,
+      toast.error(t.settings.modelListFailed, {
+        description: err instanceof Error ? err.message : String(err),
       });
     } finally {
       setFetchingModels(false);
     }
   }, [
     buildModelConfig,
+    t.feedback.modelsFound,
     t.settings.chooseRemoteModel,
     t.settings.modelListFailed,
   ]);
@@ -1574,7 +1889,6 @@ export default function AgentPage(): ReactNode {
       if (!nextVisibleIds.includes(presetId) && nextVisibleIds.length > 0) {
         setPresetId(nextVisibleIds[0] ?? presetId);
         setRemoteModels([]);
-        setModelStatus(null);
       }
     },
     [modelPresetIds, preferences, presetId],
@@ -1773,44 +2087,10 @@ export default function AgentPage(): ReactNode {
     [sessionId],
   );
 
-  const handleRestoreCheckpoint = useCallback(
-    async (checkpoint: Checkpoint) => {
-      if (!sessionId) return;
-      setError(null);
-      setCheckpointAction({ id: checkpoint.id, type: 'restore' });
-      try {
-        const restored = await restoreCheckpoint(sessionId, checkpoint.id, {
-          model: buildModelConfig(),
-        });
-        resetConversation(
-          conversationItemsFromHistory(checkpoint.snapshot.history),
-        );
-        setPermissionMode(checkpoint.snapshot.permissionMode);
-        setCurrentCheckpointId(restored.checkpointId);
-        sessionIdRef.current = restored.id;
-        setSessionId(restored.id);
-        await refreshCheckpoints(restored.id);
-        openStream(restored.id);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setCheckpointAction(null);
-      }
-    },
-    [
-      sessionId,
-      buildModelConfig,
-      resetConversation,
-      refreshCheckpoints,
-      openStream,
-    ],
-  );
-
   const handleForkCheckpoint = useCallback(
     async (checkpoint: Checkpoint) => {
       if (!sessionId) return;
       setError(null);
-      setCheckpointAction({ id: checkpoint.id, type: 'fork' });
       try {
         const forked = await forkCheckpoint(sessionId, checkpoint.id, {
           model: buildModelConfig(),
@@ -1825,8 +2105,6 @@ export default function AgentPage(): ReactNode {
         openStream(forked.id);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setCheckpointAction(null);
       }
     },
     [
@@ -1842,6 +2120,7 @@ export default function AgentPage(): ReactNode {
     async (summary: SessionSummary) => {
       setError(null);
       setRestoringSessionId(summary.id);
+      setSelectedScope(selectedScopeForSession(summary));
       try {
         if (summary.checkpointId) {
           const data = await listCheckpoints(summary.id);
@@ -1861,6 +2140,7 @@ export default function AgentPage(): ReactNode {
             );
             setPermissionMode(checkpoint.snapshot.permissionMode);
             setCurrentCheckpointId(restored.checkpointId);
+            setNeedsModelConfig(restored.needsModelConfig);
             setCheckpoints(data.checkpoints);
             sessionIdRef.current = restored.id;
             setSessionId(restored.id);
@@ -1875,6 +2155,7 @@ export default function AgentPage(): ReactNode {
         });
         sessionIdRef.current = restored.id;
         setSessionId(restored.id);
+        setNeedsModelConfig(restored.needsModelConfig);
         resetConversation();
         await refreshCheckpoints(restored.id);
         openStream(restored.id);
@@ -1916,19 +2197,113 @@ export default function AgentPage(): ReactNode {
       if (path) {
         const existing = projects.find((project) => project.path === path);
         if (existing) {
-          setSelectedProjectId(existing.id);
+          setSelectedScope({ type: 'project', projectId: existing.id });
           return;
         }
-        const project = createWorkspaceProject(path, projects.length);
-        setProjects((prev) => [...prev, project]);
-        setSelectedProjectId(project.id);
+        const project = await importProject(path);
+        await refreshSessionHistory();
+        setSelectedScope({ type: 'project', projectId: project.id });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setPickingDirectory(false);
     }
-  }, [projects]);
+  }, [projects, refreshSessionHistory]);
+
+  const handlePinHistorySession = useCallback(
+    async (summary: SessionSummary) => {
+      setHistoryActionId(`pin:${summary.id}`);
+      try {
+        await pinSession(summary.id, !summary.pinned);
+        await refreshSessionHistory();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setHistoryActionId(null);
+      }
+    },
+    [refreshSessionHistory],
+  );
+
+  const resetActiveSession = useCallback(() => {
+    closeStream();
+    setSessionId(null);
+    sessionIdRef.current = null;
+    resetConversation();
+    setCheckpoints([]);
+    setCurrentCheckpointId(null);
+  }, [closeStream, resetConversation]);
+
+  const handleDeleteHistorySession = useCallback(
+    async (summary: SessionSummary) => {
+      setHistoryActionId(`delete:${summary.id}`);
+      try {
+        await deleteSession(summary.id);
+        if (sessionId === summary.id) {
+          resetActiveSession();
+        }
+        await refreshSessionHistory();
+        toast.success(t.feedback.chatDeleted, {
+          description: summary.title,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        toast.error(t.feedback.chatDeleteFailed, {
+          description: message,
+        });
+      } finally {
+        setHistoryActionId(null);
+      }
+    },
+    [
+      refreshSessionHistory,
+      resetActiveSession,
+      sessionId,
+      t.feedback.chatDeleteFailed,
+      t.feedback.chatDeleted,
+    ],
+  );
+
+  const handleDeleteProject = useCallback(
+    async (project: WorkspaceProject) => {
+      setHistoryActionId(`delete-project:${project.id}`);
+      const clearsActive =
+        sessionId !== null &&
+        project.chats.some((chat) => chat.id === sessionId);
+      try {
+        await deleteProjectRequest(project.id);
+        if (clearsActive) {
+          resetActiveSession();
+        }
+        setSelectedScope((current) =>
+          current.type === 'project' && current.projectId === project.id
+            ? { type: 'chats' }
+            : current,
+        );
+        await refreshSessionHistory();
+        toast.success(t.feedback.folderDeleted, {
+          description: project.name,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        toast.error(t.feedback.folderDeleteFailed, {
+          description: message,
+        });
+      } finally {
+        setHistoryActionId(null);
+      }
+    },
+    [
+      refreshSessionHistory,
+      resetActiveSession,
+      sessionId,
+      t.feedback.folderDeleteFailed,
+      t.feedback.folderDeleted,
+    ],
+  );
 
   const handlePickUploadFile = useCallback(async () => {
     setPickingFile(true);
@@ -1986,7 +2361,7 @@ export default function AgentPage(): ReactNode {
                     sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'
                   }
                   data-tauri-drag-region="false"
-                  className="text-sidebar-foreground/70 hover:bg-sidebar-accent/45 hover:text-sidebar-foreground [&_svg]:size-4"
+                  className="text-sidebar-foreground/70 hover:bg-sidebar-accent/45 hover:text-sidebar-foreground [&_svg]:size-3.5"
                 >
                   <PanelLeft />
                 </Button>
@@ -2003,7 +2378,7 @@ export default function AgentPage(): ReactNode {
                   onClick={handleNavigateBack}
                   aria-label="Back"
                   data-tauri-drag-region="false"
-                  className="text-sidebar-foreground/55 hover:bg-sidebar-accent/45 hover:text-sidebar-foreground [&_svg]:size-4"
+                  className="text-sidebar-foreground/55 hover:bg-sidebar-accent/45 hover:text-sidebar-foreground [&_svg]:size-3.5"
                 >
                   <ArrowLeft />
                 </Button>
@@ -2018,7 +2393,7 @@ export default function AgentPage(): ReactNode {
                   onClick={handleNavigateForward}
                   aria-label="Forward"
                   data-tauri-drag-region="false"
-                  className="text-sidebar-foreground/35 hover:bg-sidebar-accent/45 hover:text-sidebar-foreground [&_svg]:size-4"
+                  className="text-sidebar-foreground/35 hover:bg-sidebar-accent/45 hover:text-sidebar-foreground [&_svg]:size-3.5"
                 >
                   <ArrowRight />
                 </Button>
@@ -2071,7 +2446,7 @@ export default function AgentPage(): ReactNode {
                             sidebarCollapsed && 'justify-center px-2',
                           )}
                         >
-                          <PlusCircle />
+                          <Plus />
                           <span className={cn(sidebarCollapsed && 'hidden')}>
                             {sessionId ? t.nav.newChat : t.nav.createChat}
                           </span>
@@ -2139,36 +2514,178 @@ export default function AgentPage(): ReactNode {
                     aria-label={t.nav.importDirectory}
                     className={cn(
                       sidebarCollapsed && 'hidden',
-                      'opacity-0 group-hover:opacity-100 transition-opacity hover:bg-transparent text-muted-foreground [&>svg]:size-3.5',
+                      'opacity-0 group-hover:opacity-100 transition-opacity hover:bg-transparent text-muted-foreground [&>svg]:size-3',
                     )}
                     onClick={() => void handlePickWorkspaceDirectory()}
                     disabled={pickingDirectory}
                   >
-                    <PlusCircle />
+                    <Plus />
                   </SidebarGroupAction>
                   <SidebarGroupContent>
                     <SidebarMenu>
                       {projects.map((project) => (
-                        <SidebarMenuItem key={project.id}>
-                          <SidebarMenuButton
-                            onClick={() => setSelectedProjectId(project.id)}
-                            tooltip={
-                              project.id === 'local'
-                                ? t.nav.localProject
-                                : project.name
-                            }
-                            className={cn(
-                              sidebarCollapsed && 'justify-center px-2',
-                            )}
-                          >
-                            <FolderRoot />
-                            <span className={cn(sidebarCollapsed && 'hidden')}>
-                              {project.id === 'local'
-                                ? t.nav.localProject
-                                : project.name}
-                            </span>
-                          </SidebarMenuButton>
-                        </SidebarMenuItem>
+                        <div key={project.id} className="space-y-1">
+                          <SidebarMenuItem>
+                            <div className="flex items-center gap-1">
+                              <SidebarMenuButton
+                                onClick={() =>
+                                  setSelectedScope({
+                                    type: 'project',
+                                    projectId: project.id,
+                                  })
+                                }
+                                tooltip={project.name}
+                                isActive={
+                                  selectedScope.type === 'project' &&
+                                  selectedScope.projectId === project.id
+                                }
+                                className={cn(
+                                  'min-w-0 flex-1',
+                                  sidebarCollapsed && 'justify-center px-2',
+                                )}
+                              >
+                                <Folder />
+                                <span
+                                  className={cn(sidebarCollapsed && 'hidden')}
+                                >
+                                  {project.name}
+                                </span>
+                              </SidebarMenuButton>
+                              {!sidebarCollapsed ? (
+                                <>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    className="size-7 shrink-0 text-muted-foreground [&_svg]:size-3"
+                                    disabled={connecting}
+                                    onClick={() =>
+                                      void handleCreate({
+                                        type: 'project',
+                                        projectId: project.id,
+                                      })
+                                    }
+                                    aria-label={`Create chat in ${project.name}`}
+                                  >
+                                    <Plus />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    className="size-7 shrink-0 text-muted-foreground [&_svg]:size-3"
+                                    disabled={
+                                      historyActionId ===
+                                      `delete-project:${project.id}`
+                                    }
+                                    onClick={() =>
+                                      void handleDeleteProject(project)
+                                    }
+                                    aria-label={`Delete project ${project.name}`}
+                                  >
+                                    <Trash2 />
+                                  </Button>
+                                </>
+                              ) : null}
+                            </div>
+                          </SidebarMenuItem>
+                          {!sidebarCollapsed
+                            ? project.chats
+                                .slice(
+                                  0,
+                                  expandedProjectIds.has(project.id)
+                                    ? project.chats.length
+                                    : 6,
+                                )
+                                .map((chat) => (
+                                  <SidebarMenuItem
+                                    key={chat.id}
+                                    className="pl-4"
+                                  >
+                                    <div className="flex items-center gap-1">
+                                      <SidebarMenuButton
+                                        disabled={
+                                          loadingSessionHistory ||
+                                          restoringSessionId === chat.id
+                                        }
+                                        onClick={() =>
+                                          void handleRestorePersistedSession(
+                                            chat,
+                                          )
+                                        }
+                                        tooltip={chat.title}
+                                        className="min-w-0 flex-1"
+                                      >
+                                        <MessageSquare />
+                                        <div className="min-w-0 flex-1">
+                                          <p className="truncate text-xs font-medium">
+                                            {chat.title}
+                                          </p>
+                                          <p className="truncate text-xs text-muted-foreground">
+                                            {formatHistoryTime(chat.updatedAt)}
+                                          </p>
+                                        </div>
+                                      </SidebarMenuButton>
+                                      <Button
+                                        variant="ghost"
+                                        size="icon-sm"
+                                        className="size-7 shrink-0 text-muted-foreground [&_svg]:size-3"
+                                        disabled={
+                                          historyActionId === `pin:${chat.id}`
+                                        }
+                                        onClick={() =>
+                                          void handlePinHistorySession(chat)
+                                        }
+                                        aria-label={
+                                          chat.pinned
+                                            ? 'Unpin chat'
+                                            : 'Pin chat'
+                                        }
+                                      >
+                                        {chat.pinned ? <PinOff /> : <Pin />}
+                                      </Button>
+                                      <Button
+                                        variant="ghost"
+                                        size="icon-sm"
+                                        className="size-7 shrink-0 text-muted-foreground [&_svg]:size-3"
+                                        disabled={
+                                          historyActionId ===
+                                          `delete:${chat.id}`
+                                        }
+                                        onClick={() =>
+                                          void handleDeleteHistorySession(chat)
+                                        }
+                                        aria-label="Delete chat"
+                                      >
+                                        <Trash2 />
+                                      </Button>
+                                    </div>
+                                  </SidebarMenuItem>
+                                ))
+                            : null}
+                          {!sidebarCollapsed && project.chats.length > 6 ? (
+                            <SidebarMenuItem className="pl-4">
+                              <Button
+                                variant="ghost"
+                                size="xs"
+                                className="h-7 px-2 text-xs text-muted-foreground"
+                                onClick={() =>
+                                  setExpandedProjectIds((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(project.id)) {
+                                      next.delete(project.id);
+                                    } else {
+                                      next.add(project.id);
+                                    }
+                                    return next;
+                                  })
+                                }
+                              >
+                                {expandedProjectIds.has(project.id)
+                                  ? 'Show less'
+                                  : 'Show more'}
+                              </Button>
+                            </SidebarMenuItem>
+                          ) : null}
+                        </div>
                       ))}
                     </SidebarMenu>
                   </SidebarGroupContent>
@@ -2195,67 +2712,103 @@ export default function AgentPage(): ReactNode {
                     aria-label={t.nav.createDefaultChat}
                     className={cn(
                       sidebarCollapsed && 'hidden',
-                      'opacity-0 group-hover:opacity-100 transition-opacity hover:bg-transparent text-muted-foreground [&>svg]:size-3.5',
+                      'opacity-0 group-hover:opacity-100 transition-opacity hover:bg-transparent text-muted-foreground [&>svg]:size-3',
                     )}
-                    onClick={() => void handleCreate()}
+                    onClick={() => void handleCreate({ type: 'chats' })}
+                    disabled={connecting}
                   >
-                    <PlusCircle />
+                    <Plus />
                   </SidebarGroupAction>
                   <SidebarGroupContent>
-                    {displayedChats.length === 0 && !sidebarCollapsed ? (
+                    {!sidebarCollapsed ? (
+                      <SidebarMenu className="mb-1">
+                        <SidebarMenuItem>
+                          <SidebarMenuButton
+                            onClick={() => setSelectedScope({ type: 'chats' })}
+                            isActive={selectedScope.type === 'chats'}
+                            tooltip={t.nav.chats}
+                          >
+                            <MessageSquare />
+                            <span>{t.nav.chats}</span>
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                      </SidebarMenu>
+                    ) : null}
+                    {standaloneChats.length === 0 && !sidebarCollapsed ? (
                       <p className="px-3 text-xs text-muted-foreground">
-                        {sessionId
-                          ? loadingCheckpoints
-                            ? t.nav.loadingCheckpoints
-                            : t.nav.noCheckpoints
-                          : loadingSessionHistory
-                            ? t.nav.loadingCheckpoints
-                            : t.nav.createChatToStart}
+                        {loadingSessionHistory
+                          ? t.nav.loadingCheckpoints
+                          : t.nav.createChatToStart}
                       </p>
                     ) : null}
                     <SidebarMenu>
-                      {displayedChats.map((chat) => (
+                      {standaloneChats.map((chat) => (
                         <SidebarMenuItem key={chat.id}>
-                          <SidebarMenuButton
-                            disabled={
-                              loadingCheckpoints ||
-                              loadingSessionHistory ||
-                              checkpointAction?.id === chat.id ||
-                              restoringSessionId === chat.id
-                            }
-                            onClick={() => {
-                              if (chat.session) {
-                                void handleRestorePersistedSession(
-                                  chat.session,
-                                );
-                                return;
+                          <div className="flex items-center gap-1">
+                            <SidebarMenuButton
+                              disabled={
+                                loadingSessionHistory ||
+                                restoringSessionId === chat.id
                               }
-                              const checkpoint = checkpoints.find(
-                                (item) => item.id === chat.id,
-                              );
-                              if (checkpoint)
-                                void handleRestoreCheckpoint(checkpoint);
-                            }}
-                            tooltip={chat.title}
-                            className={cn(
-                              sidebarCollapsed && 'justify-center px-2',
-                            )}
-                          >
-                            <MessageCirclePlus />
-                            <div
+                              onClick={() =>
+                                void handleRestorePersistedSession(chat)
+                              }
+                              tooltip={chat.title}
                               className={cn(
                                 'min-w-0 flex-1',
-                                sidebarCollapsed && 'hidden',
+                                sidebarCollapsed && 'justify-center px-2',
                               )}
                             >
-                              <p className="truncate text-xs font-medium">
-                                {chat.title}
-                              </p>
-                              <p className="truncate text-xs text-muted-foreground">
-                                {chat.updatedAt}
-                              </p>
-                            </div>
-                          </SidebarMenuButton>
+                              <MessageSquare />
+                              <div
+                                className={cn(
+                                  'min-w-0 flex-1',
+                                  sidebarCollapsed && 'hidden',
+                                )}
+                              >
+                                <p className="truncate text-xs font-medium">
+                                  {chat.title}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  {formatHistoryTime(chat.updatedAt)}
+                                </p>
+                              </div>
+                            </SidebarMenuButton>
+                            {!sidebarCollapsed ? (
+                              <>
+                                <Button
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  className="size-7 shrink-0 text-muted-foreground [&_svg]:size-3"
+                                  disabled={
+                                    historyActionId === `pin:${chat.id}`
+                                  }
+                                  onClick={() =>
+                                    void handlePinHistorySession(chat)
+                                  }
+                                  aria-label={
+                                    chat.pinned ? 'Unpin chat' : 'Pin chat'
+                                  }
+                                >
+                                  {chat.pinned ? <PinOff /> : <Pin />}
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  className="size-7 shrink-0 text-muted-foreground [&_svg]:size-3"
+                                  disabled={
+                                    historyActionId === `delete:${chat.id}`
+                                  }
+                                  onClick={() =>
+                                    void handleDeleteHistorySession(chat)
+                                  }
+                                  aria-label="Delete chat"
+                                >
+                                  <Trash2 />
+                                </Button>
+                              </>
+                            ) : null}
+                          </div>
                         </SidebarMenuItem>
                       ))}
                     </SidebarMenu>
@@ -2372,8 +2925,29 @@ export default function AgentPage(): ReactNode {
               </div>
 
               <div className="flex min-h-0 flex-1 flex-col px-5 pb-5 sm:px-6">
+                {needsModelConfig ? (
+                  <Alert className="mb-4 border-red-500/50 bg-red-500/10">
+                    <AlertTitle className="text-red-600 dark:text-red-400">
+                      No API key configured
+                    </AlertTitle>
+                    <AlertDescription className="flex items-center justify-between gap-3">
+                      <span className="text-red-600/80 dark:text-red-400/80">
+                        Set an API key for your model provider in Settings to start chatting.
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        onClick={() => setSettingsOpen(true)}
+                        className="shrink-0 border-red-500/40 text-red-600 hover:bg-red-500/10 dark:text-red-400"
+                      >
+                        Open Settings
+                      </Button>
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
+
                 {displayError ? (
-                  <Alert className="mb-4">
+                  <Alert className="mb-4 border-red-500/40">
                     <AlertTitle>Connection issue</AlertTitle>
                     <AlertDescription>{displayError}</AlertDescription>
                   </Alert>
@@ -2391,33 +2965,6 @@ export default function AgentPage(): ReactNode {
                       >
                         Dismiss
                       </Button>
-                    </AlertDescription>
-                  </Alert>
-                ) : null}
-
-                {approval ? (
-                  <Alert className="mb-4 border-amber-500/40 bg-amber-500/10">
-                    <AlertTitle>Approval required · {approval.name}</AlertTitle>
-                    <AlertDescription>
-                      <div className="mt-2 space-y-3">
-                        <p>{approval.message}</p>
-                        <pre className="max-h-40 overflow-auto rounded-2xl border border-border/60 bg-background/70 p-3 text-xs">
-                          {JSON.stringify(approval.input, null, 2)}
-                        </pre>
-                        <div className="flex justify-end gap-2">
-                          <Button
-                            variant="destructive"
-                            onClick={() => void handleApprovalDecision(false)}
-                          >
-                            Deny
-                          </Button>
-                          <Button
-                            onClick={() => void handleApprovalDecision(true)}
-                          >
-                            Approve
-                          </Button>
-                        </div>
-                      </div>
                     </AlertDescription>
                   </Alert>
                 ) : null}
@@ -2448,7 +2995,7 @@ export default function AgentPage(): ReactNode {
                                   <Empty className="min-h-[420px] border-border/60 bg-background/40">
                                     <EmptyHeader>
                                       <EmptyMedia variant="icon">
-                                        <MessageCirclePlus />
+                                        <MessageSquare />
                                       </EmptyMedia>
                                       <EmptyTitle>{t.empty.title}</EmptyTitle>
                                       <EmptyDescription>
@@ -2464,8 +3011,8 @@ export default function AgentPage(): ReactNode {
                                     <MessageScrollerItem key={`u-${index}`}>
                                       <Message align="end">
                                         <MessageContent>
-                                          <div className="rounded-3xl border border-border/60 bg-primary/8 px-4 py-3">
-                                            <p className="whitespace-pre-wrap text-sm leading-6">
+                                          <div className="ml-auto max-w-[75%] rounded-3xl border border-border/60 bg-primary/8 px-4 py-3">
+                                            <p className="whitespace-pre-wrap break-words text-sm leading-6">
                                               {item.text}
                                             </p>
                                           </div>
@@ -2485,14 +3032,7 @@ export default function AgentPage(): ReactNode {
                                         <MessageContent>
                                           <div className="rounded-3xl border border-border/60 bg-background px-4 py-3">
                                             {item.thinking ? (
-                                              <details className="mb-3 rounded-2xl border border-border/60 bg-muted/30 px-3 py-2">
-                                                <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
-                                                  Thinking
-                                                </summary>
-                                                <p className="mt-2 whitespace-pre-wrap text-xs leading-6 text-muted-foreground">
-                                                  {item.thinking}
-                                                </p>
-                                              </details>
+                                              <ThinkingBlock thinking={item.thinking} />
                                             ) : null}
                                             <p className="whitespace-pre-wrap text-sm leading-6">
                                               {item.text || '...'}
@@ -2510,33 +3050,7 @@ export default function AgentPage(): ReactNode {
                                     </MessageScrollerItem>
                                   ) : (
                                     <MessageScrollerItem key={item.toolUseId}>
-                                      <div className="rounded-3xl border border-border/60 bg-muted/20 px-4 py-3">
-                                        <p className="text-xs font-medium text-muted-foreground">
-                                          Tool call · {item.name}
-                                          {formatToolSourceLabel(item.source)
-                                            ? ` · ${formatToolSourceLabel(item.source)}`
-                                            : ''}
-                                          {item.result
-                                            ? item.result.isError
-                                              ? ' · error'
-                                              : ' · done'
-                                            : ' · running'}
-                                        </p>
-                                        <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs text-foreground/80">
-                                          {JSON.stringify(item.input, null, 2)}
-                                        </pre>
-                                        {item.result ? (
-                                          <pre
-                                            className={cn(
-                                              'mt-3 overflow-x-auto whitespace-pre-wrap break-words rounded-2xl border border-border/60 bg-background/70 p-3 text-xs',
-                                              item.result.isError &&
-                                                'text-destructive',
-                                            )}
-                                          >
-                                            {item.result.content}
-                                          </pre>
-                                        ) : null}
-                                      </div>
+                                      <ToolInvocationItem item={item} />
                                     </MessageScrollerItem>
                                   ),
                                 )
@@ -2547,6 +3061,15 @@ export default function AgentPage(): ReactNode {
                         </MessageScroller>
                       </MessageScrollerProvider>
                     </div>
+
+                    {approval ? (
+                      <ApprovalRequestBar
+                        approval={approval}
+                        onDecision={(approved) =>
+                          void handleApprovalDecision(approved)
+                        }
+                      />
+                    ) : null}
 
                     <div className="rounded-3xl border border-border/60 bg-card/80 pt-1.5 pb-3 shadow-sm">
                       <Textarea
@@ -2625,7 +3148,7 @@ export default function AgentPage(): ReactNode {
                                     void handlePickWorkspaceDirectory()
                                   }
                                 >
-                                  <FolderRoot />
+                                  <Folder />
                                   {pickingDirectory
                                     ? t.composer.openingFolder
                                     : t.composer.openFolder}
@@ -2752,7 +3275,6 @@ export default function AgentPage(): ReactNode {
                                     onSelect={() => {
                                       setPresetId(item.id);
                                       setRemoteModels([]);
-                                      setModelStatus(null);
                                     }}
                                   >
                                     {item.label}
@@ -3023,7 +3545,6 @@ export default function AgentPage(): ReactNode {
                             className="min-w-0 flex-1 text-left"
                             onClick={() => {
                               setPresetId(item.id);
-                              setModelStatus(null);
                               setRemoteModels([]);
                             }}
                           >
@@ -3185,23 +3706,6 @@ export default function AgentPage(): ReactNode {
                     );
                   })}
 
-                  {modelStatus ? (
-                    <div
-                      className={cn(
-                        'flex items-start gap-3 rounded-3xl border p-4 text-sm',
-                        modelStatus.type === 'success'
-                          ? 'border-primary/30 bg-primary/8'
-                          : 'border-destructive/40 bg-destructive/10 text-destructive',
-                      )}
-                    >
-                      {modelStatus.type === 'success' ? (
-                        <CheckCircle2 />
-                      ) : (
-                        <AlertCircle />
-                      )}
-                      <span className="break-words">{modelStatus.message}</span>
-                    </div>
-                  ) : null}
                 </div>
               ) : settingsPluginKind ? (
                 <div className="mt-8 flex max-w-5xl flex-col gap-5">

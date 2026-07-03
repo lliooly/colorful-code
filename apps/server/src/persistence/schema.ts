@@ -1,4 +1,10 @@
-import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import {
+  index,
+  integer,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from 'drizzle-orm/sqlite-core';
 
 // Persistence schema. Two tables, intentionally un-normalized: the session row
 // stores the full `SessionSnapshot` as a JSON blob (one row per session,
@@ -52,6 +58,30 @@ export const audit = sqliteTable(
   (table) => [index('audit_session_id_idx').on(table.sessionId)],
 );
 
+export const projects = sqliteTable(
+  'projects',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    path: text('path').notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [uniqueIndex('projects_path_idx').on(table.path)],
+);
+
+export const sessionMetadata = sqliteTable(
+  'session_metadata',
+  {
+    sessionId: text('session_id').primaryKey(),
+    projectId: text('project_id'),
+    pinned: integer('pinned').notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [index('session_metadata_project_id_idx').on(table.projectId)],
+);
+
 export const installedPlugins = sqliteTable('installed_plugins', {
   id: text('id').primaryKey(),
   kind: text('kind').notNull(),
@@ -68,6 +98,8 @@ export const installedPlugins = sqliteTable('installed_plugins', {
 export type SessionRow = typeof sessions.$inferSelect;
 export type AuditRow = typeof audit.$inferSelect;
 export type CheckpointRow = typeof checkpoints.$inferSelect;
+export type ProjectRow = typeof projects.$inferSelect;
+export type SessionMetadataRow = typeof sessionMetadata.$inferSelect;
 export type InstalledPluginRow = typeof installedPlugins.$inferSelect;
 
 // Idempotent DDL run on init. We do not pull in drizzle-kit / migration tooling
@@ -104,6 +136,22 @@ export const SCHEMA_DDL = `
   );
   CREATE INDEX IF NOT EXISTS checkpoints_session_id_idx ON checkpoints (session_id);
   CREATE INDEX IF NOT EXISTS checkpoints_parent_checkpoint_id_idx ON checkpoints (parent_checkpoint_id);
+  CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    path TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS projects_path_idx ON projects (path);
+  CREATE TABLE IF NOT EXISTS session_metadata (
+    session_id TEXT PRIMARY KEY,
+    project_id TEXT,
+    pinned INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS session_metadata_project_id_idx ON session_metadata (project_id);
   CREATE TABLE IF NOT EXISTS installed_plugins (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL,

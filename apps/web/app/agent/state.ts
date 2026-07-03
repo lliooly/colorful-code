@@ -8,6 +8,7 @@ import type {
   McpServerStatus,
   MessageContent,
   RunStatus,
+  SessionSummary,
   SessionEvent,
   ToolInvocationSource,
 } from './types';
@@ -37,14 +38,21 @@ export type ConversationItem =
 export type ChatThread = {
   id: string;
   title: string;
-  updatedAt: string;
+  updatedAt: number;
+  pinned?: boolean;
 };
+
+export type SelectedScope =
+  | { type: 'chats' }
+  | { type: 'project'; projectId: string };
 
 export type WorkspaceProject = {
   id: string;
   name: string;
   path: string;
-  chats: ChatThread[];
+  createdAt?: number;
+  updatedAt?: number;
+  chats: SessionSummary[];
 };
 
 export type LocalFileAttachment = {
@@ -128,6 +136,24 @@ export function createWorkspaceProject(
   };
 }
 
+export function hasGroupedHistory(
+  projects: WorkspaceProject[],
+  standaloneChats: SessionSummary[],
+): boolean {
+  return (
+    standaloneChats.length > 0 ||
+    projects.some((project) => project.chats.length > 0)
+  );
+}
+
+export function selectedScopeForSession(
+  summary: Pick<SessionSummary, 'projectId'>,
+): SelectedScope {
+  return summary.projectId
+    ? { type: 'project', projectId: summary.projectId }
+    : { type: 'chats' };
+}
+
 export function composeMessageWithAttachments(
   text: string,
   attachments: LocalFileAttachment[],
@@ -146,8 +172,7 @@ export function composeMessageWithAttachments(
     ...attachmentLines,
     '',
     'Use the file paths above when you need to inspect the uploaded files.',
-  ]
-    .join('\n');
+  ].join('\n');
 }
 
 export function composeVisibleMessageWithAttachments(
@@ -182,7 +207,10 @@ export function applyAgentEvent(
     case 'run_status':
       return { ...next, runStatus: event.status };
     case 'message_delta':
-      return { ...next, items: appendDelta(next.items, event.runId, event.text) };
+      return {
+        ...next,
+        items: appendDelta(next.items, event.runId, event.text),
+      };
     case 'thinking_delta':
       return {
         ...next,
@@ -257,7 +285,9 @@ export function applyAgentEvent(
             ...(event.toolUseId ? { toolUseId: event.toolUseId } : {}),
             patches: event.patches,
             status: editStatusFromEvent(event.type),
-            ...('reason' in event && event.reason ? { reason: event.reason } : {}),
+            ...('reason' in event && event.reason
+              ? { reason: event.reason }
+              : {}),
           },
           seq,
         ),
@@ -311,10 +341,7 @@ export function appendThinking(
     last.runId === runId &&
     !last.finalized
   ) {
-    return [
-      ...items.slice(0, -1),
-      { ...last, thinking: last.thinking + text },
-    ];
+    return [...items.slice(0, -1), { ...last, thinking: last.thinking + text }];
   }
   return [
     ...items,
@@ -450,7 +477,10 @@ export function formatCheckpointTime(value: number): string {
   return date.toLocaleString();
 }
 
-export function patchCounts(patch: FilePatch): { added: number; removed: number } {
+export function patchCounts(patch: FilePatch): {
+  added: number;
+  removed: number;
+} {
   return patch.hunks.reduce(
     (acc, hunk) => ({
       added:

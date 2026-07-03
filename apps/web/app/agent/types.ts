@@ -170,6 +170,17 @@ export type ListCheckpointsResponse = {
 export type CheckpointSessionResponse = {
   id: string;
   checkpointId: string;
+  needsModelConfig: boolean;
+};
+
+export type SessionCreateResponse = {
+  id: string;
+  needsModelConfig: boolean;
+};
+
+export type SessionRestoreResponse = {
+  id: string;
+  needsModelConfig: boolean;
 };
 
 export type SessionSummary = {
@@ -178,10 +189,25 @@ export type SessionSummary = {
   updatedAt: number;
   cwd?: string;
   checkpointId?: string;
+  pinned: boolean;
+  projectId?: string;
+};
+
+export type ProjectSummary = {
+  id: string;
+  name: string;
+  path: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type ProjectWithChats = ProjectSummary & {
+  chats: SessionSummary[];
 };
 
 export type ListSessionsResponse = {
-  sessions: SessionSummary[];
+  projects: ProjectWithChats[];
+  chats: SessionSummary[];
 };
 
 export type ToolInvocationSource =
@@ -324,6 +350,7 @@ export type SessionEvent =
       content: string;
       isError?: boolean;
       source?: ToolInvocationSource;
+      metadata?: JsonObject;
     }
   | {
       type: 'approval_required';
@@ -388,7 +415,7 @@ export type SessionEvent =
       tokensAfter: number;
       entriesSummarized: number;
     }
-  | { type: 'error'; runId: string; message: string };
+  | { type: 'error'; runId?: string; message: string };
 
 export type SessionEventType = SessionEvent['type'];
 

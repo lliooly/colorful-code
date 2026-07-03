@@ -114,6 +114,7 @@ export type SessionEvent =
       content: string;
       isError?: boolean;
       source?: ToolInvocationSource;
+      metadata?: JsonObject;
     }
   // Correlated approval prompt. The run parks until the client replies with an
   // `approval_response` carrying the same `requestId`.

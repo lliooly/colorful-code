@@ -2,6 +2,12 @@ import { strict as assert } from 'node:assert';
 import { afterEach, test } from 'node:test';
 import {
   appendVoiceAudio,
+  clearSessions,
+  createSession,
+  deleteProject,
+  deleteSession,
+  importProject,
+  pinSession,
   startVoiceTranscription,
   stopVoiceTranscription,
 } from '../app/agent/api';
@@ -62,6 +68,85 @@ test('voice transcription API posts start, audio, and stop requests to session e
         url: 'http://127.0.0.1:3001/sessions/session%201/voice/stop',
         method: 'POST',
         body: {},
+      },
+    ],
+  );
+});
+
+test('project and history API helpers call the grouped history endpoints', async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init });
+    if (String(url).endsWith('/sessions')) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ id: 'session-project', needsModelConfig: false }),
+          {
+            status: 201,
+          },
+        ),
+      );
+    }
+    if (String(url).endsWith('/projects')) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ id: 'project-1' }), { status: 201 }),
+      );
+    }
+    return Promise.resolve(new Response('{}', { status: 204 }));
+  }) as typeof fetch;
+
+  assert.deepEqual(
+    await createSession({ projectId: 'project-1', permissionMode: 'default' }),
+    { id: 'session-project', needsModelConfig: false },
+  );
+  await importProject('/Users/example/workspace');
+  await deleteProject('project-1');
+  await pinSession('session-project', true);
+  await deleteSession('session-project');
+  await clearSessions({ scope: 'standalone' });
+  await clearSessions({ projectId: 'project-1' });
+
+  assert.deepEqual(
+    calls.map((call) => ({
+      url: call.url,
+      method: call.init?.method ?? 'GET',
+      body: call.init?.body ? JSON.parse(String(call.init.body)) : undefined,
+    })),
+    [
+      {
+        url: 'http://127.0.0.1:3001/sessions',
+        method: 'POST',
+        body: { projectId: 'project-1', permissionMode: 'default' },
+      },
+      {
+        url: 'http://127.0.0.1:3001/projects',
+        method: 'POST',
+        body: { path: '/Users/example/workspace' },
+      },
+      {
+        url: 'http://127.0.0.1:3001/projects/project-1',
+        method: 'DELETE',
+        body: undefined,
+      },
+      {
+        url: 'http://127.0.0.1:3001/sessions/session-project',
+        method: 'PATCH',
+        body: { pinned: true },
+      },
+      {
+        url: 'http://127.0.0.1:3001/sessions/session-project',
+        method: 'DELETE',
+        body: undefined,
+      },
+      {
+        url: 'http://127.0.0.1:3001/sessions?scope=standalone',
+        method: 'DELETE',
+        body: undefined,
+      },
+      {
+        url: 'http://127.0.0.1:3001/sessions?projectId=project-1',
+        method: 'DELETE',
+        body: undefined,
       },
     ],
   );

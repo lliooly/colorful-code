@@ -478,7 +478,52 @@ export class Session {
       context: this.context,
       history: this.history,
       signal: this.abortController.signal,
-      emit: (event) => this.emit(event),
+      emit: (event) => {
+        // Auto-create edit proposals from tool-result patches so the diff
+        // panel shows +/- info for Write / Edit in addition to ProposeEdit.
+        // Write and Edit are already applied by the time the result arrives,
+        // so they are emitted as edit_applied rather than edit_proposed.
+        // Skip if the tool already created a proposal (ProposeEdit sets
+        // metadata.proposalId).
+        if (
+          event.type === 'tool_result' &&
+          !event.isError &&
+          event.metadata?.patches &&
+          Array.isArray(event.metadata.patches) &&
+          event.metadata.patches.length > 0 &&
+          !event.metadata.proposalId
+        ) {
+          const patches = event.metadata.patches as unknown as import('../core/tool.js').FilePatch[];
+          this.editProposalCounter += 1;
+          const stored: EditProposal = {
+            id: this.id + '-edit-' + String(this.editProposalCounter),
+            toolUseId: event.toolUseId,
+            createdAt: Date.now(),
+            patches,
+            files: [],
+            status: 'applied',
+          };
+          if (!this.context.editProposals) {
+            this.context.editProposals = new Map();
+          }
+          this.context.editProposals.set(stored.id, stored);
+          this.emit({
+            type: 'edit_proposed',
+            runId: this.activeRunId ?? this.id,
+            proposalId: stored.id,
+            toolUseId: stored.toolUseId,
+            patches: stored.patches,
+          });
+          this.emit({
+            type: 'edit_applied',
+            runId: this.activeRunId ?? this.id,
+            proposalId: stored.id,
+            toolUseId: stored.toolUseId,
+            patches: stored.patches,
+          });
+        }
+        this.emit(event);
+      },
       ...(this.systemPrompt !== undefined
         ? { systemPrompt: this.systemPrompt }
         : {}),

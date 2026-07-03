@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import './globals.css';
+import { Toaster } from '@/components/ui/sonner';
 import { DisableContextMenu } from './disable-context-menu';
 
 export default function RootLayout({
@@ -9,6 +10,7 @@ export default function RootLayout({
     <html lang="en" className="font-sans">
       <body>
         {children}
+        <Toaster richColors />
         <DisableContextMenu />
       </body>
     </html>

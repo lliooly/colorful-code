@@ -3,6 +3,7 @@ import { SERVER_ENV } from '../config/config.module';
 import type { ServerEnvironment } from '../config/environment';
 import { PersistenceModule } from '../persistence/persistence.module';
 import { PluginsModule } from '../plugins/plugins.module';
+import { ProjectsController } from './projects.controller';
 import { SessionsController } from './sessions.controller';
 import { SessionsService } from './sessions.service';
 import {
@@ -19,7 +20,7 @@ import { VoiceTranscriptionService } from './voice-transcription';
 // scripted client.
 @Module({
   imports: [PersistenceModule, PluginsModule],
-  controllers: [SessionsController],
+  controllers: [ProjectsController, SessionsController],
   providers: [
     SessionsService,
     VoiceTranscriptionService,
