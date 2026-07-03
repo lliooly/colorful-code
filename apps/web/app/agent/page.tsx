@@ -19,7 +19,6 @@ import {
   Settings,
   FileDiff,
   Ellipsis,
-  Check,
   ArrowLeft,
   ArrowRight,
   Upload,
@@ -40,6 +39,7 @@ import {
   AlertCircle,
   ChevronDown,
   Mic,
+  Trash2,
 } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -142,10 +142,16 @@ import {
 import {
   appendVoiceAudio,
   createSession,
+  deleteInstalledPlugin,
   eventsUrl,
   forkCheckpoint,
+  installPlugin,
   listModelPresets,
+  listInstalledPlugins,
+  listLspRegistryPlugins,
+  listMcpRegistryServers,
   listRemoteModels,
+  listSkillRegistryPlugins,
   listCheckpoints,
   listSessions,
   restoreCheckpoint,
@@ -155,6 +161,7 @@ import {
   startVoiceTranscription,
   stopVoiceTranscription,
   testModelConfig,
+  updateInstalledPlugin,
   type PublicModelPreset,
 } from './api';
 import {
@@ -194,11 +201,15 @@ import {
 import {
   PERMISSION_MODES,
   SESSION_EVENT_TYPES,
+  type CatalogPlugin,
   type Checkpoint,
   type FilePatch,
+  type InstalledPlugin,
   type ModelConfig,
   type ModelProtocol,
   type PermissionMode,
+  type PluginKind,
+  type PluginTrust,
   type SessionSummary,
   type SessionEvent,
 } from './types';
@@ -298,6 +309,56 @@ const languageNames: Record<Language, string> = {
   zh: '中文',
 };
 
+const pluginTrustOptions: ReadonlyArray<{
+  value: PluginTrust;
+  label: string;
+}> = [
+  { value: 'ask', label: 'Ask' },
+  { value: 'trusted', label: 'Trusted' },
+  { value: 'blocked', label: 'Blocked' },
+];
+
+const pluginKindFilters: ReadonlyArray<{
+  value: PluginKind | 'all';
+  label: string;
+}> = [
+  { value: 'all', label: 'All' },
+  { value: 'mcp', label: 'MCP' },
+  { value: 'skill', label: 'Skills' },
+  { value: 'lsp', label: 'LSP' },
+];
+
+const pluginKindLabels: Record<PluginKind, string> = {
+  mcp: 'MCP',
+  skill: 'Skill',
+  lsp: 'LSP',
+};
+
+function catalogPluginTitle(plugin: CatalogPlugin): string {
+  return plugin.title?.trim() || plugin.name;
+}
+
+function installedPluginTitle(plugin: InstalledPlugin): string {
+  return plugin.title?.trim() || plugin.registryName;
+}
+
+function pluginInstallKey(kind: PluginKind, name: string): string {
+  return `${kind}:${name}`;
+}
+
+function installedPluginTrust(plugin: InstalledPlugin): PluginTrust {
+  return plugin.config.trust ?? 'ask';
+}
+
+function settingsSectionPluginKind(
+  section: SettingsSection,
+): PluginKind | null {
+  if (section === 'mcp') return 'mcp';
+  if (section === 'skills') return 'skill';
+  if (section === 'lsp') return 'lsp';
+  return null;
+}
+
 const copy = {
   en: {
     nav: {
@@ -339,8 +400,8 @@ const copy = {
       title: 'Start a new conversation',
       description:
         'Create a session, then send a message to connect the page with your backend.',
-      sidebarReady: 'Sidebar stays fixed',
-      scrollerReady: 'Message scroller is ready',
+      sidebarReady: '',
+      scrollerReady: '',
     },
     composer: {
       placeholderReady: 'Type a message...',
@@ -382,7 +443,16 @@ const copy = {
       permissions: 'Permissions',
       permissionsDescription:
         'Choose which permission modes appear in the chat composer.',
-      comingNext: 'This settings area is coming next.',
+      downloadedPlugins: 'Downloaded',
+      downloadedPluginsDescription:
+        'Manage the plugins already installed into this workspace.',
+      openPluginCatalog: 'Download plugins',
+      noDownloadedPlugins: 'Nothing downloaded yet.',
+      loadingDownloadedPlugins: 'Loading downloaded plugins...',
+      enabled: 'Enabled',
+      trust: 'Trust',
+      delete: 'Delete',
+      deleting: 'Deleting',
       test: 'Test',
       testing: 'Testing...',
       fetchModels: 'Fetch models',
@@ -418,7 +488,8 @@ const copy = {
       plan: 'Review the plan first; the agent will not edit files until approved.',
       acceptEdits:
         'Apply workspace edits automatically, but still ask for risky actions.',
-      readOnly: 'Inspect files and answer questions without changing the workspace.',
+      readOnly:
+        'Inspect files and answer questions without changing the workspace.',
       bypass:
         'Allow edits and commands without approval prompts. Use only when you trust the task.',
     },
@@ -462,8 +533,8 @@ const copy = {
     empty: {
       title: '开始新的对话',
       description: '创建会话后发送消息，将页面连接到你的后端。',
-      sidebarReady: '侧边栏保持固定',
-      scrollerReady: '消息滚动器已就绪',
+      sidebarReady: '',
+      scrollerReady: '',
     },
     composer: {
       placeholderReady: '输入消息...',
@@ -502,7 +573,15 @@ const copy = {
       themeDark: '深色',
       permissions: '权限',
       permissionsDescription: '选择哪些权限模式显示在聊天输入区。',
-      comingNext: '这个设置页面下一步再接入。',
+      downloadedPlugins: '已下载',
+      downloadedPluginsDescription: '管理已经安装到当前工作区的插件。',
+      openPluginCatalog: '下载插件',
+      noDownloadedPlugins: '还没有安装。',
+      loadingDownloadedPlugins: '正在加载已下载插件...',
+      enabled: '已启用',
+      trust: '信任级别',
+      delete: '删除',
+      deleting: '删除中',
       test: '测试',
       testing: '测试中...',
       fetchModels: '获取模型列表',
@@ -542,16 +621,25 @@ const copy = {
 } as const satisfies Record<Language, Record<string, unknown>>;
 
 const permissionModeTriggerClasses: Record<PermissionMode, string> = {
-  readOnly:
-    'text-emerald-600 hover:text-emerald-700 dark:text-emerald-400',
+  readOnly: 'text-emerald-600 hover:text-emerald-700 dark:text-emerald-400',
   plan: 'text-sky-600 hover:text-sky-700 dark:text-sky-400',
-  default:
-    'text-blue-600 hover:text-blue-700 dark:text-blue-400',
-  acceptEdits:
-    'text-orange-600 hover:text-orange-700 dark:text-orange-400',
-  bypass:
-    'text-red-600 hover:text-red-700 dark:text-red-400',
+  default: 'text-blue-600 hover:text-blue-700 dark:text-blue-400',
+  acceptEdits: 'text-orange-600 hover:text-orange-700 dark:text-orange-400',
+  bypass: 'text-red-600 hover:text-red-700 dark:text-red-400',
 };
+
+function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`;
+  return String(tokens);
+}
+
+const CONTEXT_WINDOW_TOKENS: Record<string, number> = {
+  claude: 1_000_000,
+  deepseek: 1_000_000,
+  openai: 1_000_000,
+};
+const DEFAULT_CONTEXT_WINDOW_TOKENS = 1_000_000;
 
 export default function AgentPage(): ReactNode {
   const [permissionMode, setPermissionMode] =
@@ -580,6 +668,26 @@ export default function AgentPage(): ReactNode {
     type: 'restore' | 'fork';
   } | null>(null);
   const [diffOpen, setDiffOpen] = useState(false);
+  const [pluginsOpen, setPluginsOpen] = useState(false);
+  const [mcpRegistryPlugins, setMcpRegistryPlugins] = useState<CatalogPlugin[]>(
+    [],
+  );
+  const [skillRegistryPlugins, setSkillRegistryPlugins] = useState<
+    CatalogPlugin[]
+  >([]);
+  const [lspRegistryPlugins, setLspRegistryPlugins] = useState<CatalogPlugin[]>(
+    [],
+  );
+  const [pluginKindFilter, setPluginKindFilter] = useState<PluginKind | 'all'>(
+    'all',
+  );
+  const [registryCursor, setRegistryCursor] = useState<string | null>(null);
+  const [installedPlugins, setInstalledPlugins] = useState<InstalledPlugin[]>(
+    [],
+  );
+  const [loadingPlugins, setLoadingPlugins] = useState(false);
+  const [pluginAction, setPluginAction] = useState<string | null>(null);
+  const [pluginError, setPluginError] = useState<string | null>(null);
   const [pickingDirectory, setPickingDirectory] = useState(false);
   const [pickingFile, setPickingFile] = useState(false);
   const [attachments, setAttachments] = useState<LocalFileAttachment[]>([]);
@@ -628,6 +736,7 @@ export default function AgentPage(): ReactNode {
     message: string;
   } | null>(null);
   const [remoteModels, setRemoteModels] = useState<string[]>([]);
+  const [listening, setListening] = useState(false);
 
   const sourceRef = useRef<EventSource | null>(null);
   const sessionIdRef = useRef<string | null>(null);
@@ -652,6 +761,7 @@ export default function AgentPage(): ReactNode {
     approval,
     editProposals,
     runStatus,
+    contextTokens,
   } = viewState;
 
   const modelPresetIds = useMemo(
@@ -730,11 +840,74 @@ export default function AgentPage(): ReactNode {
     () => getVisiblePermissionModes(preferences),
     [preferences],
   );
+  const catalogPlugins = useMemo(() => {
+    const seen = new Set<string>();
+    return [
+      ...mcpRegistryPlugins,
+      ...skillRegistryPlugins,
+      ...lspRegistryPlugins,
+    ].filter((p) => {
+      const key = `${p.kind}:${p.name}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [lspRegistryPlugins, mcpRegistryPlugins, skillRegistryPlugins]);
+  const filteredCatalogPlugins =
+    pluginKindFilter === 'all'
+      ? catalogPlugins
+      : catalogPlugins.filter((plugin) => plugin.kind === pluginKindFilter);
+  const installedPluginNames = useMemo(
+    () =>
+      new Set(
+        installedPlugins.map((plugin) =>
+          pluginInstallKey(plugin.kind, plugin.registryName),
+        ),
+      ),
+    [installedPlugins],
+  );
+  const filteredInstalledPlugins = useMemo(
+    () =>
+      pluginKindFilter === 'all'
+        ? installedPlugins
+        : installedPlugins.filter((p) => p.kind === pluginKindFilter),
+    [installedPlugins, pluginKindFilter],
+  );
+  const settingsPluginKind = settingsSectionPluginKind(activeSettingsSection);
+  const settingsInstalledPlugins = useMemo(
+    () =>
+      settingsPluginKind
+        ? installedPlugins.filter(
+            (plugin) => plugin.kind === settingsPluginKind,
+          )
+        : [],
+    [installedPlugins, settingsPluginKind],
+  );
 
   const contextProgress = useMemo(() => {
-    const base = sessionId ? Math.min(90, 18 + items.length * 7) : 16;
-    return isCustom ? Math.min(98, base + 8) : base;
-  }, [isCustom, items.length, sessionId]);
+    if (!sessionId) return 0;
+    // When we have real usage data from the backend, use it.
+    if (contextTokens > 0) {
+      const windowSize =
+        CONTEXT_WINDOW_TOKENS[preset.id] ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
+      return Math.min(99, Math.round((contextTokens / windowSize) * 100));
+    }
+    // Fallback estimate before the first usage event arrives.
+    return Math.min(90, 2 + items.length * 6);
+  }, [contextTokens, preset.id, sessionId, items.length]);
+
+  const contextProgressLabel = useMemo(() => {
+    if (!sessionId) return '0%';
+    if (isCustom) {
+      const windowSize = DEFAULT_CONTEXT_WINDOW_TOKENS;
+      const tokens =
+        contextTokens > 0
+          ? contextTokens
+          : Math.round((contextProgress / 100) * windowSize);
+      return `${formatTokenCount(tokens)} / ${formatTokenCount(windowSize)}`;
+    }
+    return `${Math.round(contextProgress)}%`;
+  }, [contextProgress, contextTokens, isCustom, sessionId]);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -806,13 +979,6 @@ export default function AgentPage(): ReactNode {
       .then((status) => {
         if (cancelled || !status) return;
         setAgentServer(status);
-        if (status.running) {
-          setNotice(
-            status.managed
-              ? 'Local agent server started.'
-              : 'Connected to an existing local agent server.',
-          );
-        }
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -890,6 +1056,247 @@ export default function AgentPage(): ReactNode {
       setLoadingCheckpoints(false);
     }
   }, []);
+
+  const refreshPlugins = useCallback(async () => {
+    setLoadingPlugins(true);
+    setPluginError(null);
+    try {
+      const [mcpRegistry, skillRegistry, lspRegistry, installed] =
+        await Promise.all([
+          listMcpRegistryServers({ limit: 50 }),
+          listSkillRegistryPlugins(),
+          listLspRegistryPlugins(),
+          listInstalledPlugins(),
+        ]);
+      setMcpRegistryPlugins(
+        mcpRegistry.servers.map((item) => ({
+          ...item.server,
+          kind: 'mcp' as const,
+        })),
+      );
+      setSkillRegistryPlugins(skillRegistry.plugins);
+      setLspRegistryPlugins(lspRegistry.plugins);
+      setRegistryCursor(mcpRegistry.metadata.nextCursor ?? null);
+      setInstalledPlugins(installed.plugins);
+    } catch (err) {
+      setPluginError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoadingPlugins(false);
+    }
+  }, []);
+
+  const refreshInstalledPlugins = useCallback(async () => {
+    setLoadingPlugins(true);
+    setPluginError(null);
+    try {
+      const installed = await listInstalledPlugins();
+      setInstalledPlugins(installed.plugins);
+    } catch (err) {
+      setPluginError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoadingPlugins(false);
+    }
+  }, []);
+
+  const loadMoreRegistryServers = useCallback(async () => {
+    if (!registryCursor) return;
+    setPluginAction('registry:load-more');
+    setPluginError(null);
+    try {
+      const registry = await listMcpRegistryServers({
+        limit: 50,
+        cursor: registryCursor,
+      });
+      setMcpRegistryPlugins((prev) => [
+        ...prev,
+        ...registry.servers.map((item) => ({
+          ...item.server,
+          kind: 'mcp' as const,
+        })),
+      ]);
+      setRegistryCursor(registry.metadata.nextCursor ?? null);
+    } catch (err) {
+      setPluginError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPluginAction(null);
+    }
+  }, [registryCursor]);
+
+  const handleInstallPlugin = useCallback(
+    async (plugin: CatalogPlugin) => {
+      const actionId = `install:${pluginInstallKey(plugin.kind, plugin.name)}`;
+      setPluginAction(actionId);
+      setPluginError(null);
+      try {
+        await installPlugin({
+          kind: plugin.kind,
+          registryName: plugin.name,
+          version: plugin.version,
+        });
+        await refreshPlugins();
+      } catch (err) {
+        setPluginError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setPluginAction(null);
+      }
+    },
+    [refreshPlugins],
+  );
+
+  const handleUpdateInstalledPlugin = useCallback(
+    async (
+      plugin: InstalledPlugin,
+      patch: { enabled?: boolean; trust?: PluginTrust },
+    ) => {
+      setPluginAction(`update:${plugin.id}`);
+      setPluginError(null);
+      try {
+        await updateInstalledPlugin(plugin.id, patch);
+        await refreshInstalledPlugins();
+      } catch (err) {
+        setPluginError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setPluginAction(null);
+      }
+    },
+    [refreshInstalledPlugins],
+  );
+
+  const handleDeleteInstalledPlugin = useCallback(
+    async (plugin: InstalledPlugin) => {
+      setPluginAction(`delete:${plugin.id}`);
+      setPluginError(null);
+      try {
+        await deleteInstalledPlugin(plugin.id);
+        await refreshInstalledPlugins();
+      } catch (err) {
+        setPluginError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setPluginAction(null);
+      }
+    },
+    [refreshInstalledPlugins],
+  );
+
+  const handleOpenPluginCatalog = useCallback(() => {
+    const kind = settingsSectionPluginKind(activeSettingsSection);
+    if (kind) {
+      setPluginKindFilter(kind);
+    }
+    setSettingsOpen(false);
+    setPluginsOpen(true);
+  }, [activeSettingsSection]);
+
+  const renderInstalledPluginCard = useCallback(
+    (plugin: InstalledPlugin): ReactNode => {
+      const updating = pluginAction === `update:${plugin.id}`;
+      const deleting = pluginAction === `delete:${plugin.id}`;
+
+      return (
+        <section
+          key={plugin.id}
+          className="rounded-lg border border-border/60 bg-background/70 p-4"
+        >
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h4 className="truncate text-sm font-medium">
+                    {installedPluginTitle(plugin)}
+                  </h4>
+                  <span className="rounded-md bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary">
+                    {pluginKindLabels[plugin.kind]}
+                  </span>
+                  <span className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+                    {plugin.version}
+                  </span>
+                </div>
+                <p className="mt-1 line-clamp-2 text-sm leading-6 text-muted-foreground">
+                  {plugin.description || plugin.registryName}
+                </p>
+                <p className="mt-2 font-mono text-xs text-muted-foreground">
+                  {plugin.registryName}
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-destructive hover:text-destructive"
+                disabled={deleting || updating}
+                onClick={() => void handleDeleteInstalledPlugin(plugin)}
+              >
+                <Trash2 />
+                {deleting ? t.settings.deleting : t.settings.delete}
+              </Button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-4">
+              <label className="flex items-center gap-2 text-sm">
+                <Switch
+                  checked={plugin.enabled}
+                  disabled={updating || deleting}
+                  onCheckedChange={(enabled) =>
+                    void handleUpdateInstalledPlugin(plugin, {
+                      enabled,
+                    })
+                  }
+                  aria-label={`Enable ${installedPluginTitle(plugin)}`}
+                />
+                {t.settings.enabled}
+              </label>
+
+              {plugin.kind === 'mcp' ? (
+                <label className="flex min-w-40 items-center gap-2 text-sm">
+                  {t.settings.trust}
+                  <Select
+                    value={installedPluginTrust(plugin)}
+                    disabled={updating || deleting}
+                    onValueChange={(trust) =>
+                      void handleUpdateInstalledPlugin(plugin, {
+                        trust: trust as PluginTrust,
+                      })
+                    }
+                  >
+                    <SelectTrigger className="h-8 w-32">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        {pluginTrustOptions.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                </label>
+              ) : null}
+            </div>
+          </div>
+        </section>
+      );
+    },
+    [
+      handleDeleteInstalledPlugin,
+      handleUpdateInstalledPlugin,
+      pluginAction,
+      t.settings.delete,
+      t.settings.deleting,
+      t.settings.enabled,
+      t.settings.trust,
+    ],
+  );
+
+  useEffect(() => {
+    if (!pluginsOpen) return;
+    queueMicrotask(() => void refreshPlugins());
+  }, [pluginsOpen, refreshPlugins]);
+
+  useEffect(() => {
+    if (!settingsOpen || !settingsPluginKind) return;
+    queueMicrotask(() => void refreshInstalledPlugins());
+  }, [refreshInstalledPlugins, settingsOpen, settingsPluginKind]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1182,8 +1589,6 @@ export default function AgentPage(): ReactNode {
     }
   }, [sessionId]);
 
-  const [listening, setListening] = useState(false);
-
   const handleMacosSpeechEvent = useCallback(
     (event: MacosSpeechEvent) => {
       if (!macosSpeechActiveRef.current) {
@@ -1220,8 +1625,9 @@ export default function AgentPage(): ReactNode {
     cleanupMacosSpeech();
     voiceRequestIdRef.current = null;
     voicePartialRef.current = '';
-    macosSpeechUnlistenRef.current =
-      await listenMacosSpeech(handleMacosSpeechEvent);
+    macosSpeechUnlistenRef.current = await listenMacosSpeech(
+      handleMacosSpeechEvent,
+    );
     macosSpeechActiveRef.current = true;
     setListening(true);
     const started = await startMacosSpeech(preferences.language);
@@ -1647,7 +2053,8 @@ export default function AgentPage(): ReactNode {
               <div className="h-12 shrink-0" data-tauri-drag-region="deep" />
               <SidebarContent
                 className={cn(
-                  sidebarCollapsed && 'items-center gap-3 overflow-y-auto overflow-x-hidden',
+                  sidebarCollapsed &&
+                    'items-center gap-3 overflow-y-auto overflow-x-hidden',
                 )}
               >
                 <SidebarGroup
@@ -1672,22 +2079,39 @@ export default function AgentPage(): ReactNode {
                       </SidebarMenuItem>
                       {sidebarItems.map((item) => (
                         <SidebarMenuItem key={item.key}>
-                          <SidebarMenuButton
-                            asChild
-                            tooltip={t.nav[item.key]}
-                            className={cn(
-                              sidebarCollapsed && 'justify-center px-2',
-                            )}
-                          >
-                            <a href={item.href}>
+                          {item.key === 'plugins' ? (
+                            <SidebarMenuButton
+                              tooltip={t.nav[item.key]}
+                              className={cn(
+                                sidebarCollapsed && 'justify-center px-2',
+                              )}
+                              onClick={() => setPluginsOpen(true)}
+                            >
                               <item.icon />
                               <span
                                 className={cn(sidebarCollapsed && 'hidden')}
                               >
                                 {t.nav[item.key]}
                               </span>
-                            </a>
-                          </SidebarMenuButton>
+                            </SidebarMenuButton>
+                          ) : (
+                            <SidebarMenuButton
+                              asChild
+                              tooltip={t.nav[item.key]}
+                              className={cn(
+                                sidebarCollapsed && 'justify-center px-2',
+                              )}
+                            >
+                              <a href={item.href}>
+                                <item.icon />
+                                <span
+                                  className={cn(sidebarCollapsed && 'hidden')}
+                                >
+                                  {t.nav[item.key]}
+                                </span>
+                              </a>
+                            </SidebarMenuButton>
+                          )}
                         </SidebarMenuItem>
                       ))}
                     </SidebarMenu>
@@ -1937,13 +2361,7 @@ export default function AgentPage(): ReactNode {
                       </DropdownMenuItem>
                     </DropdownMenuGroup>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      onSelect={() =>
-                        setNotice(
-                          'Plugin management is not exposed by the current backend API.',
-                        )
-                      }
-                    >
+                    <DropdownMenuItem onSelect={() => setPluginsOpen(true)}>
                       {t.topbar.openPlugins}
                     </DropdownMenuItem>
                     <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
@@ -2037,16 +2455,7 @@ export default function AgentPage(): ReactNode {
                                         {t.empty.description}
                                       </EmptyDescription>
                                     </EmptyHeader>
-                                    <EmptyContent>
-                                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                                        <Check />
-                                        {t.empty.sidebarReady}
-                                      </div>
-                                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                                        <Check />
-                                        {t.empty.scrollerReady}
-                                      </div>
-                                    </EmptyContent>
+                                    <EmptyContent />
                                   </Empty>
                                 </MessageScrollerItem>
                               ) : (
@@ -2190,162 +2599,169 @@ export default function AgentPage(): ReactNode {
                       <div className="mt-3 px-3">
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-1">
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button
-                                variant="ghost"
-                                size="icon-xs"
-                                aria-label={t.composer.uploadFile}
-                              >
-                                <PlusCircle className="size-3.5" />
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="start">
-                              <DropdownMenuItem
-                                disabled={pickingFile}
-                                onSelect={() => void handlePickUploadFile()}
-                              >
-                                <Upload />
-                                {pickingFile
-                                  ? t.composer.openingFile
-                                  : t.composer.uploadFile}
-                              </DropdownMenuItem>
-                              <DropdownMenuItem
-                                disabled={pickingDirectory}
-                                onSelect={() =>
-                                  void handlePickWorkspaceDirectory()
-                                }
-                              >
-                                <FolderRoot />
-                                {pickingDirectory
-                                  ? t.composer.openingFolder
-                                  : t.composer.openFolder}
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-
-                          {visiblePermissionModes.length > 0 ? (
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
                                 <Button
                                   variant="ghost"
-                                  size="xs"
-                                  className={
-                                    permissionModeTriggerClasses[permissionMode]
-                                  }
+                                  size="icon-xs"
+                                  aria-label={t.composer.uploadFile}
                                 >
-                                  <ShieldCheck className="size-3.5" />
-                                  <span className="max-w-[7rem] truncate">
-                                    {t.permissionModes[permissionMode]}
-                                  </span>
-                                  <ChevronDown className="size-3 opacity-60" />
+                                  <PlusCircle className="size-3.5" />
                                 </Button>
                               </DropdownMenuTrigger>
-                              <DropdownMenuContent className="min-w-72">
-                                <DropdownMenuLabel>
-                                  {t.composer.permissionMode}
-                                </DropdownMenuLabel>
-                                <DropdownMenuSeparator />
-                                {visiblePermissionModes.map((mode) => (
-                                  <DropdownMenuItem
-                                    key={mode}
-                                    onSelect={() => void handleSetMode(mode)}
-                                  >
-                                    <span className="flex flex-col items-start gap-0.5">
-                                      <span>{t.permissionModes[mode]}</span>
-                                      <span className="max-w-72 text-xs leading-5 text-muted-foreground">
-                                        {t.permissionModeDescriptions[mode]}
-                                      </span>
-                                    </span>
-                                  </DropdownMenuItem>
-                                ))}
+                              <DropdownMenuContent align="start">
+                                <DropdownMenuItem
+                                  disabled={pickingFile}
+                                  onSelect={() => void handlePickUploadFile()}
+                                >
+                                  <Upload />
+                                  {pickingFile
+                                    ? t.composer.openingFile
+                                    : t.composer.uploadFile}
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  disabled={pickingDirectory}
+                                  onSelect={() =>
+                                    void handlePickWorkspaceDirectory()
+                                  }
+                                >
+                                  <FolderRoot />
+                                  {pickingDirectory
+                                    ? t.composer.openingFolder
+                                    : t.composer.openFolder}
+                                </DropdownMenuItem>
                               </DropdownMenuContent>
                             </DropdownMenu>
-                          ) : null}
-                        </div>
 
-                        <div className="flex items-center gap-1">
-                          <Tooltip>
-                            <TooltipTrigger asChild>
+                            {visiblePermissionModes.length > 0 ? (
                               <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
                                   <Button
                                     variant="ghost"
-                                    size="icon-xs"
-                                    aria-label={t.composer.contextWindow}
+                                    size="xs"
+                                    className={
+                                      permissionModeTriggerClasses[
+                                        permissionMode
+                                      ]
+                                    }
                                   >
-                                    <CircularProgress value={contextProgress} />
+                                    <ShieldCheck className="size-3.5" />
+                                    <span className="max-w-[7rem] truncate">
+                                      {t.permissionModes[permissionMode]}
+                                    </span>
+                                    <ChevronDown className="size-3 opacity-60" />
                                   </Button>
                                 </DropdownMenuTrigger>
-                                <DropdownMenuContent className="w-72">
+                                <DropdownMenuContent className="min-w-72">
                                   <DropdownMenuLabel>
-                                    {t.composer.contextWindow}
+                                    {t.composer.permissionMode}
                                   </DropdownMenuLabel>
                                   <DropdownMenuSeparator />
-                                  <div className="px-2 py-2">
-                                    <Progress value={contextProgress} />
-                                    <p className="mt-2 text-xs text-muted-foreground">
-                                      {Math.round(contextProgress)}%{' '}
-                                      {t.composer.contextPercent}
-                                    </p>
-                                  </div>
-                                  <DropdownMenuSeparator />
-                                  <DropdownMenuItem
-                                    disabled={!sessionId || compacting}
-                                    onSelect={() => void handleCompact()}
-                                  >
-                                    <span className="flex flex-col items-start gap-0.5">
-                                      <span className="text-sm">
-                                        {compacting
-                                          ? t.composer.compacting
-                                          : t.composer.compact}
+                                  {visiblePermissionModes.map((mode) => (
+                                    <DropdownMenuItem
+                                      key={mode}
+                                      onSelect={() => void handleSetMode(mode)}
+                                    >
+                                      <span className="flex flex-col items-start gap-0.5">
+                                        <span>{t.permissionModes[mode]}</span>
+                                        <span className="max-w-72 text-xs leading-5 text-muted-foreground">
+                                          {t.permissionModeDescriptions[mode]}
+                                        </span>
                                       </span>
-                                      <span className="text-xs text-muted-foreground">
-                                        {t.composer.compactDescription}
-                                      </span>
-                                    </span>
-                                  </DropdownMenuItem>
+                                    </DropdownMenuItem>
+                                  ))}
                                 </DropdownMenuContent>
                               </DropdownMenu>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              {t.composer.contextWindow} ·{' '}
-                              {Math.round(contextProgress)}%
-                            </TooltipContent>
-                          </Tooltip>
+                            ) : null}
+                          </div>
 
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button variant="ghost" size="xs">
-                                <Cpu className="size-3.5" />
-                                <span className="max-w-[6rem] truncate">
-                                  {preset.label}
-                                </span>
-                                <ChevronDown className="size-3 text-muted-foreground" />
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent className="min-w-44">
-                              <DropdownMenuLabel>
-                                {t.composer.model}
-                              </DropdownMenuLabel>
-                              <DropdownMenuSeparator />
-                              {visibleModelPresets.map((item) => (
-                                <DropdownMenuItem
-                                  key={item.id}
-                                  disabled={!!sessionId}
-                                  onSelect={() => {
-                                    setPresetId(item.id);
-                                    setRemoteModels([]);
-                                    setModelStatus(null);
-                                  }}
-                                >
-                                  {item.label}
-                                </DropdownMenuItem>
-                              ))}
-                            </DropdownMenuContent>
-                          </DropdownMenu>
+                          <div className="flex items-center gap-1">
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon-xs"
+                                      aria-label={t.composer.contextWindow}
+                                    >
+                                      <CircularProgress
+                                        value={contextProgress}
+                                      />
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent className="w-72">
+                                    <DropdownMenuLabel>
+                                      {t.composer.contextWindow}
+                                    </DropdownMenuLabel>
+                                    <DropdownMenuSeparator />
+                                    <div className="px-2 py-2">
+                                      <Progress value={contextProgress} />
+                                      <p className="mt-2 text-xs text-muted-foreground">
+                                        {isCustom
+                                          ? contextProgressLabel
+                                          : `${Math.round(contextProgress)}% ${t.composer.contextPercent}`}
+                                      </p>
+                                    </div>
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuItem
+                                      disabled={!sessionId || compacting}
+                                      onSelect={() => void handleCompact()}
+                                    >
+                                      <span className="flex flex-col items-start gap-0.5">
+                                        <span className="text-sm">
+                                          {compacting
+                                            ? t.composer.compacting
+                                            : t.composer.compact}
+                                        </span>
+                                        <span className="text-xs text-muted-foreground">
+                                          {t.composer.compactDescription}
+                                        </span>
+                                      </span>
+                                    </DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {t.composer.contextWindow}
+                                {isCustom
+                                  ? ` · ${contextProgressLabel}`
+                                  : ` · ${Math.round(contextProgress)}%`}
+                              </TooltipContent>
+                            </Tooltip>
 
-                          <Button
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="xs">
+                                  <Cpu className="size-3.5" />
+                                  <span className="max-w-[6rem] truncate">
+                                    {preset.label}
+                                  </span>
+                                  <ChevronDown className="size-3 text-muted-foreground" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent className="min-w-44">
+                                <DropdownMenuLabel>
+                                  {t.composer.model}
+                                </DropdownMenuLabel>
+                                <DropdownMenuSeparator />
+                                {visibleModelPresets.map((item) => (
+                                  <DropdownMenuItem
+                                    key={item.id}
+                                    disabled={!!sessionId}
+                                    onSelect={() => {
+                                      setPresetId(item.id);
+                                      setRemoteModels([]);
+                                      setModelStatus(null);
+                                    }}
+                                  >
+                                    {item.label}
+                                  </DropdownMenuItem>
+                                ))}
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+
+                            <Button
                               variant="ghost"
                               size="icon-xs"
                               onClick={handleMicClick}
@@ -2381,8 +2797,8 @@ export default function AgentPage(): ReactNode {
                                 <ArrowUp className="size-3.5" />
                               </Button>
                             )}
+                          </div>
                         </div>
-                      </div>
                       </div>
                     </div>
                   </section>
@@ -2443,6 +2859,14 @@ export default function AgentPage(): ReactNode {
                   >
                     <TestTube2 />
                     {testingModel ? t.settings.testing : t.settings.test}
+                  </Button>
+                ) : settingsPluginKind ? (
+                  <Button
+                    onClick={handleOpenPluginCatalog}
+                    className="w-fit shrink-0 sm:mr-2"
+                  >
+                    <PlusCircle />
+                    {t.settings.openPluginCatalog}
                   </Button>
                 ) : null}
               </div>
@@ -2625,10 +3049,7 @@ export default function AgentPage(): ReactNode {
                             <Switch
                               checked={itemEnabled}
                               onCheckedChange={(checked) =>
-                                handleSetModelPresetVisibility(
-                                  item.id,
-                                  checked,
-                                )
+                                handleSetModelPresetVisibility(item.id, checked)
                               }
                               aria-label={`${item.label} ${
                                 itemEnabled
@@ -2782,10 +3203,206 @@ export default function AgentPage(): ReactNode {
                     </div>
                   ) : null}
                 </div>
-              ) : (
-                <div className="mt-6 rounded-3xl border border-dashed border-border/70 p-6 text-sm text-muted-foreground">
-                  {t.settings.comingNext}
+              ) : settingsPluginKind ? (
+                <div className="mt-8 flex max-w-5xl flex-col gap-5">
+                  <div>
+                    <h3 className="text-sm font-medium">
+                      {t.settings.downloadedPlugins}
+                    </h3>
+                    <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
+                      {t.settings.downloadedPluginsDescription}
+                    </p>
+                  </div>
+
+                  {pluginError ? (
+                    <Alert>
+                      <AlertCircle />
+                      <AlertTitle>Plugin request failed</AlertTitle>
+                      <AlertDescription>{pluginError}</AlertDescription>
+                    </Alert>
+                  ) : null}
+
+                  <div className="grid gap-3">
+                    {settingsInstalledPlugins.length === 0 ? (
+                      <div className="rounded-lg border border-dashed border-border/70 p-5 text-sm text-muted-foreground">
+                        {loadingPlugins
+                          ? t.settings.loadingDownloadedPlugins
+                          : t.settings.noDownloadedPlugins}
+                      </div>
+                    ) : (
+                      settingsInstalledPlugins.map(renderInstalledPluginCard)
+                    )}
+                  </div>
                 </div>
+              ) : null}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={pluginsOpen} onOpenChange={setPluginsOpen}>
+        <DialogContent className="agent-compact-ui flex h-[86svh] max-h-[calc(100svh-2rem)] min-h-[min(520px,calc(100svh-2rem))] w-[92vw] max-w-[92vw] flex-col overflow-hidden p-0 sm:h-[82svh] sm:w-[86vw] sm:max-w-[86vw] lg:max-w-5xl">
+          <div className="border-b border-border/60 px-6 py-5 md:px-8">
+            <DialogHeader className="pr-10">
+              <DialogTitle className="flex items-center gap-2 text-2xl">
+                <Puzzle className="size-5" />
+                Plugins
+              </DialogTitle>
+              <DialogDescription className="max-w-2xl text-base leading-7">
+                Install MCP servers, Skills, and LSP support from the local
+                catalogs.
+              </DialogDescription>
+            </DialogHeader>
+          </div>
+
+          <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-6 py-6 md:px-8">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-medium">Catalog</h3>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  MCP servers, workflow Skills, and LSP language support exposed
+                  by the local backend.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex rounded-full border border-border/70 bg-muted/30 p-1">
+                  {pluginKindFilters.map((filter) => (
+                    <Button
+                      key={filter.value}
+                      variant={
+                        pluginKindFilter === filter.value
+                          ? 'secondary'
+                          : 'ghost'
+                      }
+                      size="sm"
+                      className="h-7 rounded-full px-2.5 text-xs"
+                      onClick={() => setPluginKindFilter(filter.value)}
+                    >
+                      {filter.label}
+                    </Button>
+                  ))}
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void refreshPlugins()}
+                  disabled={loadingPlugins}
+                >
+                  <RefreshCw />
+                  {loadingPlugins ? 'Refreshing' : 'Refresh'}
+                </Button>
+              </div>
+            </div>
+
+            {pluginError ? (
+              <Alert>
+                <AlertCircle />
+                <AlertTitle>Plugin request failed</AlertTitle>
+                <AlertDescription>{pluginError}</AlertDescription>
+              </Alert>
+            ) : null}
+
+            <div className="grid gap-3" key={pluginKindFilter}>
+              {filteredCatalogPlugins.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-border/70 p-5 text-sm text-muted-foreground">
+                  {loadingPlugins
+                    ? 'Loading plugin catalogs...'
+                    : 'No plugins returned for this filter yet.'}
+                </div>
+              ) : (
+                filteredCatalogPlugins.map((plugin) => {
+                  const installKey = pluginInstallKey(plugin.kind, plugin.name);
+                  const installed = installedPluginNames.has(installKey);
+                  const actionId = `install:${installKey}`;
+                  return (
+                    <section
+                      key={installKey}
+                      className="rounded-lg border border-border/60 bg-background/70 p-4"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-4">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h4 className="truncate text-sm font-medium">
+                              {catalogPluginTitle(plugin)}
+                            </h4>
+                            <span className="rounded-md bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary">
+                              {pluginKindLabels[plugin.kind]}
+                            </span>
+                            {plugin.version ? (
+                              <span className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+                                {plugin.version}
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="mt-1 line-clamp-2 text-sm leading-6 text-muted-foreground">
+                            {plugin.description || plugin.name}
+                          </p>
+                          <p className="mt-2 font-mono text-xs text-muted-foreground">
+                            {plugin.name}
+                            {plugin.kind === 'mcp' && plugin.packages?.length
+                              ? ` · ${plugin.packages.length} package${
+                                  plugin.packages.length === 1 ? '' : 's'
+                                }`
+                              : ''}
+                          </p>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant={installed ? 'outline' : 'default'}
+                          disabled={
+                            installed ||
+                            loadingPlugins ||
+                            pluginAction === actionId
+                          }
+                          onClick={() => void handleInstallPlugin(plugin)}
+                        >
+                          {installed ? <CheckCircle2 /> : <PlusCircle />}
+                          {installed
+                            ? 'Installed'
+                            : pluginAction === actionId
+                              ? 'Installing'
+                              : 'Install'}
+                        </Button>
+                      </div>
+                    </section>
+                  );
+                })
+              )}
+            </div>
+
+            {registryCursor &&
+            (pluginKindFilter === 'all' || pluginKindFilter === 'mcp') ? (
+              <Button
+                variant="outline"
+                onClick={() => void loadMoreRegistryServers()}
+                disabled={pluginAction === 'registry:load-more'}
+              >
+                <ChevronDown />
+                {pluginAction === 'registry:load-more'
+                  ? 'Loading'
+                  : 'Load more'}
+              </Button>
+            ) : null}
+
+            <div className="border-t border-border/60 pt-5">
+              <h3 className="text-sm font-medium">Installed plugins</h3>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Toggle runtime availability. MCP plugins also expose a default
+                trust policy.
+              </p>
+            </div>
+
+            <div className="grid gap-3 pb-2">
+              {filteredInstalledPlugins.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-border/70 p-5 text-sm text-muted-foreground">
+                  {loadingPlugins
+                    ? 'Loading installed plugins...'
+                    : installedPlugins.length === 0
+                      ? 'No plugins installed yet.'
+                      : `No installed ${pluginKindFilter.toUpperCase()} plugins.`}
+                </div>
+              ) : (
+                filteredInstalledPlugins.map(renderInstalledPluginCard)
               )}
             </div>
           </div>

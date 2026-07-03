@@ -9,6 +9,7 @@ import {
   loadServerDevelopmentEnvFiles,
   loadServerEnvironment,
 } from './config/environment';
+import { buildCorsOptions } from './config/cors';
 
 async function bootstrap() {
   loadServerDevelopmentEnvFiles();
@@ -19,9 +20,7 @@ async function bootstrap() {
     new FastifyAdapter(),
   );
 
-  app.enableCors({
-    origin: serverEnvironment.corsOrigins,
-  });
+  app.enableCors(buildCorsOptions(serverEnvironment.corsOrigins));
 
   await app.listen(serverEnvironment.port, serverEnvironment.host);
 }

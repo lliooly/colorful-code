@@ -91,6 +91,8 @@ export type AgentViewState = {
   lspServers: LspServerStatus[];
   runStatus: RunStatus | null;
   error: string | null;
+  /** Latest input token count from the backend `usage` event. */
+  contextTokens: number;
 };
 
 export function createAgentViewState(
@@ -106,6 +108,7 @@ export function createAgentViewState(
     lspServers: [],
     runStatus: null,
     error: null,
+    contextTokens: 0,
   };
 }
 
@@ -258,6 +261,16 @@ export function applyAgentEvent(
           },
           seq,
         ),
+      };
+    case 'usage':
+      return {
+        ...next,
+        contextTokens: event.inputTokens ?? next.contextTokens,
+      };
+    case 'context_compacted':
+      return {
+        ...next,
+        contextTokens: event.tokensAfter,
       };
     case 'error':
       return { ...next, error: event.message };

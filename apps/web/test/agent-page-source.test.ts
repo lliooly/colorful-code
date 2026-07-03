@@ -35,3 +35,15 @@ test('agent page uses realtime voice transcription instead of browser speech rec
   assert.match(source, /appendTranscriptToDraft/);
   assert.doesNotMatch(source, /voice_transcript_delta[\s\S]{0,240}handleSend/);
 });
+
+test('settings manages installed plugin kinds instead of showing placeholders', () => {
+  const source = readFileSync(
+    new URL('../app/agent/page.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.doesNotMatch(source, /comingNext/);
+  assert.match(source, /settingsInstalledPlugins/);
+  assert.match(source, /settingsPluginKind/);
+  assert.match(source, /handleOpenPluginCatalog/);
+});

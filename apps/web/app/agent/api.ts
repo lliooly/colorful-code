@@ -1,11 +1,18 @@
 import type {
   CheckpointSessionResponse,
   ControlMessage,
+  InstalledPlugin,
+  ListCatalogPluginsResponse,
   ListCheckpointsResponse,
+  ListInstalledPluginsResponse,
+  ListMcpRegistryServersResponse,
   ListSessionsResponse,
+  McpRegistryServerDetail,
   ModelConfig,
   ModelProtocol,
   PermissionMode,
+  PluginKind,
+  PluginTrust,
 } from './types';
 
 // The agent server base URL. Read at module load from the public env var with a
@@ -18,6 +25,38 @@ async function postJson(path: string, body: unknown): Promise<Response> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(
+      `${path} failed: ${String(res.status)} ${res.statusText}${
+        detail ? ` — ${detail}` : ''
+      }`,
+    );
+  }
+  return res;
+}
+
+async function patchJson(path: string, body: unknown): Promise<Response> {
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(
+      `${path} failed: ${String(res.status)} ${res.statusText}${
+        detail ? ` — ${detail}` : ''
+      }`,
+    );
+  }
+  return res;
+}
+
+async function deleteJson(path: string): Promise<Response> {
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    method: 'DELETE',
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
@@ -88,6 +127,22 @@ export type VoiceAudioChunkRequest = {
   numChannels: number;
 };
 
+export type ListMcpRegistryServersRequest = {
+  limit?: number;
+  cursor?: string;
+};
+
+export type InstallPluginRequest = {
+  kind?: PluginKind;
+  registryName: string;
+  version?: string;
+};
+
+export type UpdateInstalledPluginRequest = {
+  enabled?: boolean;
+  trust?: PluginTrust;
+};
+
 // POST /sessions -> { id }
 export async function createSession(
   req: CreateSessionRequest,
@@ -141,9 +196,7 @@ export async function appendVoiceAudio(
   );
 }
 
-export async function stopVoiceTranscription(
-  sessionId: string,
-): Promise<void> {
+export async function stopVoiceTranscription(sessionId: string): Promise<void> {
   await postJson(`/sessions/${encodeURIComponent(sessionId)}/voice/stop`, {});
 }
 
@@ -230,4 +283,69 @@ export async function listRemoteModels(model: ModelConfig): Promise<string[]> {
     throw new Error('POST /models/list did not return a models array.');
   }
   return data.models.filter((item): item is string => typeof item === 'string');
+}
+
+// GET /plugins/registry/mcp?limit=&cursor= -> registry MCP server summaries.
+export async function listMcpRegistryServers(
+  req: ListMcpRegistryServersRequest = {},
+): Promise<ListMcpRegistryServersResponse> {
+  const params = new URLSearchParams();
+  if (typeof req.limit === 'number') params.set('limit', String(req.limit));
+  if (req.cursor) params.set('cursor', req.cursor);
+  const query = params.toString();
+  const res = await getJson(`/plugins/registry/mcp${query ? `?${query}` : ''}`);
+  return (await res.json()) as ListMcpRegistryServersResponse;
+}
+
+// GET /plugins/registry/mcp/:name -> registry MCP server detail.
+export async function getMcpRegistryServer(
+  name: string,
+): Promise<McpRegistryServerDetail> {
+  const res = await getJson(
+    `/plugins/registry/mcp/${encodeURIComponent(name)}`,
+  );
+  return (await res.json()) as McpRegistryServerDetail;
+}
+
+// GET /plugins/registry/skills -> skill catalog plugin summaries.
+export async function listSkillRegistryPlugins(): Promise<ListCatalogPluginsResponse> {
+  const res = await getJson('/plugins/registry/skills');
+  return (await res.json()) as ListCatalogPluginsResponse;
+}
+
+// GET /plugins/registry/lsp -> LSP catalog plugin summaries.
+export async function listLspRegistryPlugins(): Promise<ListCatalogPluginsResponse> {
+  const res = await getJson('/plugins/registry/lsp');
+  return (await res.json()) as ListCatalogPluginsResponse;
+}
+
+// GET /plugins/installed -> installed plugin records.
+export async function listInstalledPlugins(): Promise<ListInstalledPluginsResponse> {
+  const res = await getJson('/plugins/installed');
+  return (await res.json()) as ListInstalledPluginsResponse;
+}
+
+// POST /plugins/install { registryName, version? } -> installed plugin.
+export async function installPlugin(
+  req: InstallPluginRequest,
+): Promise<InstalledPlugin> {
+  const res = await postJson('/plugins/install', req);
+  return (await res.json()) as InstalledPlugin;
+}
+
+// PATCH /plugins/installed/:id { enabled?, trust? } -> installed plugin.
+export async function updateInstalledPlugin(
+  id: string,
+  req: UpdateInstalledPluginRequest,
+): Promise<InstalledPlugin> {
+  const res = await patchJson(
+    `/plugins/installed/${encodeURIComponent(id)}`,
+    req,
+  );
+  return (await res.json()) as InstalledPlugin;
+}
+
+// DELETE /plugins/installed/:id -> 204.
+export async function deleteInstalledPlugin(id: string): Promise<void> {
+  await deleteJson(`/plugins/installed/${encodeURIComponent(id)}`);
 }

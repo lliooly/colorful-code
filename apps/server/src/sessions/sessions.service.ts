@@ -67,6 +67,7 @@ import {
   mergeLspServers,
   type LspServersConfig,
 } from '../config/lsp-config';
+import { PluginStore } from '../plugins/plugin-store';
 
 // Options accepted by `POST /sessions` to seed a session's PermissionContext and
 // (optionally) choose the model. `model` is the validated per-request selection;
@@ -266,6 +267,8 @@ export class SessionsService implements OnModuleDestroy {
     private readonly store: SessionStore,
     @Optional()
     private readonly voiceTranscription?: VoiceTranscriptionService,
+    @Optional()
+    private readonly pluginStore?: PluginStore,
   ) {}
 
   // Builds a fresh PermissionContext from the request options. `workspaceRoots`
@@ -369,6 +372,7 @@ export class SessionsService implements OnModuleDestroy {
       return mergeMcpServers(
         loadProjectMcpServers(cwd),
         loadMcpServersFromEnv(process.env),
+        this.pluginStore?.enabledMcpServers(),
         requestMcpServers,
       );
     } catch (error) {
@@ -385,6 +389,7 @@ export class SessionsService implements OnModuleDestroy {
       return mergeLspServers(
         loadProjectLspServers(cwd),
         loadLspServersFromEnv(process.env),
+        this.pluginStore?.enabledLspServers(),
         requestLspServers,
       );
     } catch (error) {

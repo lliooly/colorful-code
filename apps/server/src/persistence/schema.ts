@@ -12,7 +12,7 @@ import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 export const sessions = sqliteTable('sessions', {
   id: text('id').primaryKey(),
   snapshot: text('snapshot').notNull(),
-  updatedAt: integer('updated_at').notNull()
+  updatedAt: integer('updated_at').notNull(),
 });
 
 export const checkpoints = sqliteTable(
@@ -26,12 +26,12 @@ export const checkpoints = sqliteTable(
     label: text('label'),
     summary: text('summary'),
     snapshot: text('snapshot').notNull(),
-    fileChanges: text('file_changes')
+    fileChanges: text('file_changes'),
   },
   (table) => [
     index('checkpoints_session_id_idx').on(table.sessionId),
-    index('checkpoints_parent_checkpoint_id_idx').on(table.parentCheckpointId)
-  ]
+    index('checkpoints_parent_checkpoint_id_idx').on(table.parentCheckpointId),
+  ],
 );
 
 // Append-only permission audit. One row per recorded decision; never updated or
@@ -47,14 +47,28 @@ export const audit = sqliteTable(
     toolName: text('tool_name').notNull(),
     behavior: text('behavior').notNull(),
     reason: text('reason'),
-    at: integer('at').notNull()
+    at: integer('at').notNull(),
   },
-  (table) => [index('audit_session_id_idx').on(table.sessionId)]
+  (table) => [index('audit_session_id_idx').on(table.sessionId)],
 );
+
+export const installedPlugins = sqliteTable('installed_plugins', {
+  id: text('id').primaryKey(),
+  kind: text('kind').notNull(),
+  registryName: text('registry_name').notNull(),
+  title: text('title'),
+  description: text('description'),
+  version: text('version').notNull(),
+  enabled: integer('enabled').notNull(),
+  config: text('config').notNull(),
+  installedAt: integer('installed_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
 
 export type SessionRow = typeof sessions.$inferSelect;
 export type AuditRow = typeof audit.$inferSelect;
 export type CheckpointRow = typeof checkpoints.$inferSelect;
+export type InstalledPluginRow = typeof installedPlugins.$inferSelect;
 
 // Idempotent DDL run on init. We do not pull in drizzle-kit / migration tooling
 // for now; `database.ts` execs this against the raw bun:sqlite handle so the
@@ -90,4 +104,16 @@ export const SCHEMA_DDL = `
   );
   CREATE INDEX IF NOT EXISTS checkpoints_session_id_idx ON checkpoints (session_id);
   CREATE INDEX IF NOT EXISTS checkpoints_parent_checkpoint_id_idx ON checkpoints (parent_checkpoint_id);
+  CREATE TABLE IF NOT EXISTS installed_plugins (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    registry_name TEXT NOT NULL,
+    title TEXT,
+    description TEXT,
+    version TEXT NOT NULL,
+    enabled INTEGER NOT NULL,
+    config TEXT NOT NULL,
+    installed_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
 `;

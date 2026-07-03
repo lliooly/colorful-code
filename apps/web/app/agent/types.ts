@@ -34,6 +34,79 @@ export type RunStatus = 'running' | 'completed' | 'cancelled' | 'error';
 
 export type JsonObject = Record<string, unknown>;
 
+export type PluginKind = 'mcp' | 'skill' | 'lsp';
+
+export type PluginTrust = 'trusted' | 'ask' | 'blocked';
+
+export type InstalledPlugin = {
+  id: string;
+  kind: PluginKind;
+  registryName: string;
+  title?: string;
+  description?: string;
+  version: string;
+  enabled: boolean;
+  config: JsonObject & { trust?: PluginTrust };
+  installedAt: number;
+  updatedAt: number;
+};
+
+export type McpRegistryPackage = {
+  registry?: string;
+  name?: string;
+  version?: string;
+  transport?: string;
+  command?: string;
+  args?: string[];
+  env?: JsonObject;
+  [key: string]: unknown;
+};
+
+export type McpRegistryServerSummary = {
+  name: string;
+  title?: string;
+  description?: string;
+  version?: string;
+  packages?: McpRegistryPackage[];
+  [key: string]: unknown;
+};
+
+export type McpRegistryServerDetail = McpRegistryServerSummary & {
+  homepage?: string;
+  repository?: string;
+  license?: string;
+  tools?: unknown[];
+  resources?: unknown[];
+  prompts?: unknown[];
+};
+
+export type CatalogPlugin = {
+  kind: PluginKind;
+  name: string;
+  title?: string;
+  description?: string;
+  version?: string;
+  config?: JsonObject;
+  packages?: McpRegistryPackage[];
+  [key: string]: unknown;
+};
+
+export type ListMcpRegistryServersResponse = {
+  servers: Array<{ server: McpRegistryServerSummary }>;
+  metadata: {
+    count: number;
+    nextCursor?: string;
+  };
+};
+
+export type ListCatalogPluginsResponse = {
+  plugins: CatalogPlugin[];
+};
+
+export type ListInstalledPluginsResponse = {
+  plugins: InstalledPlugin[];
+};
+
 export type TextContentBlock = {
   type: 'text';
   text: string;

@@ -11,11 +11,11 @@ import type { ModelSelection } from './model-factory';
 // Conservative per-preset context windows (tokens). The default covers custom /
 // unknown selections; it errs small so compaction triggers a little early rather
 // than overrunning a smaller window.
-const DEFAULT_CONTEXT_WINDOW = 128_000;
+const DEFAULT_CONTEXT_WINDOW = 1_000_000;
 const CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
-  claude: 200_000,
-  deepseek: 64_000,
-  openai: 128_000
+  claude: 1_000_000,
+  deepseek: 1_000_000,
+  openai: 1_000_000
 };
 
 const COMPACTION_THRESHOLD = 0.8;
