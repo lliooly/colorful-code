@@ -171,6 +171,8 @@ export type CheckpointSessionResponse = {
   id: string;
   checkpointId: string;
   needsModelConfig: boolean;
+  history: ConversationEntry[];
+  permissionMode: PermissionMode;
 };
 
 export type SessionCreateResponse = {
@@ -181,6 +183,8 @@ export type SessionCreateResponse = {
 export type SessionRestoreResponse = {
   id: string;
   needsModelConfig: boolean;
+  history: ConversationEntry[];
+  permissionMode: PermissionMode;
 };
 
 export type SessionSummary = {

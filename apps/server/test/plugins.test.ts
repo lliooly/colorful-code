@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import { strict as assert } from 'node:assert';
+import { existsSync } from 'node:fs';
 import { afterEach, test } from 'node:test';
 import { Module } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
@@ -12,7 +13,9 @@ import {
   PLUGIN_REGISTRY_CLIENT,
   type McpRegistryClient,
 } from '../src/plugins/plugin-registry';
+import { SdkMcpManager } from '@colorful-code/tool-runtime';
 import {
+  listMcpCatalog,
   listLspCatalog,
   listSkillCatalog,
 } from '../src/plugins/plugin-catalog';
@@ -290,6 +293,9 @@ test('PluginStore keeps enabled LSP server keys unique across registry namespace
 });
 
 test('curated catalogs expose skill and LSP plugin entries', () => {
+  assert.ok(
+    listMcpCatalog().some((item) => item.name === 'colorful-code/demo-mcp'),
+  );
   assert.ok(listSkillCatalog().some((item) => item.kind === 'skill'));
   assert.ok(listLspCatalog().some((item) => item.kind === 'lsp'));
 });
@@ -344,7 +350,11 @@ test('plugins API installs, lists, patches, and deletes MCP plugins', async () =
     url: '/plugins/registry/mcp?limit=10',
   });
   assert.equal(registry.statusCode, 200);
-  assert.equal(registry.json<{ servers: unknown[] }>().servers.length, 1);
+  assert.ok(
+    registry
+      .json<{ servers: Array<{ server: { name: string } }> }>()
+      .servers.some((entry) => entry.server.name === 'io.example/demo'),
+  );
 
   const install = await fastify.inject({
     method: 'POST',
@@ -375,6 +385,76 @@ test('plugins API installs, lists, patches, and deletes MCP plugins', async () =
     url: `/plugins/installed/${encodeURIComponent(installed.id)}`,
   });
   assert.equal(deleted.statusCode, 204);
+});
+
+test('plugins API lists and installs the built-in demo MCP without user-provided fields', async () => {
+  const app = await boot();
+  const fastify = app.getHttpAdapter().getInstance();
+
+  const registry = await fastify.inject({
+    method: 'GET',
+    url: '/plugins/registry/mcp?limit=10',
+  });
+  assert.equal(registry.statusCode, 200);
+  const demo = registry
+    .json<{ servers: Array<{ server: { name: string; title?: string } }> }>()
+    .servers.find((entry) => entry.server.name === 'colorful-code/demo-mcp');
+  assert.ok(demo);
+  assert.equal(demo.server.title, 'Colorful Code Demo MCP');
+
+  const install = await fastify.inject({
+    method: 'POST',
+    url: '/plugins/install',
+    payload: { registryName: 'colorful-code/demo-mcp' },
+  });
+  assert.equal(install.statusCode, 201);
+  const installed = install.json<{
+    kind: string;
+    enabled: boolean;
+    config: { type: string; command: string; args?: string[] };
+  }>();
+  assert.equal(installed.kind, 'mcp');
+  assert.equal(installed.enabled, true);
+  assert.equal(installed.config.type, 'stdio');
+  assert.equal(installed.config.command, process.execPath);
+  assert.ok(installed.config.args?.[0]);
+  assert.equal(existsSync(installed.config.args[0]), true);
+});
+
+test('built-in demo MCP connects and serves the echo tool', async () => {
+  const app = await boot();
+  const fastify = app.getHttpAdapter().getInstance();
+
+  const install = await fastify.inject({
+    method: 'POST',
+    url: '/plugins/install',
+    payload: { registryName: 'colorful-code/demo-mcp' },
+  });
+  assert.equal(install.statusCode, 201);
+  const installed = install.json<{
+    config: ConstructorParameters<typeof SdkMcpManager>[0][string];
+  }>();
+  const manager = new SdkMcpManager({
+    'colorful-code-demo-mcp': installed.config,
+  });
+
+  try {
+    const connections = await manager.connectAll();
+    const connection = connections[0];
+    assert.equal(connection?.type, 'connected');
+    assert.equal(
+      connection?.type === 'connected' &&
+        connection.tools.some((tool) => tool.name === 'echo'),
+      true,
+    );
+
+    const result = await manager.callTool('colorful-code-demo-mcp', 'echo', {
+      message: 'hello demo',
+    });
+    assert.match(JSON.stringify(result), /echo:hello demo/);
+  } finally {
+    await manager.close();
+  }
 });
 
 test('plugins API lists and installs curated skill and LSP plugins', async () => {

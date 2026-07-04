@@ -176,6 +176,72 @@ test('manual context compaction emits visible progress and result events', async
   assert.ok(compacted.tokensAfter < compacted.tokensBefore);
 });
 
+test('manual context compaction waits for an active run instead of requiring another message', async () => {
+  let ordinaryRuns = 0;
+  let releaseThirdRun: (() => void) | undefined;
+  let markThirdRunStarted: (() => void) | undefined;
+  const thirdRunStarted = new Promise<void>((resolve) => {
+    markThirdRunStarted = resolve;
+  });
+  const model: ModelClient = {
+    run(input) {
+      if (input.system === 'compact prompt') {
+        return (async function* () {
+          yield { type: 'text', text: 'SUMMARY' };
+          yield { type: 'end' };
+        })();
+      }
+      ordinaryRuns += 1;
+      const runNumber = ordinaryRuns;
+      return (async function* () {
+        if (runNumber === 3) {
+          markThirdRunStarted?.();
+          await new Promise<void>((resolve) => {
+            releaseThirdRun = resolve;
+          });
+        }
+        yield { type: 'text', text: 'ok' };
+        yield { type: 'end' };
+      })();
+    },
+  };
+  const session = new Session({
+    model,
+    tools: [],
+    compaction: {
+      contextWindow: 10_000,
+      threshold: 10,
+      keepRecentTokens: 10,
+      prompt: 'compact prompt',
+      estimateTokens: countChars,
+    },
+  });
+  const events: SessionEvent[] = [];
+  session.subscribe((event) => events.push(event));
+
+  await session.submit('A'.repeat(5000));
+  await session.submit('second');
+  const third = session.submit('third');
+  await thirdRunStarted;
+  session.send({ type: 'compact' });
+  await flush();
+
+  assert.ok(
+    !events.some(
+      (event) =>
+        event.type === 'context_compaction_skipped' &&
+        event.reason.includes('currently active'),
+    ),
+  );
+
+  releaseThirdRun?.();
+  await third;
+  await waitFor(
+    () => events.some((event) => event.type === 'context_compacted'),
+    'queued context_compacted',
+  );
+});
+
 test('the loop issues multiple model.run calls when a tool use occurs', async () => {
   // A spy model wrapping the scripted client so we can count completions. A
   // turn that requests a tool must drive at least two completions (one to

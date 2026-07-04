@@ -73,6 +73,8 @@ export type SessionSnapshot = {
   permissionMode: PermissionMode;
   workspaceRoots: string[];
   todos: TodoItem[];
+  editProposals?: EditProposal[];
+  lastInputTokens?: number;
 };
 
 export type FileChangeMetadata = {
@@ -137,6 +139,11 @@ export class Session {
   private requestCounter = 0;
   private editProposalCounter = 0;
   private subagentCounter = 0;
+  private lastInputTokens = 0;
+
+  get currentInputTokens(): number {
+    return this.lastInputTokens;
+  }
   private activeRun: Promise<void> | undefined;
   private activeRunId: string | undefined;
   private watcher: WorkspaceFileWatcher | undefined;
@@ -519,6 +526,9 @@ export class Session {
             patches: stored.patches,
           });
         }
+        if (event.type === 'usage' && event.inputTokens !== undefined) {
+          this.lastInputTokens = event.inputTokens;
+        }
         this.emit(event);
       },
       ...(this.systemPrompt !== undefined
@@ -598,53 +608,47 @@ export class Session {
           });
           return;
         }
-        if (this.activeRun) {
+        const compaction = this.compaction;
+        const tools = describeTools(this.registry.list());
+        const abortController = new AbortController();
+        this.emit({ type: 'context_compaction_started', runId });
+        void (async () => {
+          while (this.activeRun) {
+            await this.activeRun.catch(() => undefined);
+          }
+          const result = await compactHistory({
+            history: this.history,
+            model: this.model,
+            config: compaction,
+            ...(this.systemPrompt !== undefined
+              ? { system: this.systemPrompt }
+              : {}),
+            tools,
+            signal: abortController.signal,
+          });
+          if (result) {
+            this.emit({
+              type: 'context_compacted',
+              runId,
+              tokensBefore: result.tokensBefore,
+              tokensAfter: result.tokensAfter,
+              entriesSummarized: result.entriesSummarized,
+            });
+            return;
+          }
           this.emit({
             type: 'context_compaction_skipped',
             runId,
             reason:
-              'A run is currently active. Try compacting again after it finishes.',
+              'There is not enough earlier conversation to summarize yet.',
           });
-          return;
-        }
-        const tools = describeTools(this.registry.list());
-        const abortController = new AbortController();
-        this.emit({ type: 'context_compaction_started', runId });
-        void compactHistory({
-          history: this.history,
-          model: this.model,
-          config: this.compaction,
-          ...(this.systemPrompt !== undefined
-            ? { system: this.systemPrompt }
-            : {}),
-          tools,
-          signal: abortController.signal,
-        })
-          .then((result) => {
-            if (result) {
-              this.emit({
-                type: 'context_compacted',
-                runId,
-                tokensBefore: result.tokensBefore,
-                tokensAfter: result.tokensAfter,
-                entriesSummarized: result.entriesSummarized,
-              });
-              return;
-            }
-            this.emit({
-              type: 'context_compaction_skipped',
-              runId,
-              reason:
-                'There is not enough earlier conversation to summarize yet.',
-            });
-          })
-          .catch((error: unknown) => {
-            this.emit({
-              type: 'context_compaction_failed',
-              runId,
-              message: error instanceof Error ? error.message : String(error),
-            });
+        })().catch((error: unknown) => {
+          this.emit({
+            type: 'context_compaction_failed',
+            runId,
+            message: error instanceof Error ? error.message : String(error),
           });
+        });
         return;
       }
     }
@@ -653,6 +657,9 @@ export class Session {
   // A serializable view of the session: history + permission mode + todos. No
   // live handles cross this boundary.
   snapshot(): SessionSnapshot {
+    const proposals = this.context.editProposals
+      ? [...this.context.editProposals.values()]
+      : [];
     return {
       id: this.id,
       ...(this.cwd ? { cwd: this.cwd } : {}),
@@ -660,6 +667,10 @@ export class Session {
       permissionMode: this.permissionContext.mode,
       workspaceRoots: [...this.permissionContext.workspaceRoots],
       todos: structuredClone(this.context.todos ?? []),
+      ...(proposals.length > 0 ? { editProposals: proposals } : {}),
+      ...(this.lastInputTokens > 0
+        ? { lastInputTokens: this.lastInputTokens }
+        : {}),
     };
   }
 
@@ -706,6 +717,15 @@ export class Session {
       (entry) => entry.role === 'user',
     ).length;
     session.context.todos = structuredClone(snapshot.todos);
+    if (snapshot.editProposals && snapshot.editProposals.length > 0) {
+      session.context.editProposals = new Map(
+        snapshot.editProposals.map((p) => [p.id, structuredClone(p)]),
+      );
+      session.editProposalCounter = snapshot.editProposals.length;
+    }
+    if (snapshot.lastInputTokens) {
+      session.lastInputTokens = snapshot.lastInputTokens;
+    }
     return session;
   }
 }

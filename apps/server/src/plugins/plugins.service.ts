@@ -7,8 +7,10 @@ import {
 } from '@nestjs/common';
 import type { McpTrustLevel } from '@colorful-code/tool-runtime';
 import {
+  findMcpCatalog,
   findLspCatalog,
   findSkillCatalog,
+  listMcpCatalog,
   listLspCatalog,
   listSkillCatalog,
 } from './plugin-catalog';
@@ -27,6 +29,31 @@ import type {
 } from './plugin-types';
 
 const TRUST_LEVELS: readonly McpTrustLevel[] = ['trusted', 'ask', 'blocked'];
+
+function mergeRegistryServers(
+  base: McpRegistryListResponse,
+  demos: McpRegistryServer[],
+): McpRegistryListResponse {
+  const seen = new Set<string>();
+  const servers = [
+    ...demos.map((server) => ({ server })),
+    ...base.servers,
+  ].filter((entry) => {
+    if (seen.has(entry.server.name)) {
+      return false;
+    }
+    seen.add(entry.server.name);
+    return true;
+  });
+
+  return {
+    servers,
+    metadata: {
+      ...base.metadata,
+      count: servers.length,
+    },
+  };
+}
 
 function validateRegistryName(value: unknown): string {
   if (typeof value !== 'string' || value.trim().length === 0) {
@@ -90,7 +117,11 @@ export class PluginsService {
     options: RegistryListOptions,
   ): Promise<McpRegistryListResponse> {
     try {
-      return await this.registry.listServers(options);
+      const registry = await this.registry.listServers(options);
+      if (options.cursor) {
+        return registry;
+      }
+      return mergeRegistryServers(registry, listMcpCatalog());
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new BadGatewayException(message);
@@ -101,6 +132,10 @@ export class PluginsService {
     name: string,
     version?: string,
   ): Promise<McpRegistryServer> {
+    const demo = findMcpCatalog(name);
+    if (demo) {
+      return demo;
+    }
     try {
       return await this.registry.getServerVersion(name, version);
     } catch (error) {

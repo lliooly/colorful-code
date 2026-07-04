@@ -56,6 +56,20 @@ function createMemoryStore(): SessionStore {
   } as SessionStore;
 }
 
+function sampleSnapshot(
+  overrides: Partial<SessionSnapshot> = {},
+): SessionSnapshot {
+  return {
+    id: 'session-1',
+    cwd: '/workspace/app',
+    history: [{ role: 'user', content: 'hello' }],
+    permissionMode: 'default',
+    workspaceRoots: ['/workspace/app'],
+    todos: [],
+    ...overrides,
+  };
+}
+
 test('default dynamic prompt sections omit TODO placeholders when context is absent', async () => {
   const prompt = await buildSystemPrompt({
     staticSections: [],
@@ -155,4 +169,51 @@ test('create session loads CLAUDE.md from the workspace into project memory', as
     await service.dispose(id);
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('startup preload restores only sessions updated in the last three days', async () => {
+  const now = Date.now();
+  const recent = sampleSnapshot({ id: 'recent-session' });
+  const stale = sampleSnapshot({ id: 'stale-session' });
+  const snapshots = new Map([
+    [recent.id, recent],
+    [stale.id, stale],
+  ]);
+  const store = {
+    loadSnapshot(id: string): SessionSnapshot | undefined {
+      return snapshots.get(id);
+    },
+    listSessions(): Array<{ snapshot: SessionSnapshot; updatedAt: number }> {
+      return [
+        { snapshot: recent, updatedAt: now - 2 * 24 * 60 * 60 * 1000 },
+        { snapshot: stale, updatedAt: now - 4 * 24 * 60 * 60 * 1000 },
+      ];
+    },
+    listCheckpoints(): [] {
+      return [];
+    },
+    loadSessionMetadata(): undefined {
+      return undefined;
+    },
+    close(): void {},
+    onModuleDestroy(): void {},
+  } as unknown as SessionStore;
+  const service = new SessionsService(
+    (): ModelClient => ({
+      run(): AsyncIterable<ModelTurnEvent> {
+        return (async function* () {
+          yield { type: 'end' as const };
+        })();
+      },
+    }),
+    store,
+  );
+
+  service.onModuleInit();
+  await waitFor(() => service.has('recent-session'), 'recent session preload');
+
+  assert.equal(service.has('recent-session'), true);
+  assert.equal(service.has('stale-session'), false);
+
+  await service.dispose('recent-session');
 });

@@ -157,6 +157,44 @@ test('sessions exclude disabled installed MCP plugins', async () => {
   assert.equal(entry, undefined);
 });
 
+test('sessions report failed installed MCP plugins instead of hiding them', async () => {
+  const app = await boot();
+  const pluginStore = app.get(PluginStore);
+  const service = app.get(SessionsService);
+
+  pluginStore.installMcpPlugin({
+    registryName: 'io.example/broken',
+    title: 'Broken MCP',
+    version: '1.0.0',
+    config: {
+      type: 'stdio',
+      command: process.execPath,
+      args: ['--definitely-not-an-mcp-server'],
+      trust: 'ask',
+    },
+  });
+
+  const { id } = await service.create();
+  const status = await waitFor(
+    service,
+    id,
+    (event) => event.type === 'mcp_status',
+  );
+
+  assert.equal(
+    status.type === 'mcp_status' && status.servers[0]?.name,
+    'io-example-broken',
+  );
+  assert.equal(
+    status.type === 'mcp_status' && status.servers[0]?.status,
+    'failed',
+  );
+  assert.match(
+    status.type === 'mcp_status' ? (status.servers[0]?.error ?? '') : '',
+    /connect|closed|failed|exit|Unexpected/i,
+  );
+});
+
 test('sessions merge enabled installed LSP plugins', async () => {
   const app = await boot();
   const pluginStore = app.get(PluginStore);

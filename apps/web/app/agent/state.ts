@@ -163,6 +163,94 @@ export function selectedScopeForSession(
     : { type: 'chats' };
 }
 
+const COMPOSER_COMPOSITION_GRACE_MS = 100;
+
+export type ComposerKeyInput = {
+  key: string;
+  shiftKey: boolean;
+  isComposing?: boolean;
+  keyCode?: number;
+  which?: number;
+  compositionEndedAt?: number | null;
+  now?: number;
+};
+
+export function shouldSubmitComposerKey(event: ComposerKeyInput): boolean {
+  if (event.key !== 'Enter' || event.shiftKey) {
+    return false;
+  }
+
+  const code = event.keyCode ?? event.which;
+  if (event.isComposing || code === 229) {
+    return false;
+  }
+
+  if (
+    typeof event.compositionEndedAt === 'number' &&
+    (event.now ?? performance.now()) - event.compositionEndedAt <
+      COMPOSER_COMPOSITION_GRACE_MS
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function normalizeSearchTerm(value: string): string {
+  return value.trim().toLocaleLowerCase();
+}
+
+function sessionMatchesSearch(
+  summary: SessionSummary,
+  searchTerm: string,
+): boolean {
+  return [summary.title, summary.cwd, summary.id]
+    .filter((value): value is string => typeof value === 'string')
+    .some((value) => value.toLocaleLowerCase().includes(searchTerm));
+}
+
+function projectMatchesSearch(
+  project: WorkspaceProject,
+  searchTerm: string,
+): boolean {
+  return [project.name, project.path, project.id]
+    .filter((value): value is string => typeof value === 'string')
+    .some((value) => value.toLocaleLowerCase().includes(searchTerm));
+}
+
+export function filterSessionHistory(
+  projects: WorkspaceProject[],
+  standaloneChats: SessionSummary[],
+  query: string,
+): { projects: WorkspaceProject[]; chats: SessionSummary[] } {
+  const searchTerm = normalizeSearchTerm(query);
+  if (!searchTerm) {
+    return { projects, chats: standaloneChats };
+  }
+
+  return {
+    projects: projects
+      .map((project) => {
+        if (projectMatchesSearch(project, searchTerm)) {
+          return project;
+        }
+        return {
+          ...project,
+          chats: project.chats.filter((chat) =>
+            sessionMatchesSearch(chat, searchTerm),
+          ),
+        };
+      })
+      .filter(
+        (project) =>
+          projectMatchesSearch(project, searchTerm) || project.chats.length > 0,
+      ),
+    chats: standaloneChats.filter((chat) =>
+      sessionMatchesSearch(chat, searchTerm),
+    ),
+  };
+}
+
 export function composeMessageWithAttachments(
   text: string,
   attachments: LocalFileAttachment[],
@@ -196,6 +284,36 @@ export function composeVisibleMessageWithAttachments(
   );
   const prefix = trimmed.length > 0 ? [trimmed, ''] : [];
   return [...prefix, 'Attached files:', ...attachmentLines].join('\n');
+}
+
+const APPROX_CHARS_PER_TOKEN = 4;
+const MESSAGE_TOKEN_OVERHEAD = 12;
+
+function estimateTextTokens(text: string): number {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return 0;
+  return Math.ceil(trimmed.length / APPROX_CHARS_PER_TOKEN);
+}
+
+export function estimateConversationTokens(items: ConversationItem[]): number {
+  let total = 0;
+  for (const item of items) {
+    if (item.kind === 'user') {
+      total += MESSAGE_TOKEN_OVERHEAD + estimateTextTokens(item.text);
+    } else if (item.kind === 'assistant') {
+      total += MESSAGE_TOKEN_OVERHEAD + estimateTextTokens(item.text);
+    } else if (item.kind === 'tool') {
+      total +=
+        MESSAGE_TOKEN_OVERHEAD +
+        estimateTextTokens(item.name) +
+        estimateTextTokens(JSON.stringify(item.input));
+      if (item.result) {
+        total +=
+          MESSAGE_TOKEN_OVERHEAD + estimateTextTokens(item.result.content);
+      }
+    }
+  }
+  return total;
 }
 
 export function applyAgentEvent(

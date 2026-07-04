@@ -112,7 +112,6 @@ import {
 import {
   Sheet,
   SheetContent,
-  SheetDescription,
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
@@ -204,10 +203,12 @@ import {
   composeVisibleMessageWithAttachments,
   conversationItemsFromHistory,
   createAgentViewState,
+  estimateConversationTokens,
+  filterSessionHistory,
   formatToolSourceLabel,
   patchCounts,
-  patchStatusLabel,
   selectedScopeForSession,
+  shouldSubmitComposerKey,
   sortedEditProposals,
   type ApprovalState,
   type ConversationItem,
@@ -230,6 +231,17 @@ import {
   type SessionSummary,
   type SessionEvent,
 } from './types';
+import {
+  langFromMarkdownFence,
+  langFromPath,
+  tokenizeCode,
+  type TokenizedLine,
+} from '@/lib/highlighter';
+import {
+  parseMarkdown,
+  type MarkdownBlock,
+  type MarkdownInline,
+} from './markdown';
 
 const sidebarItems = [
   { key: 'search', icon: Search, href: '#search' },
@@ -356,6 +368,16 @@ function installedPluginTrust(plugin: InstalledPlugin): PluginTrust {
   return plugin.config.trust ?? 'ask';
 }
 
+function isStaleHistoryRestoreError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes('404') ||
+    message.includes('No persisted snapshot') ||
+    message.includes('No checkpoint') ||
+    message.includes('Unknown session')
+  );
+}
+
 function settingsSectionPluginKind(
   section: SettingsSection,
 ): PluginKind | null {
@@ -369,6 +391,8 @@ const copy = {
   en: {
     nav: {
       search: 'Search',
+      searchPlaceholder: 'Search chats and folders',
+      noSearchResults: 'No matches.',
       plugins: 'Plugins',
       projects: 'Projects',
       chats: 'Chats',
@@ -516,6 +540,8 @@ const copy = {
   zh: {
     nav: {
       search: '搜索',
+      searchPlaceholder: '搜索会话和文件夹',
+      noSearchResults: '没有匹配结果。',
       plugins: '插件',
       projects: '项目',
       chats: '会话',
@@ -741,6 +767,191 @@ function ThinkingBlock({ thinking }: { thinking: string }) {
   );
 }
 
+function AssistantMarkdown({ text }: { text: string }) {
+  const blocks = useMemo(() => parseMarkdown(text), [text]);
+
+  if (blocks.length === 0) {
+    return <p className="text-sm leading-6">...</p>;
+  }
+
+  return (
+    <div className="space-y-3 text-sm leading-6">
+      {blocks.map((block, index) => (
+        <MarkdownBlockView key={index} block={block} />
+      ))}
+    </div>
+  );
+}
+
+function MarkdownBlockView({ block }: { block: MarkdownBlock }) {
+  if (block.type === 'heading') {
+    const headingClass =
+      block.level <= 2
+        ? 'text-base font-semibold tracking-normal'
+        : 'text-sm font-semibold tracking-normal';
+    if (block.level === 1) {
+      return (
+        <h1 className={cn('break-words', headingClass)}>{block.content}</h1>
+      );
+    }
+    if (block.level === 2) {
+      return (
+        <h2 className={cn('break-words', headingClass)}>{block.content}</h2>
+      );
+    }
+    if (block.level === 3) {
+      return (
+        <h3 className={cn('break-words', headingClass)}>{block.content}</h3>
+      );
+    }
+    return <h4 className={cn('break-words', headingClass)}>{block.content}</h4>;
+  }
+
+  if (block.type === 'paragraph') {
+    return (
+      <p className="whitespace-pre-wrap break-words">
+        <MarkdownInlineView nodes={block.content} />
+      </p>
+    );
+  }
+
+  if (block.type === 'list') {
+    const ListTag = block.ordered ? 'ol' : 'ul';
+    return (
+      <ListTag
+        className={cn(
+          'space-y-1 pl-5 marker:text-muted-foreground',
+          block.ordered ? 'list-decimal' : 'list-disc',
+        )}
+      >
+        {block.items.map((item, index) => (
+          <li key={index} className="break-words">
+            <MarkdownInlineView nodes={parseInlineForRender(item)} />
+          </li>
+        ))}
+      </ListTag>
+    );
+  }
+
+  return <MarkdownCodeBlock block={block} />;
+}
+
+function MarkdownCodeBlock({
+  block,
+}: {
+  block: Extract<MarkdownBlock, { type: 'code' }>;
+}) {
+  const isDark = useIsDark();
+  const lang = useMemo(() => langFromMarkdownFence(block.lang), [block.lang]);
+  const [highlighted, setHighlighted] = useState<{
+    code: string;
+    lang: string;
+    isDark: boolean;
+    lines: TokenizedLine[];
+  } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    tokenizeCode(block.code, lang, isDark).then((result) => {
+      if (!cancelled) {
+        setHighlighted({ code: block.code, lang, isDark, lines: result });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [block.code, lang, isDark]);
+
+  const tokenizedLines =
+    highlighted?.code === block.code &&
+    highlighted.lang === lang &&
+    highlighted.isDark === isDark
+      ? highlighted.lines
+      : [];
+  const lines =
+    tokenizedLines.length > 0
+      ? tokenizedLines
+      : block.code.split('\n').map((line) => ({ tokens: [], text: line }));
+
+  return (
+    <pre className="overflow-x-auto rounded-xl border border-border/60 bg-muted/40 p-3 text-xs leading-5">
+      <code>
+        {lines.map((line, lineIndex) => (
+          <span key={lineIndex} className="block min-h-5 whitespace-pre">
+            {line.tokens.length > 0
+              ? line.tokens.map((token, tokenIndex) => (
+                  <span key={tokenIndex} style={tokenInlineStyle(token)}>
+                    {token.content}
+                  </span>
+                ))
+              : line.text}
+          </span>
+        ))}
+      </code>
+    </pre>
+  );
+}
+
+function MarkdownInlineView({ nodes }: { nodes: MarkdownInline[] }) {
+  return (
+    <>
+      {nodes.map((node, index) => {
+        if (node.type === 'text') return <span key={index}>{node.text}</span>;
+        if (node.type === 'code') {
+          return (
+            <code
+              key={index}
+              className="rounded-md border border-border/60 bg-muted/50 px-1 py-0.5 font-mono text-[0.85em]"
+            >
+              {node.text}
+            </code>
+          );
+        }
+        if (node.type === 'strong') {
+          return (
+            <strong key={index} className="font-semibold">
+              <MarkdownInlineView nodes={node.content} />
+            </strong>
+          );
+        }
+        if (node.type === 'emphasis') {
+          return (
+            <em key={index}>
+              <MarkdownInlineView nodes={node.content} />
+            </em>
+          );
+        }
+        return (
+          <a
+            key={index}
+            href={safeMarkdownHref(node.href)}
+            target="_blank"
+            rel="noreferrer"
+            className="font-medium text-primary underline underline-offset-4"
+          >
+            <MarkdownInlineView nodes={node.content} />
+          </a>
+        );
+      })}
+    </>
+  );
+}
+
+function parseInlineForRender(text: string): MarkdownInline[] {
+  const paragraph = parseMarkdown(text).find(
+    (block): block is Extract<MarkdownBlock, { type: 'paragraph' }> =>
+      block.type === 'paragraph',
+  );
+  return paragraph?.content ?? [{ type: 'text', text }];
+}
+
+function safeMarkdownHref(href: string): string {
+  const trimmed = href.trim();
+  if (/^(https?:|mailto:)/i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith('/') || trimmed.startsWith('#')) return trimmed;
+  return '#';
+}
+
 function ToolInvocationItem({ item }: { item: ToolConversationItem }) {
   const [open, setOpen] = useState(false);
   const status = toolStatus(item);
@@ -916,9 +1127,6 @@ export default function AgentPage(): ReactNode {
   const [pickingDirectory, setPickingDirectory] = useState(false);
   const [pickingFile, setPickingFile] = useState(false);
   const [attachments, setAttachments] = useState<LocalFileAttachment[]>([]);
-  const [selectedProposalId, setSelectedProposalId] = useState<string | null>(
-    null,
-  );
   const [selectedPatchPath, setSelectedPatchPath] = useState<string | null>(
     null,
   );
@@ -930,6 +1138,8 @@ export default function AgentPage(): ReactNode {
     () => new Set(),
   );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [historySearchOpen, setHistorySearchOpen] = useState(false);
+  const [historySearchQuery, setHistorySearchQuery] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activeSettingsSection, setActiveSettingsSection] =
     useState<SettingsSection>('general');
@@ -1047,6 +1257,8 @@ export default function AgentPage(): ReactNode {
   const macosSpeechUnlistenRef = useRef<(() => void) | null>(null);
   const seqRef = useRef(0);
   const sidebarPanelRef = useRef<PanelImperativeHandle | null>(null);
+  const historySearchInputRef = useRef<HTMLInputElement | null>(null);
+  const composerCompositionEndedAtRef = useRef<number | null>(null);
 
   const cleanupMacosSpeech = useCallback(() => {
     macosSpeechActiveRef.current = false;
@@ -1096,24 +1308,26 @@ export default function AgentPage(): ReactNode {
     getDesktopRuntimeSnapshot,
     getDesktopRuntimeServerSnapshot,
   );
-  const orderedEditProposals = useMemo(
-    () => sortedEditProposals(editProposals),
+  const allPatches = useMemo(
+    () => sortedEditProposals(editProposals).flatMap((p) => p.patches),
     [editProposals],
   );
-  const selectedProposal =
-    orderedEditProposals.find(
-      (proposal) => proposal.proposalId === selectedProposalId,
-    ) ??
-    orderedEditProposals[0] ??
-    null;
   const selectedPatch =
-    selectedProposal?.patches.find(
-      (patch) => patch.path === selectedPatchPath,
-    ) ??
-    selectedProposal?.patches[0] ??
+    allPatches.find((patch) => patch.path === selectedPatchPath) ??
+    allPatches[0] ??
     null;
   const displayError = error ?? viewState.error;
   const t = copy[preferences.language];
+  const filteredHistory = useMemo(
+    () => filterSessionHistory(projects, standaloneChats, historySearchQuery),
+    [historySearchQuery, projects, standaloneChats],
+  );
+  const filteredProjects = filteredHistory.projects;
+  const filteredStandaloneChats = filteredHistory.chats;
+  const hasHistorySearch = historySearchQuery.trim().length > 0;
+  const hasHistorySearchResults =
+    filteredStandaloneChats.length > 0 ||
+    filteredProjects.some((project) => project.chats.length > 0);
   const visiblePermissionModes = useMemo(
     () => getVisiblePermissionModes(preferences),
     [preferences],
@@ -1162,30 +1376,39 @@ export default function AgentPage(): ReactNode {
     [installedPlugins, settingsPluginKind],
   );
 
+  const contextWindowSize =
+    CONTEXT_WINDOW_TOKENS[preset.id] ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
+  const displayedContextTokens = useMemo(
+    () =>
+      contextTokens > 0 ? contextTokens : estimateConversationTokens(items),
+    [contextTokens, items],
+  );
   const contextProgress = useMemo(() => {
-    if (!sessionId) return 0;
-    // When we have real usage data from the backend, use it.
-    if (contextTokens > 0) {
-      const windowSize =
-        CONTEXT_WINDOW_TOKENS[preset.id] ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
-      return Math.min(99, Math.round((contextTokens / windowSize) * 100));
-    }
-    // Fallback estimate before the first usage event arrives.
-    return Math.min(90, 2 + items.length * 6);
-  }, [contextTokens, preset.id, sessionId, items.length]);
+    if (!sessionId || displayedContextTokens <= 0) return 0;
+    return Math.min(
+      99,
+      Math.max(
+        1,
+        Math.round((displayedContextTokens / contextWindowSize) * 100),
+      ),
+    );
+  }, [contextWindowSize, displayedContextTokens, sessionId]);
 
   const contextProgressLabel = useMemo(() => {
     if (!sessionId) return '0%';
     if (isCustom) {
-      const windowSize = DEFAULT_CONTEXT_WINDOW_TOKENS;
-      const tokens =
-        contextTokens > 0
-          ? contextTokens
-          : Math.round((contextProgress / 100) * windowSize);
-      return `${formatTokenCount(tokens)} / ${formatTokenCount(windowSize)}`;
+      return `${formatTokenCount(displayedContextTokens)} / ${formatTokenCount(
+        contextWindowSize,
+      )}`;
     }
     return `${Math.round(contextProgress)}%`;
-  }, [contextProgress, contextTokens, isCustom, sessionId]);
+  }, [
+    contextProgress,
+    contextWindowSize,
+    displayedContextTokens,
+    isCustom,
+    sessionId,
+  ]);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -1326,6 +1549,11 @@ export default function AgentPage(): ReactNode {
       cancelled = true;
     };
   }, [settingsOpen, t.settings.modelListFailed]);
+
+  useEffect(() => {
+    if (!historySearchOpen || sidebarCollapsed) return;
+    historySearchInputRef.current?.focus();
+  }, [historySearchOpen, sidebarCollapsed]);
 
   const resetConversation = useCallback(
     (seedItems: ConversationItem[] = []) => {
@@ -2074,22 +2302,6 @@ export default function AgentPage(): ReactNode {
     [sessionId, approval],
   );
 
-  const handleEditDecision = useCallback(
-    async (proposalId: string, decision: 'approve' | 'reject') => {
-      if (!sessionId) return;
-      try {
-        await sendControl(sessionId, {
-          type: 'edit_decision',
-          proposalId,
-          decision,
-        });
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    },
-    [sessionId],
-  );
-
   const handleForkCheckpoint = useCallback(
     async (checkpoint: Checkpoint) => {
       if (!sessionId) return;
@@ -2098,14 +2310,12 @@ export default function AgentPage(): ReactNode {
         const forked = await forkCheckpoint(sessionId, checkpoint.id, {
           model: buildModelConfig(),
         });
-        resetConversation(
-          conversationItemsFromHistory(checkpoint.snapshot.history),
-        );
-        setPermissionMode(checkpoint.snapshot.permissionMode);
+        resetConversation(conversationItemsFromHistory(forked.history));
+        setPermissionMode(forked.permissionMode);
         sessionIdRef.current = forked.id;
         setSessionId(forked.id);
-        await refreshCheckpoints(forked.id);
         openStream(forked.id);
+        void refreshCheckpoints(forked.id);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
@@ -2126,31 +2336,21 @@ export default function AgentPage(): ReactNode {
       setSelectedScope(selectedScopeForSession(summary));
       try {
         if (summary.checkpointId) {
-          const data = await listCheckpoints(summary.id);
-          const checkpoint =
-            data.checkpoints.find((item) => item.id === summary.checkpointId) ??
-            data.checkpoints.at(-1);
-          if (checkpoint) {
-            const restored = await restoreCheckpoint(
-              summary.id,
-              checkpoint.id,
-              {
-                model: buildModelConfig(),
-              },
-            );
-            resetConversation(
-              conversationItemsFromHistory(checkpoint.snapshot.history),
-            );
-            setPermissionMode(checkpoint.snapshot.permissionMode);
-            setCurrentCheckpointId(restored.checkpointId);
-            setNeedsModelConfig(restored.needsModelConfig);
-            setCheckpoints(data.checkpoints);
-            sessionIdRef.current = restored.id;
-            setSessionId(restored.id);
-            await refreshCheckpoints(restored.id);
-            openStream(restored.id);
-            return;
-          }
+          const restored = await restoreCheckpoint(
+            summary.id,
+            summary.checkpointId,
+            { model: buildModelConfig() },
+          );
+          resetConversation(conversationItemsFromHistory(restored.history));
+          setPermissionMode(restored.permissionMode);
+          setCurrentCheckpointId(restored.checkpointId);
+          setNeedsModelConfig(restored.needsModelConfig);
+          sessionIdRef.current = restored.id;
+          setSessionId(restored.id);
+          // Fire SSE + checkpoint refresh in parallel; don't block display.
+          openStream(restored.id);
+          void refreshCheckpoints(restored.id);
+          return;
         }
 
         const restored = await restoreSession(summary.id, {
@@ -2159,16 +2359,33 @@ export default function AgentPage(): ReactNode {
         sessionIdRef.current = restored.id;
         setSessionId(restored.id);
         setNeedsModelConfig(restored.needsModelConfig);
-        resetConversation();
-        await refreshCheckpoints(restored.id);
+        setPermissionMode(restored.permissionMode);
+        resetConversation(conversationItemsFromHistory(restored.history));
+        // Fire SSE + checkpoint refresh in parallel; don't block display.
         openStream(restored.id);
+        void refreshCheckpoints(restored.id);
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        if (isStaleHistoryRestoreError(err)) {
+          await deleteSession(summary.id).catch(() => undefined);
+          await refreshSessionHistory();
+          toast.success(t.feedback.chatDeleted, {
+            description: summary.title,
+          });
+        } else {
+          setError(err instanceof Error ? err.message : String(err));
+        }
       } finally {
         setRestoringSessionId(null);
       }
     },
-    [buildModelConfig, openStream, refreshCheckpoints, resetConversation],
+    [
+      buildModelConfig,
+      openStream,
+      refreshCheckpoints,
+      refreshSessionHistory,
+      resetConversation,
+      t.feedback.chatDeleted,
+    ],
   );
 
   const handleCopySessionId = useCallback(async () => {
@@ -2459,7 +2676,27 @@ export default function AgentPage(): ReactNode {
                       </SidebarMenuItem>
                       {sidebarItems.map((item) => (
                         <SidebarMenuItem key={item.key}>
-                          {item.key === 'plugins' ? (
+                          {item.key === 'search' ? (
+                            <SidebarMenuButton
+                              tooltip={t.nav[item.key]}
+                              className={cn(
+                                sidebarCollapsed && 'justify-center px-2',
+                              )}
+                              onClick={() => {
+                                setHistorySearchOpen((open) => !open);
+                                if (sidebarCollapsed) {
+                                  setSidebarCollapsed(false);
+                                }
+                              }}
+                            >
+                              <item.icon />
+                              <span
+                                className={cn(sidebarCollapsed && 'hidden')}
+                              >
+                                {t.nav[item.key]}
+                              </span>
+                            </SidebarMenuButton>
+                          ) : (
                             <SidebarMenuButton
                               tooltip={t.nav[item.key]}
                               className={cn(
@@ -2474,24 +2711,138 @@ export default function AgentPage(): ReactNode {
                                 {t.nav[item.key]}
                               </span>
                             </SidebarMenuButton>
-                          ) : (
+                          )}
+                        </SidebarMenuItem>
+                      ))}
+                    </SidebarMenu>
+                    {historySearchOpen && !sidebarCollapsed ? (
+                      <div className="mt-2 px-1">
+                        <Input
+                          ref={historySearchInputRef}
+                          value={historySearchQuery}
+                          onChange={(event) =>
+                            setHistorySearchQuery(event.target.value)
+                          }
+                          placeholder={t.nav.searchPlaceholder}
+                          aria-label={t.nav.searchPlaceholder}
+                          className="h-8 text-xs"
+                        />
+                      </div>
+                    ) : null}
+                    {hasHistorySearch && !hasHistorySearchResults ? (
+                      <p className="mt-2 px-3 text-xs text-muted-foreground">
+                        {t.nav.noSearchResults}
+                      </p>
+                    ) : null}
+                  </SidebarGroupContent>
+                </SidebarGroup>
+
+                <SidebarSeparator />
+
+                <SidebarGroup
+                  className={cn(
+                    'group',
+                    sidebarCollapsed && 'items-center px-2',
+                  )}
+                >
+                  <SidebarGroupLabel
+                    className={cn(
+                      sidebarCollapsed && 'hidden',
+                      'text-muted-foreground/60',
+                    )}
+                  >
+                    {t.nav.chats}
+                  </SidebarGroupLabel>
+                  <SidebarGroupAction
+                    type="button"
+                    aria-label={t.nav.createDefaultChat}
+                    className={cn(
+                      sidebarCollapsed && 'hidden',
+                      'opacity-0 group-hover:opacity-100 transition-opacity hover:bg-transparent text-muted-foreground [&>svg]:size-3',
+                    )}
+                    onClick={() => void handleCreate({ type: 'chats' })}
+                    disabled={connecting}
+                  >
+                    <Plus />
+                  </SidebarGroupAction>
+                  <SidebarGroupContent>
+                    {filteredStandaloneChats.length === 0 &&
+                    !sidebarCollapsed &&
+                    !hasHistorySearch ? (
+                      <p className="px-3 text-xs text-muted-foreground">
+                        {loadingSessionHistory
+                          ? t.nav.loadingCheckpoints
+                          : t.nav.createChatToStart}
+                      </p>
+                    ) : null}
+                    <SidebarMenu>
+                      {filteredStandaloneChats.map((chat) => (
+                        <SidebarMenuItem key={chat.id}>
+                          <div className="flex items-center gap-1">
                             <SidebarMenuButton
-                              asChild
-                              tooltip={t.nav[item.key]}
+                              disabled={
+                                loadingSessionHistory ||
+                                restoringSessionId === chat.id
+                              }
+                              onClick={() =>
+                                void handleRestorePersistedSession(chat)
+                              }
+                              tooltip={chat.title}
                               className={cn(
+                                'min-w-0 flex-1',
                                 sidebarCollapsed && 'justify-center px-2',
                               )}
                             >
-                              <a href={item.href}>
-                                <item.icon />
-                                <span
-                                  className={cn(sidebarCollapsed && 'hidden')}
-                                >
-                                  {t.nav[item.key]}
-                                </span>
-                              </a>
+                              <MessageSquare />
+                              <div
+                                className={cn(
+                                  'min-w-0 flex-1',
+                                  sidebarCollapsed && 'hidden',
+                                )}
+                              >
+                                <p className="truncate text-xs font-medium">
+                                  {chat.title}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  {formatHistoryTime(chat.updatedAt)}
+                                </p>
+                              </div>
                             </SidebarMenuButton>
-                          )}
+                            {!sidebarCollapsed ? (
+                              <>
+                                <Button
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  className="size-7 shrink-0 text-muted-foreground [&_svg]:size-3"
+                                  disabled={
+                                    historyActionId === `pin:${chat.id}`
+                                  }
+                                  onClick={() =>
+                                    void handlePinHistorySession(chat)
+                                  }
+                                  aria-label={
+                                    chat.pinned ? 'Unpin chat' : 'Pin chat'
+                                  }
+                                >
+                                  {chat.pinned ? <PinOff /> : <Pin />}
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  className="size-7 shrink-0 text-muted-foreground [&_svg]:size-3"
+                                  disabled={
+                                    historyActionId === `delete:${chat.id}`
+                                  }
+                                  onClick={() =>
+                                    void handleDeleteHistorySession(chat)
+                                  }
+                                  aria-label="Delete chat"
+                                >
+                                  <Trash2 />
+                                </Button>
+                              </>
+                            ) : null}
+                          </div>
                         </SidebarMenuItem>
                       ))}
                     </SidebarMenu>
@@ -2528,7 +2879,7 @@ export default function AgentPage(): ReactNode {
                   </SidebarGroupAction>
                   <SidebarGroupContent>
                     <SidebarMenu>
-                      {projects.map((project) => (
+                      {filteredProjects.map((project) => (
                         <div key={project.id} className="space-y-1">
                           <SidebarMenuItem>
                             <div className="flex items-center gap-1">
@@ -2691,130 +3042,6 @@ export default function AgentPage(): ReactNode {
                             </SidebarMenuItem>
                           ) : null}
                         </div>
-                      ))}
-                    </SidebarMenu>
-                  </SidebarGroupContent>
-                </SidebarGroup>
-
-                <SidebarSeparator />
-
-                <SidebarGroup
-                  className={cn(
-                    'group',
-                    sidebarCollapsed && 'items-center px-2',
-                  )}
-                >
-                  <SidebarGroupLabel
-                    className={cn(
-                      sidebarCollapsed && 'hidden',
-                      'text-muted-foreground/60',
-                    )}
-                  >
-                    {t.nav.chats}
-                  </SidebarGroupLabel>
-                  <SidebarGroupAction
-                    type="button"
-                    aria-label={t.nav.createDefaultChat}
-                    className={cn(
-                      sidebarCollapsed && 'hidden',
-                      'opacity-0 group-hover:opacity-100 transition-opacity hover:bg-transparent text-muted-foreground [&>svg]:size-3',
-                    )}
-                    onClick={() => void handleCreate({ type: 'chats' })}
-                    disabled={connecting}
-                  >
-                    <Plus />
-                  </SidebarGroupAction>
-                  <SidebarGroupContent>
-                    {!sidebarCollapsed ? (
-                      <SidebarMenu className="mb-1">
-                        <SidebarMenuItem>
-                          <SidebarMenuButton
-                            onClick={() => setSelectedScope({ type: 'chats' })}
-                            isActive={selectedScope.type === 'chats'}
-                            tooltip={t.nav.chats}
-                          >
-                            <MessageSquare />
-                            <span>{t.nav.chats}</span>
-                          </SidebarMenuButton>
-                        </SidebarMenuItem>
-                      </SidebarMenu>
-                    ) : null}
-                    {standaloneChats.length === 0 && !sidebarCollapsed ? (
-                      <p className="px-3 text-xs text-muted-foreground">
-                        {loadingSessionHistory
-                          ? t.nav.loadingCheckpoints
-                          : t.nav.createChatToStart}
-                      </p>
-                    ) : null}
-                    <SidebarMenu>
-                      {standaloneChats.map((chat) => (
-                        <SidebarMenuItem key={chat.id}>
-                          <div className="flex items-center gap-1">
-                            <SidebarMenuButton
-                              disabled={
-                                loadingSessionHistory ||
-                                restoringSessionId === chat.id
-                              }
-                              onClick={() =>
-                                void handleRestorePersistedSession(chat)
-                              }
-                              tooltip={chat.title}
-                              className={cn(
-                                'min-w-0 flex-1',
-                                sidebarCollapsed && 'justify-center px-2',
-                              )}
-                            >
-                              <MessageSquare />
-                              <div
-                                className={cn(
-                                  'min-w-0 flex-1',
-                                  sidebarCollapsed && 'hidden',
-                                )}
-                              >
-                                <p className="truncate text-xs font-medium">
-                                  {chat.title}
-                                </p>
-                                <p className="truncate text-xs text-muted-foreground">
-                                  {formatHistoryTime(chat.updatedAt)}
-                                </p>
-                              </div>
-                            </SidebarMenuButton>
-                            {!sidebarCollapsed ? (
-                              <>
-                                <Button
-                                  variant="ghost"
-                                  size="icon-sm"
-                                  className="size-7 shrink-0 text-muted-foreground [&_svg]:size-3"
-                                  disabled={
-                                    historyActionId === `pin:${chat.id}`
-                                  }
-                                  onClick={() =>
-                                    void handlePinHistorySession(chat)
-                                  }
-                                  aria-label={
-                                    chat.pinned ? 'Unpin chat' : 'Pin chat'
-                                  }
-                                >
-                                  {chat.pinned ? <PinOff /> : <Pin />}
-                                </Button>
-                                <Button
-                                  variant="ghost"
-                                  size="icon-sm"
-                                  className="size-7 shrink-0 text-muted-foreground [&_svg]:size-3"
-                                  disabled={
-                                    historyActionId === `delete:${chat.id}`
-                                  }
-                                  onClick={() =>
-                                    void handleDeleteHistorySession(chat)
-                                  }
-                                  aria-label="Delete chat"
-                                >
-                                  <Trash2 />
-                                </Button>
-                              </>
-                            ) : null}
-                          </div>
-                        </SidebarMenuItem>
                       ))}
                     </SidebarMenu>
                   </SidebarGroupContent>
@@ -3012,63 +3239,85 @@ export default function AgentPage(): ReactNode {
                                   </Empty>
                                 </MessageScrollerItem>
                               ) : (
-                                items.map((item, index) =>
-                                  item.kind === 'context_marker' ? (
-                                    <MessageScrollerItem key={item.id}>
-                                      <ContextMarkerItem
-                                        item={item}
-                                        labels={t.composer}
-                                      />
-                                    </MessageScrollerItem>
-                                  ) : item.kind === 'user' ? (
-                                    <MessageScrollerItem key={`u-${index}`}>
-                                      <Message align="end">
-                                        <MessageContent>
-                                          <div className="ml-auto max-w-[75%] rounded-3xl border border-border/60 bg-primary/8 px-4 py-3">
-                                            <p className="whitespace-pre-wrap break-words text-sm leading-6">
-                                              {item.text}
-                                            </p>
-                                          </div>
-                                        </MessageContent>
-                                      </Message>
-                                    </MessageScrollerItem>
-                                  ) : item.kind === 'assistant' ? (
-                                    <MessageScrollerItem
-                                      key={`a-${item.runId}-${index}`}
-                                    >
-                                      <Message>
-                                        <MessageAvatar>
-                                          <Avatar className="size-9">
-                                            <AvatarFallback>AI</AvatarFallback>
-                                          </Avatar>
-                                        </MessageAvatar>
-                                        <MessageContent>
-                                          <div className="rounded-3xl border border-border/60 bg-background px-4 py-3">
-                                            {item.thinking ? (
-                                              <ThinkingBlock
-                                                thinking={item.thinking}
+                                items.map((item, index) => {
+                                  const isLast = index === items.length - 1;
+                                  if (item.kind === 'context_marker') {
+                                    return (
+                                      <MessageScrollerItem
+                                        key={item.id}
+                                        scrollAnchor={isLast}
+                                      >
+                                        <ContextMarkerItem
+                                          item={item}
+                                          labels={t.composer}
+                                        />
+                                      </MessageScrollerItem>
+                                    );
+                                  }
+                                  if (item.kind === 'user') {
+                                    return (
+                                      <MessageScrollerItem
+                                        key={`u-${index}`}
+                                        scrollAnchor={isLast}
+                                      >
+                                        <Message align="end">
+                                          <MessageContent>
+                                            <div className="ml-auto max-w-[75%] rounded-3xl border border-border/60 bg-primary/8 px-4 py-3">
+                                              <p className="whitespace-pre-wrap break-words text-sm leading-6">
+                                                {item.text}
+                                              </p>
+                                            </div>
+                                          </MessageContent>
+                                        </Message>
+                                      </MessageScrollerItem>
+                                    );
+                                  }
+                                  if (item.kind === 'assistant') {
+                                    return (
+                                      <MessageScrollerItem
+                                        key={`a-${item.runId}-${index}`}
+                                        scrollAnchor={isLast}
+                                      >
+                                        <Message>
+                                          <MessageAvatar>
+                                            <Avatar className="size-9">
+                                              <AvatarFallback>
+                                                AI
+                                              </AvatarFallback>
+                                            </Avatar>
+                                          </MessageAvatar>
+                                          <MessageContent>
+                                            <div className="rounded-3xl border border-border/60 bg-background px-4 py-3">
+                                              {item.thinking ? (
+                                                <ThinkingBlock
+                                                  thinking={item.thinking}
+                                                />
+                                              ) : null}
+                                              <AssistantMarkdown
+                                                text={item.text || '...'}
                                               />
-                                            ) : null}
-                                            <p className="whitespace-pre-wrap text-sm leading-6">
-                                              {item.text || '...'}
-                                            </p>
-                                          </div>
-                                          <MessageFooter>
-                                            <span>
-                                              {item.finalized
-                                                ? 'final'
-                                                : 'streaming'}
-                                            </span>
-                                          </MessageFooter>
-                                        </MessageContent>
-                                      </Message>
-                                    </MessageScrollerItem>
-                                  ) : (
-                                    <MessageScrollerItem key={item.toolUseId}>
+                                            </div>
+                                            <MessageFooter>
+                                              <span>
+                                                {item.finalized
+                                                  ? 'final'
+                                                  : 'streaming'}
+                                              </span>
+                                            </MessageFooter>
+                                          </MessageContent>
+                                        </Message>
+                                      </MessageScrollerItem>
+                                    );
+                                  }
+                                  return (
+                                    <MessageScrollerItem
+                                      key={item.toolUseId}
+                                      scrollAnchor={isLast}
+                                    >
                                       <ToolInvocationItem item={item} />
                                     </MessageScrollerItem>
-                                  ),
-                                )
+                                  );
+                                })
                               )}
                             </MessageScrollerContent>
                           </MessageScrollerViewport>
@@ -3095,8 +3344,25 @@ export default function AgentPage(): ReactNode {
                             : t.composer.placeholderCreate
                         }
                         onChange={(e) => setDraft(e.target.value)}
+                        onCompositionStart={() => {
+                          composerCompositionEndedAtRef.current = null;
+                        }}
+                        onCompositionEnd={() => {
+                          composerCompositionEndedAtRef.current =
+                            performance.now();
+                        }}
                         onKeyDown={(e) => {
-                          if (e.key === 'Enter' && !e.shiftKey) {
+                          if (
+                            shouldSubmitComposerKey({
+                              key: e.key,
+                              shiftKey: e.shiftKey,
+                              isComposing: e.nativeEvent.isComposing,
+                              keyCode: e.nativeEvent.keyCode,
+                              which: e.nativeEvent.which,
+                              compositionEndedAt:
+                                composerCompositionEndedAtRef.current,
+                            })
+                          ) {
                             e.preventDefault();
                             void handleSend();
                           }
@@ -3933,107 +4199,37 @@ export default function AgentPage(): ReactNode {
           className="agent-compact-ui w-full sm:max-w-2xl"
         >
           <SheetHeader>
-            <SheetTitle>Edit proposals</SheetTitle>
-            <SheetDescription>
-              Review backend edit proposals, approve or reject them, and inspect
-              patch details.
-            </SheetDescription>
+            <SheetTitle>Changes</SheetTitle>
           </SheetHeader>
-          {orderedEditProposals.length === 0 ? (
+          {allPatches.length === 0 ? (
             <div className="mt-6 rounded-2xl border border-dashed border-border/70 p-6 text-sm text-muted-foreground">
-              No edit proposals have streamed in yet.
+              No changes yet.
             </div>
           ) : (
             <div className="mt-6 grid min-h-0 gap-4">
               <div className="flex flex-wrap gap-2">
-                {orderedEditProposals.map((proposal) => (
-                  <Button
-                    key={proposal.proposalId}
-                    variant={
-                      proposal.proposalId === selectedProposal?.proposalId
-                        ? 'default'
-                        : 'outline'
-                    }
-                    size="sm"
-                    onClick={() => {
-                      setSelectedProposalId(proposal.proposalId);
-                      setSelectedPatchPath(proposal.patches[0]?.path ?? null);
-                    }}
-                  >
-                    {proposal.status} · {proposal.patches.length}
-                  </Button>
-                ))}
+                {allPatches.map((patch) => {
+                  const counts = patchCounts(patch);
+                  return (
+                    <Button
+                      key={patch.path}
+                      variant={
+                        selectedPatch?.path === patch.path
+                          ? 'default'
+                          : 'outline'
+                      }
+                      size="xs"
+                      onClick={() => setSelectedPatchPath(patch.path)}
+                    >
+                      {patch.path.split('/').pop() ?? patch.path}
+                      <span className="ml-1.5 text-[10px] opacity-60">
+                        +{counts.added} -{counts.removed}
+                      </span>
+                    </Button>
+                  );
+                })}
               </div>
-
-              {selectedProposal ? (
-                <div className="rounded-2xl border border-border/60 bg-background/70 p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="truncate font-mono text-xs text-muted-foreground">
-                        {selectedProposal.proposalId}
-                      </p>
-                      <p className="text-sm font-medium">
-                        {selectedProposal.status}
-                        {selectedProposal.reason
-                          ? ` · ${selectedProposal.reason}`
-                          : ''}
-                      </p>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={selectedProposal.status !== 'proposed'}
-                        onClick={() =>
-                          void handleEditDecision(
-                            selectedProposal.proposalId,
-                            'reject',
-                          )
-                        }
-                      >
-                        Reject
-                      </Button>
-                      <Button
-                        size="sm"
-                        disabled={selectedProposal.status !== 'proposed'}
-                        onClick={() =>
-                          void handleEditDecision(
-                            selectedProposal.proposalId,
-                            'approve',
-                          )
-                        }
-                      >
-                        Approve
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    {selectedProposal.patches.map((patch) => {
-                      const counts = patchCounts(patch);
-                      return (
-                        <Button
-                          key={patch.path}
-                          variant={
-                            selectedPatch?.path === patch.path
-                              ? 'default'
-                              : 'outline'
-                          }
-                          size="xs"
-                          onClick={() => setSelectedPatchPath(patch.path)}
-                        >
-                          {patchStatusLabel(patch.status)} · +{counts.added} -
-                          {counts.removed}
-                        </Button>
-                      );
-                    })}
-                  </div>
-
-                  {selectedPatch ? (
-                    <PatchPreview patch={selectedPatch} />
-                  ) : null}
-                </div>
-              ) : null}
+              {selectedPatch ? <PatchPreview patch={selectedPatch} /> : null}
             </div>
           )}
         </SheetContent>
@@ -4042,7 +4238,106 @@ export default function AgentPage(): ReactNode {
   );
 }
 
+function useIsDark(): boolean {
+  const [isDark, setIsDark] = useState(
+    () =>
+      typeof document !== 'undefined' &&
+      document.documentElement.classList.contains('dark'),
+  );
+  useEffect(() => {
+    const el = document.documentElement;
+    const observer = new MutationObserver(() => {
+      setIsDark(el.classList.contains('dark'));
+    });
+    observer.observe(el, { attributes: true, attributeFilter: ['class'] });
+    return () => observer.disconnect();
+  }, []);
+  return isDark;
+}
+
+function tokenInlineStyle(token: {
+  color?: string;
+  fontStyle?: number;
+}): React.CSSProperties {
+  const style: React.CSSProperties = {};
+  if (token.color) style.color = token.color;
+  if (token.fontStyle) {
+    if (token.fontStyle & 1) style.fontStyle = 'italic';
+    if (token.fontStyle & 2) style.fontWeight = 'bold';
+    if (token.fontStyle & 4) style.textDecoration = 'underline';
+  }
+  return style;
+}
+
+function HunkView({
+  hunk,
+  lang,
+  isDark,
+}: {
+  hunk: FilePatch['hunks'][number];
+  lang: string;
+  isDark: boolean;
+}) {
+  const [tokenizedLines, setTokenizedLines] = useState<TokenizedLine[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const code = hunk.lines.map((l) => l.text).join('\n');
+    tokenizeCode(code, lang, isDark).then((result) => {
+      if (!cancelled) setTokenizedLines(result);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [hunk, lang, isDark]);
+
+  return (
+    <div>
+      <div className="bg-muted/40 px-3 py-1 font-mono text-[11px] text-muted-foreground">
+        @@ -{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@
+      </div>
+      {hunk.lines.map((line, lineIndex) => {
+        const tokens = tokenizedLines[lineIndex]?.tokens;
+        return (
+          <div
+            key={lineIndex}
+            className={cn(
+              'grid grid-cols-[4.5rem_minmax(0,1fr)] gap-3 px-3 py-1 font-mono text-xs',
+              patchLineTone(line.kind),
+            )}
+          >
+            <span className="select-none text-muted-foreground">
+              {line.oldNumber ?? ''}
+              {line.oldNumber || line.newNumber ? ' / ' : ''}
+              {line.newNumber ?? ''}
+            </span>
+            <span className="whitespace-pre-wrap break-words">
+              <span className="select-none opacity-50">
+                {line.kind === 'added'
+                  ? '+'
+                  : line.kind === 'removed'
+                    ? '-'
+                    : ' '}
+              </span>
+              {tokens && tokens.length > 0
+                ? tokens.map((token, ti) => (
+                    <span key={ti} style={tokenInlineStyle(token)}>
+                      {token.content}
+                    </span>
+                  ))
+                : line.text}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function PatchPreview({ patch }: { patch: FilePatch }): ReactNode {
+  const isDark = useIsDark();
+  const lang = langFromPath(patch.path);
+
   return (
     <div className="mt-4 overflow-hidden rounded-2xl border border-border/60">
       <div className="border-b border-border/60 bg-muted/30 px-3 py-2">
@@ -4050,35 +4345,12 @@ function PatchPreview({ patch }: { patch: FilePatch }): ReactNode {
       </div>
       <div className="max-h-[52vh] overflow-auto bg-background">
         {patch.hunks.map((hunk, hunkIndex) => (
-          <div key={`${patch.path}-${String(hunkIndex)}`}>
-            <div className="bg-muted/40 px-3 py-1 font-mono text-[11px] text-muted-foreground">
-              @@ -{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},
-              {hunk.newLines} @@
-            </div>
-            {hunk.lines.map((line, lineIndex) => (
-              <div
-                key={`${patch.path}-${String(hunkIndex)}-${String(lineIndex)}`}
-                className={cn(
-                  'grid grid-cols-[4.5rem_minmax(0,1fr)] gap-3 px-3 py-1 font-mono text-xs',
-                  patchLineTone(line.kind),
-                )}
-              >
-                <span className="select-none text-muted-foreground">
-                  {line.oldNumber ?? ''}
-                  {line.oldNumber || line.newNumber ? ' / ' : ''}
-                  {line.newNumber ?? ''}
-                </span>
-                <span className="whitespace-pre-wrap break-words">
-                  {line.kind === 'added'
-                    ? '+'
-                    : line.kind === 'removed'
-                      ? '-'
-                      : ' '}
-                  {line.text}
-                </span>
-              </div>
-            ))}
-          </div>
+          <HunkView
+            key={`${patch.path}-${String(hunkIndex)}`}
+            hunk={hunk}
+            lang={lang}
+            isDark={isDark}
+          />
         ))}
       </div>
     </div>

@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
   Optional,
+  OnModuleInit,
   OnModuleDestroy,
 } from '@nestjs/common';
 import { existsSync, readFileSync, statSync } from 'node:fs';
@@ -102,12 +103,16 @@ export type RestoreSessionOptions = {
 export type RestoreSessionResponse = {
   id: string;
   needsModelConfig: boolean;
+  history: ConversationEntry[];
+  permissionMode: PermissionMode;
 };
 
 export type RestoreCheckpointResponse = {
   id: string;
   checkpointId: string;
   needsModelConfig: boolean;
+  history: ConversationEntry[];
+  permissionMode: PermissionMode;
 };
 
 export type SessionSummary = {
@@ -273,6 +278,7 @@ const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
   'cancelled',
   'error',
 ]);
+const RECENT_SESSION_PRELOAD_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
 
 function hookAuditBehavior(
   entry: HookAuditEntry,
@@ -303,7 +309,7 @@ function hookAuditToPermissionEntry(
 }
 
 @Injectable()
-export class SessionsService implements OnModuleDestroy {
+export class SessionsService implements OnModuleInit, OnModuleDestroy {
   private readonly entries = new Map<string, SessionEntry>();
   private readonly liveMetadata = new Map<
     string,
@@ -321,6 +327,34 @@ export class SessionsService implements OnModuleDestroy {
     @Optional()
     private readonly pluginStore?: PluginStore,
   ) {}
+
+  onModuleInit(): void {
+    queueMicrotask(() => {
+      void this.preloadRecentSessions();
+    });
+  }
+
+  async preloadRecentSessions(now = Date.now()): Promise<void> {
+    const cutoff = now - RECENT_SESSION_PRELOAD_WINDOW_MS;
+    let persisted: Array<{ snapshot: SessionSnapshot; updatedAt: number }>;
+    try {
+      persisted = this.store.listSessions();
+    } catch {
+      return;
+    }
+
+    for (const entry of persisted) {
+      if (entry.updatedAt < cutoff || this.entries.has(entry.snapshot.id)) {
+        continue;
+      }
+      try {
+        await this.restore(entry.snapshot.id);
+      } catch {
+        // Startup preloading is an optimization. A corrupt or unavailable
+        // session should not prevent the server from becoming ready.
+      }
+    }
+  }
 
   // Builds a fresh PermissionContext from the request options. `workspaceRoots`
   // falls back to `[cwd]` when a cwd is supplied (mirrors the engine default).
@@ -621,6 +655,30 @@ export class SessionsService implements OnModuleDestroy {
       });
     }
 
+    // Replay stored edit proposals into the log so late SSE subscribers
+    // see them immediately (persisted across restores).
+    const storedProposals = session.context.editProposals;
+    if (storedProposals && storedProposals.size > 0) {
+      for (const proposal of storedProposals.values()) {
+        log.push({
+          type: 'edit_proposed',
+          runId: session.id,
+          proposalId: proposal.id,
+          toolUseId: proposal.toolUseId,
+          patches: proposal.patches,
+        });
+      }
+    }
+
+    // Emit the last-known context token usage so the frontend shows it.
+    if (session.currentInputTokens > 0) {
+      log.push({
+        type: 'usage',
+        runId: session.id,
+        inputTokens: session.currentInputTokens,
+      });
+    }
+
     this.entries.set(session.id, entry);
     return { id: session.id };
   }
@@ -734,7 +792,13 @@ export class SessionsService implements OnModuleDestroy {
     options: RestoreSessionOptions = {},
   ): Promise<RestoreSessionResponse> {
     if (this.entries.has(id)) {
-      return { id, needsModelConfig: false };
+      const entry = this.entries.get(id);
+      return {
+        id,
+        needsModelConfig: entry?.needsModelConfig ?? false,
+        history: entry?.session.snapshot().history ?? [],
+        permissionMode: entry?.session.snapshot().permissionMode ?? 'default',
+      };
     }
 
     const snapshot = this.store.loadSnapshot(id);
@@ -789,7 +853,12 @@ export class SessionsService implements OnModuleDestroy {
         ...(swappableModel ? { swappableModel } : {}),
       },
     );
-    return { id: registered.id, needsModelConfig };
+    return {
+      id: registered.id,
+      needsModelConfig,
+      history: snapshot.history,
+      permissionMode: snapshot.permissionMode,
+    };
   }
 
   async restoreCheckpoint(
@@ -815,7 +884,13 @@ export class SessionsService implements OnModuleDestroy {
     });
     this.store.saveSnapshot(prepared.session.snapshot());
     this.inheritSessionMetadata(id, id);
-    return { id, checkpointId, needsModelConfig: registered.needsModelConfig };
+    return {
+      id,
+      checkpointId,
+      needsModelConfig: registered.needsModelConfig,
+      history: checkpoint.snapshot.history,
+      permissionMode: checkpoint.snapshot.permissionMode,
+    };
   }
 
   async forkCheckpoint(
@@ -855,7 +930,13 @@ export class SessionsService implements OnModuleDestroy {
     if (entry) {
       entry.currentCheckpointId = forkCheckpoint.id;
     }
-    return { id: forkId, checkpointId, needsModelConfig: registered.needsModelConfig };
+    return {
+      id: forkId,
+      checkpointId,
+      needsModelConfig: registered.needsModelConfig,
+      history: checkpoint.snapshot.history,
+      permissionMode: checkpoint.snapshot.permissionMode,
+    };
   }
 
   private async registerRestoredSnapshot(
@@ -1167,6 +1248,7 @@ export class SessionsService implements OnModuleDestroy {
     if (!entry) return;
     const event: SessionEvent = {
       type: 'error',
+      runId: id,
       message:
         'No API key configured. Please set an API key for your model provider in Settings, then try again.',
     };

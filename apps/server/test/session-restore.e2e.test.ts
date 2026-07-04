@@ -233,7 +233,7 @@ test('POST /sessions/:id/restore rehydrates a snapshot and later submits stream 
     url: `/sessions/${id}/restore`,
   });
   assert.equal(restoreRes.statusCode, 201, 'POST /restore rehydrates session');
-  assert.deepEqual(restoreRes.json(), { id });
+  assert.deepEqual(restoreRes.json(), { id, needsModelConfig: false });
   assert.equal(service.has(id), true, 'restore registers a live session entry');
 
   const duplicateRestoreRes = await fastify.inject({
@@ -245,7 +245,10 @@ test('POST /sessions/:id/restore rehydrates a snapshot and later submits stream 
     201,
     'restoring an already-live session is idempotent',
   );
-  assert.deepEqual(duplicateRestoreRes.json(), { id });
+  assert.deepEqual(duplicateRestoreRes.json(), {
+    id,
+    needsModelConfig: false,
+  });
   assert.equal(
     factoryCalls.get(id),
     2,
@@ -304,7 +307,11 @@ test('checkpoint API can restore over a live session and fork an independent ses
     url: `/sessions/${id}/checkpoints/${firstCheckpointId}/restore`,
   });
   assert.equal(restoreRes.statusCode, 201);
-  assert.deepEqual(restoreRes.json(), { id, checkpointId: firstCheckpointId });
+  assert.deepEqual(restoreRes.json(), {
+    id,
+    checkpointId: firstCheckpointId,
+    needsModelConfig: false,
+  });
   assert.equal(
     userMessageCount(service, id),
     1,

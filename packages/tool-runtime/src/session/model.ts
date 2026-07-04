@@ -16,6 +16,7 @@ export type ConversationToolResult = {
   toolUseId: string;
   content: string;
   isError?: boolean;
+  metadata?: JsonObject;
 };
 
 export type ConversationEntry = {

@@ -331,6 +331,7 @@ export async function runTurn(deps: TurnDeps): Promise<void> {
           toolUseId,
           content: result.content,
           ...(result.isError ? { isError: true } : {}),
+          ...(result.metadata ? { metadata: result.metadata } : {}),
         };
         toolResults.push(toolResult);
       }

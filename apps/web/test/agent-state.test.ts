@@ -6,9 +6,12 @@ import {
   composeVisibleMessageWithAttachments,
   conversationItemsFromHistory,
   createWorkspaceProject,
+  estimateConversationTokens,
+  filterSessionHistory,
   createAgentViewState,
   hasGroupedHistory,
   selectedScopeForSession,
+  shouldSubmitComposerKey,
 } from '../app/agent/state';
 import type { SessionEvent, SessionSummary } from '../app/agent/types';
 
@@ -63,6 +66,30 @@ test('applyAgentEvent adds context compaction markers and updates tokens', () =>
     state.items[1]?.kind === 'context_marker' && state.items[1].status,
     'compacted',
   );
+});
+
+test('estimateConversationTokens keeps short conversations far below a large context window', () => {
+  const tokens = estimateConversationTokens([
+    { kind: 'user', text: '第一个问题是什么？' },
+    {
+      kind: 'assistant',
+      runId: 'run-1',
+      text: '这是一个很短的回答。',
+      finalized: true,
+      thinking: '',
+    },
+    { kind: 'user', text: '第二个问题呢？' },
+    {
+      kind: 'assistant',
+      runId: 'run-2',
+      text: '这也是一个很短的回答。',
+      finalized: true,
+      thinking: '',
+    },
+  ]);
+
+  assert.ok(tokens > 0);
+  assert.ok(tokens < 1_000);
 });
 
 test('applyAgentEvent updates edit proposal status without duplicating proposals', () => {
@@ -212,6 +239,139 @@ test('selectedScopeForSession keeps new chat creation near restored history', ()
     projectId: 'project-1',
   });
   assert.deepEqual(selectedScopeForSession(standaloneChat), { type: 'chats' });
+});
+
+test('shouldSubmitComposerKey does not submit while an IME is composing', () => {
+  assert.equal(
+    shouldSubmitComposerKey({
+      key: 'Enter',
+      shiftKey: false,
+      isComposing: true,
+      keyCode: 13,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldSubmitComposerKey({
+      key: 'Enter',
+      shiftKey: false,
+      isComposing: false,
+      keyCode: 229,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldSubmitComposerKey({
+      key: 'Enter',
+      shiftKey: false,
+      isComposing: false,
+      keyCode: 13,
+      compositionEndedAt: 100,
+      now: 110,
+    }),
+    false,
+  );
+});
+
+test('shouldSubmitComposerKey submits only a plain Enter outside IME composition', () => {
+  assert.equal(
+    shouldSubmitComposerKey({ key: 'Enter', shiftKey: false }),
+    true,
+  );
+  assert.equal(
+    shouldSubmitComposerKey({ key: 'Enter', shiftKey: true }),
+    false,
+  );
+  assert.equal(shouldSubmitComposerKey({ key: 'a', shiftKey: false }), false);
+  assert.equal(
+    shouldSubmitComposerKey({
+      key: 'Enter',
+      shiftKey: false,
+      compositionEndedAt: 100,
+      now: 200,
+    }),
+    true,
+  );
+});
+
+test('filterSessionHistory matches project names, paths, chat titles, and cwd', () => {
+  const projects = [
+    {
+      id: 'project-1',
+      name: 'Colorful Code',
+      path: '/Users/example/colorful-code',
+      chats: [
+        {
+          id: 'project-chat-1',
+          title: 'MCP plugin registry',
+          updatedAt: 1,
+          pinned: false,
+          cwd: '/Users/example/colorful-code',
+        },
+        {
+          id: 'project-chat-2',
+          title: 'Voice controls',
+          updatedAt: 2,
+          pinned: false,
+          cwd: '/Users/example/colorful-code',
+        },
+      ],
+    },
+    {
+      id: 'project-2',
+      name: 'Notes',
+      path: '/Users/example/notes',
+      chats: [
+        {
+          id: 'project-chat-3',
+          title: 'Daily summary',
+          updatedAt: 3,
+          pinned: false,
+          cwd: '/Users/example/notes',
+        },
+      ],
+    },
+  ];
+  const chats: SessionSummary[] = [
+    {
+      id: 'standalone-chat-1',
+      title: 'Sidebar search polish',
+      updatedAt: 4,
+      pinned: false,
+      cwd: '/Users/example/colorful-code',
+    },
+    {
+      id: 'standalone-chat-2',
+      title: 'Model setup',
+      updatedAt: 5,
+      pinned: false,
+    },
+  ];
+
+  const pluginMatches = filterSessionHistory(projects, chats, 'plugin');
+  assert.deepEqual(
+    pluginMatches.projects.map((project) => project.id),
+    ['project-1'],
+  );
+  assert.deepEqual(
+    pluginMatches.projects[0]?.chats.map((chat) => chat.id),
+    ['project-chat-1'],
+  );
+  assert.deepEqual(pluginMatches.chats, []);
+
+  const pathMatches = filterSessionHistory(projects, chats, 'colorful-code');
+  assert.deepEqual(
+    pathMatches.projects.map((project) => project.id),
+    ['project-1'],
+  );
+  assert.deepEqual(
+    pathMatches.projects[0]?.chats.map((chat) => chat.id),
+    ['project-chat-1', 'project-chat-2'],
+  );
+  assert.deepEqual(
+    pathMatches.chats.map((chat) => chat.id),
+    ['standalone-chat-1'],
+  );
 });
 
 test('composeMessageWithAttachments includes selected local files as agent context', () => {
