@@ -21,7 +21,7 @@ test('parseCliArgs accepts cwd, prompt, and a BYO provider key', () => {
   );
 
   assert.deepEqual(options, {
-    apiBaseUrl: 'http://127.0.0.1:3001',
+    apiBaseUrl: 'http://127.0.0.1:3367',
     apiKey: 'sk-test',
     cwd: '/tmp/project',
     prompt: 'list files',
@@ -32,7 +32,7 @@ test('parseCliArgs accepts cwd, prompt, and a BYO provider key', () => {
 
 test('buildCreateSessionBody sends API keys through the custom model path', () => {
   const body = buildCreateSessionBody({
-    apiBaseUrl: 'http://127.0.0.1:3001',
+    apiBaseUrl: 'http://127.0.0.1:3367',
     apiKey: 'sk-test',
     cwd: '/tmp/project',
     prompt: 'hello',
@@ -64,7 +64,7 @@ test('parseCliArgs accepts an MCP config path', () => {
 
 test('buildCreateSessionBody includes MCP servers when loaded by the CLI', () => {
   const body = buildCreateSessionBody({
-    apiBaseUrl: 'http://127.0.0.1:3001',
+    apiBaseUrl: 'http://127.0.0.1:3367',
     cwd: '/tmp/project',
     prompt: 'hello',
     mcpServers: {

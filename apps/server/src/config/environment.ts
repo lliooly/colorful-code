@@ -32,7 +32,14 @@ export interface RedactedServerEnvironment {
 
 type EnvironmentSource = NodeJS.ProcessEnv;
 
-const defaultCorsOrigins = ['http://localhost:3000'];
+const defaultCorsOrigins = [
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://tauri.localhost',
+  'https://tauri.localhost',
+  'tauri://localhost',
+  'null',
+];
 
 const defaultDatabasePath = './data/colorful-code.db';
 
@@ -149,7 +156,7 @@ function parseNodeEnv(value: string | undefined): NodeEnvironment {
 function parsePort(value: string | undefined): number {
   const normalized = readNonEmpty(value);
   if (!normalized) {
-    return 3001;
+    return 3367;
   }
   if (!/^\d+$/.test(normalized)) {
     throw new Error('PORT must be an integer between 1 and 65535');
@@ -183,28 +190,49 @@ function parseCorsOrigins(
   }
 
   for (const origin of origins) {
-    assertHttpOrigin(origin);
+    assertCorsOrigin(origin);
   }
 
-  return origins;
+  return expandDevelopmentCorsOrigins(origins, isProduction);
 }
 
-function assertHttpOrigin(origin: string): void {
+function expandDevelopmentCorsOrigins(
+  origins: string[],
+  isProduction: boolean,
+): string[] {
+  if (isProduction || !origins.some((origin) => defaultCorsOrigins.includes(origin))) {
+    return origins;
+  }
+
+  return [...new Set([...origins, ...defaultCorsOrigins])];
+}
+
+function assertCorsOrigin(origin: string): void {
+  if (origin === 'null') {
+    return;
+  }
+
   let url: URL;
   try {
     url = new URL(origin);
   } catch {
-    throw new Error('CORS_ORIGIN entries must be absolute http(s) origins');
+    throw new Error(
+      'CORS_ORIGIN entries must be absolute http(s), Tauri, or null origins',
+    );
   }
 
-  if (
-    (url.protocol !== 'http:' && url.protocol !== 'https:') ||
-    url.origin !== origin ||
-    url.pathname !== '/' ||
-    url.search !== '' ||
-    url.hash !== ''
-  ) {
-    throw new Error('CORS_ORIGIN entries must be absolute http(s) origins');
+  const validHttpOrigin =
+    (url.protocol === 'http:' || url.protocol === 'https:') &&
+    url.origin === origin &&
+    url.pathname === '/' &&
+    url.search === '' &&
+    url.hash === '';
+  const validTauriOrigin = origin === 'tauri://localhost';
+
+  if (!validHttpOrigin && !validTauriOrigin) {
+    throw new Error(
+      'CORS_ORIGIN entries must be absolute http(s), Tauri, or null origins',
+    );
   }
 }
 

@@ -175,7 +175,7 @@ function usage(): string {
     '  colorful-code --api-key <key> --cwd <path> --prompt "fix the test"',
     '',
     'Options:',
-    '  --api-base <url>     Server URL (default http://127.0.0.1:3001)',
+    '  --api-base <url>     Server URL (default http://127.0.0.1:3367)',
     '  --api-key <key>      BYO provider key; sent via the custom model preset',
     '  --cwd <path>         Session working directory',
     '  --prompt <text>      First user prompt',

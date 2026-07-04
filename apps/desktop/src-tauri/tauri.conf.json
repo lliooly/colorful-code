@@ -4,9 +4,9 @@
   "version": "0.0.0",
   "identifier": "com.colorfulcode.desktop",
   "build": {
-    "beforeDevCommand": "pnpm --filter @colorful-code/web dev",
+    "beforeDevCommand": "pnpm --filter @colorful-code/desktop build:server-sidecar && pnpm --filter @colorful-code/web dev",
     "devUrl": "http://localhost:3000/agent",
-    "beforeBuildCommand": "pnpm --filter @colorful-code/web build",
+    "beforeBuildCommand": "pnpm --filter @colorful-code/desktop build:server-sidecar && pnpm --filter @colorful-code/web build",
     "frontendDist": "../../web/out"
   },
   "app": {
@@ -38,6 +38,7 @@
   "bundle": {
     "active": true,
     "targets": ["app"],
+    "externalBin": ["binaries/colorful-code-server"],
     "icon": [
       "icons/icon.icns",
       "icons/icon.ico",

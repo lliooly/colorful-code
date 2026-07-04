@@ -1,14 +1,17 @@
 #[cfg(target_os = "macos")]
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
+use tauri::Manager;
 #[cfg(target_os = "macos")]
 use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
 
 use serde::Serialize;
 use std::{
-    ffi::{CStr, CString},
-    os::raw::c_char,
     env,
+    ffi::{CStr, CString},
+    fs::{self, OpenOptions},
+    io::{Read, Write},
     net::{SocketAddr, TcpStream},
+    os::raw::c_char,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{Mutex, OnceLock},
@@ -16,8 +19,9 @@ use std::{
 };
 
 const SERVER_HOST: &str = "127.0.0.1";
-const SERVER_PORT: u16 = 3001;
-const SERVER_BASE_URL: &str = "http://127.0.0.1:3001";
+const SERVER_PORT: u16 = 3367;
+const SERVER_BASE_URL: &str = "http://127.0.0.1:3367";
+const SERVER_SIDECAR_NAME: &str = "colorful-code-server";
 
 #[derive(Default)]
 struct AgentServerState {
@@ -26,12 +30,7 @@ struct AgentServerState {
 
 impl Drop for AgentServerState {
     fn drop(&mut self) {
-        if let Ok(mut child) = self.child.lock() {
-            if let Some(mut child) = child.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        }
+        stop_managed_server(self);
     }
 }
 
@@ -131,7 +130,7 @@ fn pick_upload_file() -> Result<Option<PickedFile>, String> {
 #[tauri::command]
 fn agent_server_status() -> AgentServerStatus {
     AgentServerStatus {
-        running: is_server_reachable(),
+        running: is_server_reachable() && server_allows_tauri_origin(),
         managed: false,
         base_url: SERVER_BASE_URL,
     }
@@ -139,9 +138,16 @@ fn agent_server_status() -> AgentServerStatus {
 
 #[tauri::command]
 fn ensure_agent_server(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AgentServerState>,
 ) -> Result<AgentServerStatus, String> {
     if is_server_reachable() {
+        if !server_allows_tauri_origin() {
+            return Err(
+                "Agent server port 3367 is already in use, but that server does not allow the Tauri desktop origin. Restart the dev server or stop the process using port 3367, then reopen Colorful Code."
+                    .to_string(),
+            );
+        }
         return Ok(AgentServerStatus {
             running: true,
             managed: false,
@@ -156,26 +162,7 @@ fn ensure_agent_server(
             .map_err(|_| "agent server state lock poisoned".to_string())?;
 
         if child_slot.is_none() {
-            let workspace_root = workspace_root().ok_or_else(|| {
-                "Could not find repository root. Set COLORFUL_CODE_REPO_ROOT.".to_string()
-            })?;
-
-            let mut command = Command::new(
-                env::var("COLORFUL_CODE_SERVER_COMMAND").unwrap_or_else(|_| "bun".to_string()),
-            );
-            command
-                .arg("apps/server/src/main.ts")
-                .current_dir(&workspace_root)
-                .env("HOST", SERVER_HOST)
-                .env("PORT", SERVER_PORT.to_string())
-                .env("DATABASE_PATH", server_database_path(&workspace_root))
-                .env(
-                    "CORS_ORIGIN",
-                    "http://localhost:3000,http://127.0.0.1:3000,http://tauri.localhost",
-                )
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
+            let mut command = build_server_command(&app)?;
 
             let child = command
                 .spawn()
@@ -253,8 +240,96 @@ fn is_workspace_root(path: &Path) -> bool {
     path.join("pnpm-workspace.yaml").is_file() && path.join("apps/server/src/main.ts").is_file()
 }
 
-fn server_database_path(workspace_root: &Path) -> PathBuf {
+fn source_server_directory(workspace_root: &Path) -> PathBuf {
+    workspace_root.join("apps/server")
+}
+
+fn source_database_path(workspace_root: &Path) -> PathBuf {
     workspace_root.join("apps/server/data/colorful-code.db")
+}
+
+fn app_data_database_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve app data directory: {error}"))?;
+    fs::create_dir_all(&data_dir)
+        .map_err(|error| format!("Could not create app data directory: {error}"))?;
+    Ok(data_dir.join("colorful-code.db"))
+}
+
+fn build_server_command(app: &tauri::AppHandle) -> Result<Command, String> {
+    if let Some(sidecar) = bundled_server_sidecar() {
+        let data_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|error| format!("Could not resolve app data directory: {error}"))?;
+        fs::create_dir_all(&data_dir)
+            .map_err(|error| format!("Could not create app data directory: {error}"))?;
+        let log_file = open_server_log(&data_dir)?;
+        let error_log_file = log_file
+            .try_clone()
+            .map_err(|error| format!("Could not prepare agent server log: {error}"))?;
+
+        let mut command = Command::new(sidecar);
+        configure_server_process(&mut command);
+        command
+            .current_dir(data_dir)
+            .env("NODE_ENV", "production")
+            .env("DATABASE_PATH", app_data_database_path(app)?)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log_file))
+            .stderr(Stdio::from(error_log_file));
+        return Ok(command);
+    }
+
+    let workspace_root = workspace_root().ok_or_else(|| {
+        "Could not find repository root. Set COLORFUL_CODE_REPO_ROOT.".to_string()
+    })?;
+
+    let mut command = Command::new(
+        env::var("COLORFUL_CODE_SERVER_COMMAND").unwrap_or_else(|_| "bun".to_string()),
+    );
+    configure_server_process(&mut command);
+    command
+        .arg("src/main.ts")
+        .current_dir(source_server_directory(&workspace_root))
+        .env("DATABASE_PATH", source_database_path(&workspace_root))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    Ok(command)
+}
+
+fn configure_server_process(command: &mut Command) {
+    command
+        .env("HOST", SERVER_HOST)
+        .env("PORT", SERVER_PORT.to_string())
+        .env(
+            "CORS_ORIGIN",
+            "http://localhost:3000,http://127.0.0.1:3000,http://tauri.localhost,https://tauri.localhost,tauri://localhost,null",
+        );
+}
+
+fn bundled_server_sidecar() -> Option<PathBuf> {
+    if cfg!(debug_assertions) {
+        return None;
+    }
+
+    let sidecar = env::current_exe().ok()?.parent()?.join(SERVER_SIDECAR_NAME);
+    sidecar.is_file().then_some(sidecar)
+}
+
+fn server_log_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("agent-server.log")
+}
+
+fn open_server_log(data_dir: &Path) -> Result<fs::File, String> {
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(server_log_path(data_dir))
+        .map_err(|error| format!("Could not open agent server log: {error}"))
 }
 
 fn wait_for_server(timeout: Duration) -> Result<(), String> {
@@ -265,7 +340,7 @@ fn wait_for_server(timeout: Duration) -> Result<(), String> {
         }
         std::thread::sleep(Duration::from_millis(150));
     }
-    Err("Agent server did not become reachable on 127.0.0.1:3001.".to_string())
+    Err("Agent server did not become reachable on 127.0.0.1:3367.".to_string())
 }
 
 fn is_server_reachable() -> bool {
@@ -273,9 +348,54 @@ fn is_server_reachable() -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
 }
 
+fn server_allows_tauri_origin() -> bool {
+    let addr = SocketAddr::from(([127, 0, 0, 1], SERVER_PORT));
+    let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(300)) {
+        Ok(stream) => stream,
+        Err(_) => return false,
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(700)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(300)));
+
+    if stream
+        .write_all(
+            b"GET /health HTTP/1.1\r\nHost: 127.0.0.1:3367\r\nOrigin: http://tauri.localhost\r\nConnection: close\r\n\r\n",
+        )
+        .is_err()
+    {
+        return false;
+    }
+
+    let mut response = String::new();
+    if stream.read_to_string(&mut response).is_err() {
+        return false;
+    }
+
+    http_response_allows_tauri_origin(&response)
+}
+
+fn http_response_allows_tauri_origin(response: &str) -> bool {
+    response
+        .lines()
+        .take_while(|line| !line.trim().is_empty())
+        .any(|line| {
+            line.eq_ignore_ascii_case("access-control-allow-origin: http://tauri.localhost")
+                || line.eq_ignore_ascii_case("access-control-allow-origin: *")
+        })
+}
+
+fn stop_managed_server(state: &AgentServerState) {
+    if let Ok(mut child_slot) = state.child.lock() {
+        if let Some(mut child) = child_slot.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(AgentServerState::default())
         .invoke_handler(tauri::generate_handler![
             pick_workspace_directory,
@@ -297,16 +417,28 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("error while running Colorful Code desktop app");
+
+    app.run(|app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+            stop_managed_server(app_handle.state::<AgentServerState>().inner());
+        }
+        _ => {}
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::is_workspace_root;
-    use super::{find_workspace_root_from, server_database_path, workspace_root};
+    use super::{
+        find_workspace_root_from, http_response_allows_tauri_origin, server_log_path,
+        source_database_path, source_server_directory, stop_managed_server, workspace_root,
+        AgentServerState, SERVER_BASE_URL, SERVER_PORT, SERVER_SIDECAR_NAME,
+    };
     use std::path::{Path, PathBuf};
     use std::process::Command;
+    use std::time::Duration;
 
     #[test]
     fn repository_root_is_detected_by_workspace_and_server_entry() {
@@ -330,12 +462,88 @@ mod tests {
     }
 
     #[test]
-    fn managed_server_uses_the_server_data_database_path() {
+    fn managed_source_server_uses_the_server_package_directory() {
         let root = Path::new("/repo");
         assert_eq!(
-            server_database_path(root),
+            source_server_directory(root),
+            PathBuf::from("/repo/apps/server")
+        );
+    }
+
+    #[test]
+    fn managed_source_server_uses_the_server_data_database_path() {
+        let root = Path::new("/repo");
+        assert_eq!(
+            source_database_path(root),
             PathBuf::from("/repo/apps/server/data/colorful-code.db")
         );
+    }
+
+    #[test]
+    fn sidecar_name_matches_the_tauri_external_binary_name() {
+        assert_eq!(SERVER_SIDECAR_NAME, "colorful-code-server");
+    }
+
+    #[test]
+    fn desktop_agent_server_uses_the_packaged_default_port() {
+        assert_eq!(SERVER_PORT, 3367);
+        assert_eq!(SERVER_BASE_URL, "http://127.0.0.1:3367");
+    }
+
+    #[test]
+    fn managed_sidecar_writes_to_a_stable_log_file() {
+        assert_eq!(
+            server_log_path(Path::new("/Users/example/Library/Application Support/com.colorfulcode.desktop")),
+            PathBuf::from(
+                "/Users/example/Library/Application Support/com.colorfulcode.desktop/agent-server.log"
+            )
+        );
+    }
+
+    #[test]
+    fn stop_managed_server_terminates_the_tracked_child() {
+        let state = AgentServerState::default();
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 30")
+            .spawn()
+            .expect("spawn test child");
+        let child_id = child.id();
+
+        *state.child.lock().expect("state lock") = Some(child);
+
+        stop_managed_server(&state);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let still_running = Command::new("kill")
+            .arg("-0")
+            .arg(child_id.to_string())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("probe test child")
+            .success();
+        assert!(!still_running);
+        assert!(state.child.lock().expect("state lock").is_none());
+    }
+
+    #[test]
+    fn server_origin_probe_accepts_tauri_cors_header() {
+        assert!(http_response_allows_tauri_origin(
+            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: http://tauri.localhost\r\n\r\n{}"
+        ));
+        assert!(http_response_allows_tauri_origin(
+            "HTTP/1.1 200 OK\r\naccess-control-allow-origin: *\r\n\r\n{}"
+        ));
+    }
+
+    #[test]
+    fn server_origin_probe_rejects_missing_or_wrong_cors_header() {
+        assert!(!http_response_allows_tauri_origin(
+            "HTTP/1.1 200 OK\r\nVary: Origin\r\n\r\n{}"
+        ));
+        assert!(!http_response_allows_tauri_origin(
+            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: http://localhost:3000\r\n\r\n{}"
+        ));
     }
 
     #[test]
@@ -346,6 +554,15 @@ mod tests {
         assert!(plist.contains("<string>Colorful Code 需要访问麦克风以接收语音输入。</string>"));
         assert!(plist.contains("<key>NSSpeechRecognitionUsageDescription</key>"));
         assert!(plist.contains("<string>Colorful Code 使用语音识别将您的语音转换为文字。</string>"));
+    }
+
+    #[test]
+    fn macos_transport_security_allows_local_agent_http() {
+        let plist = include_str!("../Info.plist");
+
+        assert!(plist.contains("<key>NSAppTransportSecurity</key>"));
+        assert!(plist.contains("<key>NSAllowsLocalNetworking</key>"));
+        assert!(plist.contains("<true/>"));
     }
 
     #[test]
@@ -361,7 +578,10 @@ mod tests {
         assert!(bridge.contains("privacyUsageDescriptionError"));
         assert!(bridge.contains("NSSpeechRecognitionUsageDescription"));
         assert!(bridge.contains("NSMicrophoneUsageDescription"));
-        assert!(bridge.find("privacyUsageDescriptionError").unwrap() < bridge.find("requestSpeechAuthorization").unwrap());
+        assert!(
+            bridge.find("privacyUsageDescriptionError").unwrap()
+                < bridge.find("requestSpeechAuthorization").unwrap()
+        );
     }
 
     #[cfg(target_os = "macos")]

@@ -46,7 +46,7 @@ test('voice transcription API posts start, audio, and stop requests to session e
     })),
     [
       {
-        url: 'http://127.0.0.1:3001/sessions/session%201/voice/start',
+        url: 'http://127.0.0.1:3367/sessions/session%201/voice/start',
         method: 'POST',
         body: {
           requestId: 'voice-1',
@@ -56,7 +56,7 @@ test('voice transcription API posts start, audio, and stop requests to session e
         },
       },
       {
-        url: 'http://127.0.0.1:3001/sessions/session%201/voice/audio',
+        url: 'http://127.0.0.1:3367/sessions/session%201/voice/audio',
         method: 'POST',
         body: {
           audio: 'AAAA',
@@ -65,7 +65,7 @@ test('voice transcription API posts start, audio, and stop requests to session e
         },
       },
       {
-        url: 'http://127.0.0.1:3001/sessions/session%201/voice/stop',
+        url: 'http://127.0.0.1:3367/sessions/session%201/voice/stop',
         method: 'POST',
         body: {},
       },
@@ -114,37 +114,37 @@ test('project and history API helpers call the grouped history endpoints', async
     })),
     [
       {
-        url: 'http://127.0.0.1:3001/sessions',
+        url: 'http://127.0.0.1:3367/sessions',
         method: 'POST',
         body: { projectId: 'project-1', permissionMode: 'default' },
       },
       {
-        url: 'http://127.0.0.1:3001/projects',
+        url: 'http://127.0.0.1:3367/projects',
         method: 'POST',
         body: { path: '/Users/example/workspace' },
       },
       {
-        url: 'http://127.0.0.1:3001/projects/project-1',
+        url: 'http://127.0.0.1:3367/projects/project-1',
         method: 'DELETE',
         body: undefined,
       },
       {
-        url: 'http://127.0.0.1:3001/sessions/session-project',
+        url: 'http://127.0.0.1:3367/sessions/session-project',
         method: 'PATCH',
         body: { pinned: true },
       },
       {
-        url: 'http://127.0.0.1:3001/sessions/session-project',
+        url: 'http://127.0.0.1:3367/sessions/session-project',
         method: 'DELETE',
         body: undefined,
       },
       {
-        url: 'http://127.0.0.1:3001/sessions?scope=standalone',
+        url: 'http://127.0.0.1:3367/sessions?scope=standalone',
         method: 'DELETE',
         body: undefined,
       },
       {
-        url: 'http://127.0.0.1:3001/sessions?projectId=project-1',
+        url: 'http://127.0.0.1:3367/sessions?projectId=project-1',
         method: 'DELETE',
         body: undefined,
       },

@@ -23,6 +23,27 @@ test('agent page uses the desktop runtime store for desktop-only guards', () => 
   assert.match(source, /desktopRuntime/);
 });
 
+test('agent page waits for the desktop server before loading history', () => {
+  const source = readFileSync(
+    new URL('../app/agent/page.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(source, /if \(desktopRuntime && !agentServer\?\.running\) return;/);
+  assert.match(source, /\}, \[agentServer\?\.running, desktopRuntime\]\);/);
+});
+
+test('agent page keeps model settings editable and configures active sessions', () => {
+  const source = readFileSync(
+    new URL('../app/agent/page.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(source, /configureSessionModel/);
+  assert.match(source, /await configureSessionModel\(sessionId, buildModelConfig\(\)\)/);
+  assert.doesNotMatch(source, /disabled=\{!!sessionId\}/);
+});
+
 test('agent page uses realtime voice transcription instead of browser speech recognition', () => {
   const source = readFileSync(
     new URL('../app/agent/page.tsx', import.meta.url),

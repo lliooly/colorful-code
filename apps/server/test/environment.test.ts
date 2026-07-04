@@ -15,8 +15,15 @@ test('loadServerEnvironment uses development-safe defaults', () => {
   assert.equal(config.nodeEnv, 'development');
   assert.equal(config.isProduction, false);
   assert.equal(config.host, '127.0.0.1');
-  assert.equal(config.port, 3001);
-  assert.deepEqual(config.corsOrigins, ['http://localhost:3000']);
+  assert.equal(config.port, 3367);
+  assert.deepEqual(config.corsOrigins, [
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://tauri.localhost',
+    'https://tauri.localhost',
+    'tauri://localhost',
+    'null',
+  ]);
 });
 
 test('loadServerEnvironment accepts a valid PORT', () => {
@@ -41,6 +48,34 @@ test('loadServerEnvironment parses comma-separated CORS origins', () => {
   ]);
 });
 
+test('loadServerEnvironment expands local development CORS origins for desktop', () => {
+  const config = loadServerEnvironment({
+    CORS_ORIGIN: 'http://localhost:3000',
+  });
+
+  assert.deepEqual(config.corsOrigins, [
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://tauri.localhost',
+    'https://tauri.localhost',
+    'tauri://localhost',
+    'null',
+  ]);
+});
+
+test('loadServerEnvironment accepts Tauri and opaque local app origins', () => {
+  const config = loadServerEnvironment({
+    NODE_ENV: 'production',
+    CORS_ORIGIN: 'tauri://localhost, null, https://tauri.localhost',
+  });
+
+  assert.deepEqual(config.corsOrigins, [
+    'tauri://localhost',
+    'null',
+    'https://tauri.localhost',
+  ]);
+});
+
 test('loadServerEnvironment requires CORS_ORIGIN in production', () => {
   assert.throws(
     () => loadServerEnvironment({ NODE_ENV: 'production' }),
@@ -55,7 +90,7 @@ test('loadServerEnvironment rejects malformed CORS origins', () => {
         NODE_ENV: 'production',
         CORS_ORIGIN: 'https://app.example.com,not-a-url',
       }),
-    /CORS_ORIGIN entries must be absolute http\(s\) origins/,
+    /CORS_ORIGIN entries must be absolute http\(s\), Tauri, or null origins/,
   );
 });
 

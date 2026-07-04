@@ -20,7 +20,7 @@ import type {
 // The agent server base URL. Read at module load from the public env var with a
 // localhost fallback so the page works out of the box in local dev.
 export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://127.0.0.1:3001';
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://127.0.0.1:3367';
 
 async function postJson(path: string, body: unknown): Promise<Response> {
   const res = await fetch(`${API_BASE_URL}${path}`, {

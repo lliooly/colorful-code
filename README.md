@@ -86,7 +86,7 @@ pnpm dev
 默认地址：
 
 - Web UI: `http://localhost:3000/agent`
-- Agent Server: `http://127.0.0.1:3001`
+- Agent Server: `http://127.0.0.1:3367`
 
 ## 桌面端
 
@@ -102,7 +102,7 @@ pnpm --filter @colorful-code/desktop dev
 pnpm --filter @colorful-code/desktop build
 ```
 
-桌面端会加载 `apps/web` 的 `/agent` 页面，并确保 `http://127.0.0.1:3001` 上有可用的本地 Agent Server。如果没有检测到服务，它会从仓库根目录启动：
+桌面端会加载 `apps/web` 的 `/agent` 页面，并确保 `http://127.0.0.1:3367` 上有可用的本地 Agent Server。如果没有检测到服务，它会从仓库根目录启动：
 
 ```bash
 bun apps/server/src/main.ts
@@ -123,7 +123,7 @@ pnpm agent:cli --cwd "$PWD" --prompt "帮我总结这个项目"
 
 常用参数：
 
-- `--api-base <url>`：Server 地址，默认 `http://127.0.0.1:3001`。
+- `--api-base <url>`：Server 地址，默认 `http://127.0.0.1:3367`。
 - `--api-key <key>`：自带模型服务密钥，会走 Custom 模型配置。
 - `--protocol <name>`：`anthropic` 或 `openai`。
 - `--model <id>`：模型 ID。
@@ -144,7 +144,7 @@ Server (`apps/server/.env`)：
 | 变量                | 默认值                    | 说明                                                                  |
 | ------------------- | ------------------------- | --------------------------------------------------------------------- |
 | `HOST`              | `127.0.0.1`               | Server 监听地址。                                                     |
-| `PORT`              | `3001`                    | Server 监听端口。                                                     |
+| `PORT`              | `3367`                    | Server 监听端口。                                                     |
 | `CORS_ORIGIN`       | `http://localhost:3000`   | 允许访问 Server 的浏览器来源；生产环境必填，可用逗号分隔多个 origin。 |
 | `DATABASE_PATH`     | `./data/colorful-code.db` | SQLite 持久化文件路径；测试可用 `:memory:`。                          |
 | `ANTHROPIC_API_KEY` | 空                        | Claude 预设使用的服务端密钥。                                         |
@@ -155,7 +155,7 @@ Web (`apps/web/.env.local`)：
 
 | 变量                       | 默认值                  | 说明                                                              |
 | -------------------------- | ----------------------- | ----------------------------------------------------------------- |
-| `NEXT_PUBLIC_API_BASE_URL` | `http://127.0.0.1:3001` | 浏览器访问 Agent Server 的基础地址；构建时会写入 Next.js bundle。 |
+| `NEXT_PUBLIC_API_BASE_URL` | `http://127.0.0.1:3367` | 浏览器访问 Agent Server 的基础地址；构建时会写入 Next.js bundle。 |
 
 注意：服务商 API key 必须只放在 Server 环境变量或一次性请求体里，不要使用 `NEXT_PUBLIC_` 前缀。Next.js 会把 `NEXT_PUBLIC_*` 暴露给浏览器代码。
 

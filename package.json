@@ -8,6 +8,7 @@
     "start:prod": "turbo run start:prod",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
+    "package:macos": "pnpm --filter @colorful-code/desktop package:macos",
     "format": "prettier --check .",
     "format:write": "prettier --write .",
     "clean": "turbo run clean",

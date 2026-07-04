@@ -33,7 +33,7 @@ export class CliUsageError extends Error {
   }
 }
 
-const DEFAULT_API_BASE_URL = 'http://127.0.0.1:3001';
+const DEFAULT_API_BASE_URL = 'http://127.0.0.1:3367';
 const DEFAULT_ANTHROPIC_MODEL = 'claude-fable-5';
 const DEFAULT_OPENAI_MODEL = 'gpt-5.5';
 

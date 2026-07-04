@@ -22,7 +22,7 @@ cp .env.example .env
 # 2. Start the server (keep this terminal open)
 cd /Users/shishishi/Desktop/colorful-code
 bun run apps/server/src/main.ts
-# Expected: "Server listening on http://127.0.0.1:3001"
+# Expected: "Server listening on http://127.0.0.1:3367"
 
 # 3. CLI alias
 alias colorful='bun run /Users/shishishi/Desktop/colorful-code/apps/cli/src/main.ts'
@@ -362,7 +362,7 @@ Manual checklist:
 # Run a session with at least one tool call first, then:
 
 # Test 13: Snapshot persistence
-curl -s http://127.0.0.1:3001/sessions/<session-id>/snapshot | jq .
+curl -s http://127.0.0.1:3367/sessions/<session-id>/snapshot | jq .
 ```
 
 Checklist:
@@ -373,7 +373,7 @@ Checklist:
 
 ```bash
 # Test 14: Audit trail
-curl -s http://127.0.0.1:3001/sessions/<session-id>/audit | jq .
+curl -s http://127.0.0.1:3367/sessions/<session-id>/audit | jq .
 ```
 
 Checklist:
@@ -392,13 +392,13 @@ session that reaches `completed`, then restore it through the HTTP API.
 SESSION_ID=<session-id>
 
 # 2. Confirm the snapshot exists.
-curl -s http://127.0.0.1:3001/sessions/$SESSION_ID/snapshot | jq .
+curl -s http://127.0.0.1:3367/sessions/$SESSION_ID/snapshot | jq .
 
 # 3. Restart the server, then restore the session.
-curl -s -X POST http://127.0.0.1:3001/sessions/$SESSION_ID/restore | jq .
+curl -s -X POST http://127.0.0.1:3367/sessions/$SESSION_ID/restore | jq .
 
 # 4. Continue the restored session.
-curl -s -X POST http://127.0.0.1:3001/sessions/$SESSION_ID/messages \
+curl -s -X POST http://127.0.0.1:3367/sessions/$SESSION_ID/messages \
   -H 'content-type: application/json' \
   -d '{"text":"Continue from the restored history and summarize what we did."}'
 ```

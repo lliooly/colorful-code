@@ -23,7 +23,7 @@ function env(
     nodeEnv: 'test',
     isProduction: false,
     host: '127.0.0.1',
-    port: 3001,
+    port: 3367,
     corsOrigins: ['http://localhost:3000'],
     databasePath: ':memory:',
     providerKeys: {

@@ -152,6 +152,7 @@ import {
 } from './desktop';
 import {
   appendVoiceAudio,
+  configureSessionModel,
   createSession,
   deleteProject as deleteProjectRequest,
   deleteSession,
@@ -1089,7 +1090,9 @@ export default function AgentPage(): ReactNode {
   const [error, setError] = useState<string | null>(null);
   const [needsModelConfig, setNeedsModelConfig] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [, setAgentServer] = useState<AgentServerStatus | null>(null);
+  const [agentServer, setAgentServer] = useState<AgentServerStatus | null>(
+    null,
+  );
   const [draft, setDraft] = useState('');
   const [viewState, setViewState] = useState(() => createAgentViewState());
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
@@ -1840,6 +1843,8 @@ export default function AgentPage(): ReactNode {
   }, [refreshInstalledPlugins, settingsOpen, settingsPluginKind]);
 
   useEffect(() => {
+    if (desktopRuntime && !agentServer?.running) return;
+
     let cancelled = false;
     void listSessions()
       .then((data) => {
@@ -1856,7 +1861,7 @@ export default function AgentPage(): ReactNode {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [agentServer?.running, desktopRuntime]);
 
   const handleEvent = useCallback(
     (event: SessionEvent) => {
@@ -2006,11 +2011,21 @@ export default function AgentPage(): ReactNode {
   const handleSend = useCallback(async () => {
     if (!sessionId || (!draft.trim() && attachments.length === 0)) return;
     if (needsModelConfig) {
-      setError(
-        'No API key configured. Please set an API key for your model provider in Settings, then try again.',
-      );
-      setSettingsOpen(true);
-      return;
+      try {
+        const result = await configureSessionModel(sessionId, buildModelConfig());
+        setNeedsModelConfig(result.needsModelConfig);
+        if (result.needsModelConfig) {
+          setError(
+            'No API key configured. Please set an API key for your model provider in Settings, then try again.',
+          );
+          setSettingsOpen(true);
+          return;
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        setSettingsOpen(true);
+        return;
+      }
     }
     const text = composeMessageWithAttachments(draft, attachments);
     const visibleText = composeVisibleMessageWithAttachments(
@@ -2028,7 +2043,13 @@ export default function AgentPage(): ReactNode {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [sessionId, draft, attachments, needsModelConfig]);
+  }, [
+    sessionId,
+    draft,
+    attachments,
+    needsModelConfig,
+    buildModelConfig,
+  ]);
 
   const handleSetMode = useCallback(
     async (mode: PermissionMode) => {
@@ -3552,7 +3573,6 @@ export default function AgentPage(): ReactNode {
                                 {visibleModelPresets.map((item) => (
                                   <DropdownMenuItem
                                     key={item.id}
-                                    disabled={!!sessionId}
                                     onSelect={() => {
                                       setPresetId(item.id);
                                       setRemoteModels([]);
@@ -3869,10 +3889,9 @@ export default function AgentPage(): ReactNode {
                                 {t.settings.protocol}
                                 <Select
                                   value={customProtocol}
-                                  disabled={!!sessionId}
-                                  onValueChange={(value) =>
-                                    setCustomProtocol(value as ModelProtocol)
-                                  }
+                                onValueChange={(value) =>
+                                  setCustomProtocol(value as ModelProtocol)
+                                }
                                 >
                                   <SelectTrigger className="w-full">
                                     <SelectValue />
@@ -3894,7 +3913,6 @@ export default function AgentPage(): ReactNode {
                                 <Input
                                   placeholder="https://api.example.com/v1"
                                   value={customBaseURL}
-                                  disabled={!!sessionId}
                                   onChange={(e) =>
                                     setCustomBaseURL(e.target.value)
                                   }
@@ -3909,7 +3927,6 @@ export default function AgentPage(): ReactNode {
                               type="password"
                               autoComplete="off"
                               value={itemApiKey}
-                              disabled={!!sessionId}
                               onChange={(e) =>
                                 itemCustom
                                   ? setCustomApiKey(e.target.value)
@@ -3926,7 +3943,6 @@ export default function AgentPage(): ReactNode {
                             <Input
                               placeholder={item.defaultModel ?? 'model-id'}
                               value={itemModel}
-                              disabled={!!sessionId}
                               onChange={(e) =>
                                 itemCustom
                                   ? setCustomModel(e.target.value)
@@ -3963,7 +3979,6 @@ export default function AgentPage(): ReactNode {
                                         [item.id]: model,
                                       }))
                                 }
-                                disabled={!!sessionId}
                               >
                                 <SelectTrigger className="w-full sm:w-72">
                                   <SelectValue

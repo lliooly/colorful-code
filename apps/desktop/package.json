@@ -3,8 +3,10 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
+    "build:server-sidecar": "node scripts/build-server-sidecar.mjs",
     "dev": "tauri dev",
     "build": "tauri build",
+    "package:macos": "tauri build --bundles app",
     "lint": "cargo check --manifest-path src-tauri/Cargo.toml",
     "typecheck": "cargo check --manifest-path src-tauri/Cargo.toml",
     "clean": "cargo clean --manifest-path src-tauri/Cargo.toml"
