@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Existing release tag to publish, such as v0.1.0. Defaults to the selected ref.
+        required: false
+        type: string
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    name: Build unsigned macOS app
+    runs-on: macos-14
+
+    steps:
+      - name: Resolve release tag
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "$INPUT_TAG_NAME" ]; then
+            tag="$INPUT_TAG_NAME"
+          fi
+
+          if [[ "$tag" != v* ]]; then
+            echo "::error::Release tag must start with v. Got '$tag'."
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Package macOS app
+        run: pnpm package:macos
+
+      - name: Verify app bundle
+        run: |
+          test -d "apps/desktop/src-tauri/target/release/bundle/macos/Colorful Code.app"
+
+      - name: Archive app bundle
+        run: |
+          ditto -c -k --keepParent \
+            "apps/desktop/src-tauri/target/release/bundle/macos/Colorful Code.app" \
+            "Colorful-Code-macos-arm64.zip"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: ${{ steps.release.outputs.tag }}
+          files: Colorful-Code-macos-arm64.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: true
