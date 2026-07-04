@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: Existing release tag to publish, such as v0.1.0. Defaults to the selected ref.
+        description: Release tag to publish or create, such as v0.1.0. Defaults to the selected ref.
         required: false
         type: string
 
@@ -45,8 +45,6 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v6
-        with:
-          ref: ${{ steps.release.outputs.tag }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v6
@@ -86,6 +84,7 @@ jobs:
         with:
           tag_name: ${{ steps.release.outputs.tag }}
           name: ${{ steps.release.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           files: Colorful-Code-macos-arm64.zip
           fail_on_unmatched_files: true
           generate_release_notes: true
