@@ -25,20 +25,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Install Tauri Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            curl \
-            file \
-            libayatana-appindicator3-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev \
-            librsvg2-dev \
-            pkg-config \
-            wget
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm turbo run lint --filter='!@colorful-code/desktop'
+
+      - name: Typecheck
+        run: pnpm turbo run typecheck --filter='!@colorful-code/desktop'
+
+      - name: Build TypeScript packages
+        run: pnpm turbo run build --filter='!@colorful-code/desktop'
+
+  desktop:
+    name: Desktop checks
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
 
       - name: Install pnpm
         uses: pnpm/action-setup@v6
@@ -54,17 +68,14 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
 
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Lint
-        run: pnpm lint
-
-      - name: Typecheck
-        run: pnpm typecheck
-
-      - name: Build TypeScript packages
-        run: pnpm turbo run build --filter='!@colorful-code/desktop'
+      - name: Build desktop server sidecar
+        run: pnpm --filter @colorful-code/desktop build:server-sidecar
 
       - name: Check desktop crate
-        run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
+        run: pnpm --filter @colorful-code/desktop lint
