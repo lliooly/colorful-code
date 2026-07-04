@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import {
   buildSystemPrompt,
   createDefaultDynamicSections,
+  STATIC_SYSTEM_PROMPT_SECTIONS,
 } from '@colorful-code/prompts';
 import type {
   ModelClient,
@@ -78,6 +79,13 @@ test('default dynamic prompt sections omit TODO placeholders when context is abs
   });
 
   assert.equal(prompt.join('\n\n').includes('TODO'), false);
+});
+
+test('default static prompt asks the model to follow the user message language', () => {
+  assert.match(
+    STATIC_SYSTEM_PROMPT_SECTIONS.join('\n\n'),
+    /Respond in the same language as the user's latest message\./,
+  );
 });
 
 test('create session options feed permission state and dynamic context into the model system prompt', async () => {

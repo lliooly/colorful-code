@@ -112,3 +112,18 @@ test('agent sidebar exposes project deletion without bulk clear actions', () => 
   assert.match(source, /Delete project/);
   assert.match(source, /handleDeleteHistorySession/);
 });
+
+test('message scroller absorbs spare height above the first message', () => {
+  const scrollerSource = readFileSync(
+    new URL('../components/ui/message-scroller.tsx', import.meta.url),
+    'utf8',
+  );
+  const pageSource = readFileSync(
+    new URL('../app/agent/page.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(scrollerSource, /min-h-full/);
+  assert.match(scrollerSource, /first:mt-auto/);
+  assert.doesNotMatch(pageSource, /calc\(100svh-24rem\)/);
+});
