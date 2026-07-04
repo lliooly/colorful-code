@@ -12,12 +12,12 @@ const outputDir = resolve(workspaceRoot, 'apps/desktop/src-tauri/binaries');
 const targets = {
   arm64: {
     bun: 'bun-darwin-arm64',
-    tauri: 'aarch64-apple-darwin'
+    tauri: 'aarch64-apple-darwin',
   },
   x64: {
     bun: 'bun-darwin-x64',
-    tauri: 'x86_64-apple-darwin'
-  }
+    tauri: 'x86_64-apple-darwin',
+  },
 };
 
 if (platform !== 'darwin') {
@@ -36,15 +36,27 @@ const optionalNestDependencies = [
   '@fastify/static',
   '@fastify/view',
   'class-transformer',
-  'class-validator'
+  'class-validator',
 ];
 
 mkdirSync(outputDir, { recursive: true });
 
-const outfile = resolve(
-  outputDir,
-  `colorful-code-server-${target.tauri}`
+execFileSync(
+  'pnpm',
+  [
+    '--filter',
+    '@colorful-code/tool-runtime',
+    '--filter',
+    '@colorful-code/prompts',
+    'build',
+  ],
+  {
+    cwd: workspaceRoot,
+    stdio: 'inherit',
+  },
 );
+
+const outfile = resolve(outputDir, `colorful-code-server-${target.tauri}`);
 
 execFileSync(
   'bun',
@@ -57,11 +69,11 @@ execFileSync(
     outfile,
     ...optionalNestDependencies.flatMap((dependency) => [
       '--external',
-      dependency
-    ])
+      dependency,
+    ]),
   ],
   {
     cwd: serverDir,
-    stdio: 'inherit'
-  }
+    stdio: 'inherit',
+  },
 );
