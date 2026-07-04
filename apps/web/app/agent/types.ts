@@ -409,11 +409,25 @@ export type SessionEvent =
       outputTokens?: number;
     }
   | {
+      type: 'context_compaction_started';
+      runId: string;
+    }
+  | {
       type: 'context_compacted';
       runId: string;
       tokensBefore: number;
       tokensAfter: number;
       entriesSummarized: number;
+    }
+  | {
+      type: 'context_compaction_skipped';
+      runId: string;
+      reason: string;
+    }
+  | {
+      type: 'context_compaction_failed';
+      runId: string;
+      message: string;
     }
   | { type: 'error'; runId?: string; message: string };
 
@@ -448,7 +462,10 @@ export const SESSION_EVENT_TYPES: readonly SessionEventType[] = [
   'permission_decision',
   'todos_updated',
   'usage',
+  'context_compaction_started',
   'context_compacted',
+  'context_compaction_skipped',
+  'context_compaction_failed',
   'error',
 ];
 

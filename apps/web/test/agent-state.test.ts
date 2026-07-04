@@ -32,6 +32,39 @@ test('applyAgentEvent captures approval requests as actionable state', () => {
   assert.equal(state.log[0]?.event.type, 'approval_required');
 });
 
+test('applyAgentEvent adds context compaction markers and updates tokens', () => {
+  const started: SessionEvent = {
+    type: 'context_compaction_started',
+    runId: 'compact-1',
+  };
+  const compacted: SessionEvent = {
+    type: 'context_compacted',
+    runId: 'compact-1',
+    tokensBefore: 900,
+    tokensAfter: 320,
+    entriesSummarized: 4,
+  };
+
+  const state = applyAgentEvent(
+    applyAgentEvent(createAgentViewState(), started, 1),
+    compacted,
+    2,
+  );
+
+  assert.equal(state.contextTokens, 320);
+  assert.equal(state.items.length, 2);
+  assert.equal(state.items[0]?.kind, 'context_marker');
+  assert.equal(
+    state.items[0]?.kind === 'context_marker' && state.items[0].status,
+    'started',
+  );
+  assert.equal(state.items[1]?.kind, 'context_marker');
+  assert.equal(
+    state.items[1]?.kind === 'context_marker' && state.items[1].status,
+    'compacted',
+  );
+});
+
 test('applyAgentEvent updates edit proposal status without duplicating proposals', () => {
   const proposed: SessionEvent = {
     type: 'edit_proposed',
@@ -174,10 +207,10 @@ test('selectedScopeForSession keeps new chat creation near restored history', ()
     pinned: false,
   };
 
-  assert.deepEqual(
-    selectedScopeForSession(projectChat),
-    { type: 'project', projectId: 'project-1' },
-  );
+  assert.deepEqual(selectedScopeForSession(projectChat), {
+    type: 'project',
+    projectId: 'project-1',
+  });
   assert.deepEqual(selectedScopeForSession(standaloneChat), { type: 'chats' });
 });
 

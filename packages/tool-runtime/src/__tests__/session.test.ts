@@ -17,6 +17,8 @@ import {
   type McpManager,
 } from '../index.js';
 
+const countChars = (text: string) => text.length;
+
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), 'colorful-session-runtime-'));
   try {
@@ -119,19 +121,59 @@ test('a turn emits visible thinking deltas from the model stream', async () => {
 
   assert.deepEqual(
     events.map((event) => event.type),
-    [
-      'run_status',
-      'thinking_delta',
-      'message_delta',
-      'message',
-      'run_status',
-    ],
+    ['run_status', 'thinking_delta', 'message_delta', 'message', 'run_status'],
   );
   const thinking = events.find(
     (event): event is Extract<SessionEvent, { type: 'thinking_delta' }> =>
       event.type === 'thinking_delta',
   );
   assert.equal(thinking?.text, 'Checking context.');
+});
+
+test('manual context compaction emits visible progress and result events', async () => {
+  const model: ModelClient = {
+    run(input) {
+      const text = input.system === 'compact prompt' ? 'SUMMARY' : 'ok';
+      return (async function* () {
+        yield { type: 'text', text };
+        yield { type: 'end' };
+      })();
+    },
+  };
+  const session = new Session({
+    model,
+    tools: [],
+    compaction: {
+      contextWindow: 10_000,
+      threshold: 10,
+      keepRecentTokens: 10,
+      prompt: 'compact prompt',
+      estimateTokens: countChars,
+    },
+  });
+  const events: SessionEvent[] = [];
+  session.subscribe((event) => events.push(event));
+
+  await session.submit('A'.repeat(5000));
+  await session.submit('second');
+  session.send({ type: 'compact' });
+
+  await waitFor(
+    () => events.some((event) => event.type === 'context_compacted'),
+    'context_compacted',
+  );
+
+  const started = events.find(
+    (event) => event.type === 'context_compaction_started',
+  );
+  const compacted = events.find(
+    (event): event is Extract<SessionEvent, { type: 'context_compacted' }> =>
+      event.type === 'context_compacted',
+  );
+  assert.ok(started);
+  assert.ok(compacted);
+  assert.equal(compacted.entriesSummarized, 2);
+  assert.ok(compacted.tokensAfter < compacted.tokensBefore);
 });
 
 test('the loop issues multiple model.run calls when a tool use occurs', async () => {

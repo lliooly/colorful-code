@@ -181,11 +181,25 @@ export type SessionEvent =
   // `tokensAfter` are the loop's pre/post estimates; `entriesSummarized` is how
   // many leading history entries the summary replaced.
   | {
+      type: 'context_compaction_started';
+      runId: string;
+    }
+  | {
       type: 'context_compacted';
       runId: string;
       tokensBefore: number;
       tokensAfter: number;
       entriesSummarized: number;
+    }
+  | {
+      type: 'context_compaction_skipped';
+      runId: string;
+      reason: string;
+    }
+  | {
+      type: 'context_compaction_failed';
+      runId: string;
+      message: string;
     }
   | { type: 'error'; runId: string; message: string };
 

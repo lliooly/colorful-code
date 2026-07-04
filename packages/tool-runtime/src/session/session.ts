@@ -29,11 +29,7 @@ import type { SessionEvent, SessionEventListener } from './events.js';
 import type { ConversationEntry, ModelClient } from './model.js';
 import { runTurn } from './turn.js';
 import { applyEditProposal } from '../tools/files.js';
-import {
-  runHooks,
-  type HookConfig,
-  type HookFailure,
-} from '../core/hooks.js';
+import { runHooks, type HookConfig, type HookFailure } from '../core/hooks.js';
 import {
   createWorkspaceFileWatcher,
   type WorkspaceFileWatcher,
@@ -493,7 +489,8 @@ export class Session {
           event.metadata.patches.length > 0 &&
           !event.metadata.proposalId
         ) {
-          const patches = event.metadata.patches as unknown as import('../core/tool.js').FilePatch[];
+          const patches = event.metadata
+            .patches as unknown as import('../core/tool.js').FilePatch[];
           this.editProposalCounter += 1;
           const stored: EditProposal = {
             id: this.id + '-edit-' + String(this.editProposalCounter),
@@ -592,9 +589,27 @@ export class Session {
         this.permissionContext.mode = message.mode;
         return;
       case 'compact': {
-        if (!this.compaction) return;
+        const runId = `compact-${Date.now().toString(36)}`;
+        if (!this.compaction) {
+          this.emit({
+            type: 'context_compaction_skipped',
+            runId,
+            reason: 'Context compaction is not configured for this session.',
+          });
+          return;
+        }
+        if (this.activeRun) {
+          this.emit({
+            type: 'context_compaction_skipped',
+            runId,
+            reason:
+              'A run is currently active. Try compacting again after it finishes.',
+          });
+          return;
+        }
         const tools = describeTools(this.registry.list());
         const abortController = new AbortController();
+        this.emit({ type: 'context_compaction_started', runId });
         void compactHistory({
           history: this.history,
           model: this.model,
@@ -604,17 +619,32 @@ export class Session {
             : {}),
           tools,
           signal: abortController.signal,
-        }).then((result) => {
-          if (result) {
+        })
+          .then((result) => {
+            if (result) {
+              this.emit({
+                type: 'context_compacted',
+                runId,
+                tokensBefore: result.tokensBefore,
+                tokensAfter: result.tokensAfter,
+                entriesSummarized: result.entriesSummarized,
+              });
+              return;
+            }
             this.emit({
-              type: 'context_compacted',
-              runId: `compact-${Date.now().toString(36)}`,
-              tokensBefore: result.tokensBefore,
-              tokensAfter: result.tokensAfter,
-              entriesSummarized: result.entriesSummarized,
+              type: 'context_compaction_skipped',
+              runId,
+              reason:
+                'There is not enough earlier conversation to summarize yet.',
             });
-          }
-        });
+          })
+          .catch((error: unknown) => {
+            this.emit({
+              type: 'context_compaction_failed',
+              runId,
+              message: error instanceof Error ? error.message : String(error),
+            });
+          });
         return;
       }
     }

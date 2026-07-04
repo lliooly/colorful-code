@@ -432,6 +432,12 @@ const copy = {
       compactDescription:
         'Summarise older messages to free context window space.',
       compacting: 'Compacting…',
+      compactStarted: 'Compacting context...',
+      compactSucceeded: 'Context compacted',
+      compactSkipped: 'Context compaction skipped',
+      compactFailed: 'Context compaction failed',
+      compactEntriesSummarized: 'entries summarized',
+      compactTokens: 'tokens',
       model: 'Model',
       send: 'Send',
       baseUrl: 'Base URL',
@@ -571,6 +577,12 @@ const copy = {
       compact: '压缩上下文',
       compactDescription: '将较早的对话总结为摘要，释放上下文窗口空间。',
       compacting: '压缩中…',
+      compactStarted: '正在压缩上下文...',
+      compactSucceeded: '上下文已压缩',
+      compactSkipped: '上下文压缩已跳过',
+      compactFailed: '上下文压缩失败',
+      compactEntriesSummarized: '条记录已摘要',
+      compactTokens: 'tokens',
       model: '模型',
       send: '发送',
       baseUrl: '基础 URL',
@@ -683,10 +695,7 @@ function toolStatus(item: ToolConversationItem): {
 function toolSummary(item: ToolConversationItem): string {
   const sourceLabel = formatToolSourceLabel(item.source);
   const status = toolStatus(item);
-  return [
-    `${status.label}: ${item.name}`,
-    sourceLabel ? sourceLabel : null,
-  ]
+  return [`${status.label}: ${item.name}`, sourceLabel ? sourceLabel : null]
     .filter(Boolean)
     .join(' · ');
 }
@@ -705,9 +714,7 @@ function ThinkingBlock({ thinking }: { thinking: string }) {
           <MarkerIcon>
             <Sparkles className="size-3.5" />
           </MarkerIcon>
-          <MarkerContent className="truncate text-xs">
-            Thinking
-          </MarkerContent>
+          <MarkerContent className="truncate text-xs">Thinking</MarkerContent>
         </Marker>
         <CollapsibleTrigger asChild>
           <Button
@@ -754,9 +761,7 @@ function ToolInvocationItem({ item }: { item: ToolConversationItem }) {
               className={cn('size-3.5', !item.result && 'animate-spin')}
             />
           </MarkerIcon>
-          <MarkerContent className="truncate text-xs">
-            {summary}
-          </MarkerContent>
+          <MarkerContent className="truncate text-xs">{summary}</MarkerContent>
         </Marker>
         <CollapsibleTrigger asChild>
           <Button
@@ -834,10 +839,7 @@ function ApprovalRequestBar({
               <CollapsibleTrigger asChild>
                 <Button variant="ghost" size="xs">
                   <ChevronRight
-                    className={cn(
-                      'transition-transform',
-                      open && 'rotate-90',
-                    )}
+                    className={cn('transition-transform', open && 'rotate-90')}
                   />
                   Details
                 </Button>
@@ -971,7 +973,8 @@ export default function AgentPage(): ReactNode {
       if (!raw) throw new Error('no stored model config');
       const parsed = JSON.parse(raw) as Partial<PersistedModelConfig>;
       return {
-        presetId: typeof parsed.presetId === 'string' ? parsed.presetId : 'claude',
+        presetId:
+          typeof parsed.presetId === 'string' ? parsed.presetId : 'claude',
         presetApiKeys:
           parsed.presetApiKeys && typeof parsed.presetApiKeys === 'object'
             ? (parsed.presetApiKeys as Record<string, string>)
@@ -2182,10 +2185,12 @@ export default function AgentPage(): ReactNode {
       .map((item) => {
         if (item.kind === 'user') return `User:\n${item.text}`;
         if (item.kind === 'assistant') return `Assistant:\n${item.text}`;
+        if (item.kind === 'context_marker') return null;
         return `Tool ${item.name}:\n${JSON.stringify(item.input, null, 2)}${
           item.result ? `\n\nResult:\n${item.result.content}` : ''
         }`;
       })
+      .filter((item): item is string => item !== null)
       .join('\n\n---\n\n');
     void navigator.clipboard.writeText(transcript);
   }, [items]);
@@ -2932,7 +2937,8 @@ export default function AgentPage(): ReactNode {
                     </AlertTitle>
                     <AlertDescription className="flex items-center justify-between gap-3">
                       <span className="text-red-600/80 dark:text-red-400/80">
-                        Set an API key for your model provider in Settings to start chatting.
+                        Set an API key for your model provider in Settings to
+                        start chatting.
                       </span>
                       <Button
                         variant="outline"
@@ -3007,7 +3013,14 @@ export default function AgentPage(): ReactNode {
                                 </MessageScrollerItem>
                               ) : (
                                 items.map((item, index) =>
-                                  item.kind === 'user' ? (
+                                  item.kind === 'context_marker' ? (
+                                    <MessageScrollerItem key={item.id}>
+                                      <ContextMarkerItem
+                                        item={item}
+                                        labels={t.composer}
+                                      />
+                                    </MessageScrollerItem>
+                                  ) : item.kind === 'user' ? (
                                     <MessageScrollerItem key={`u-${index}`}>
                                       <Message align="end">
                                         <MessageContent>
@@ -3032,7 +3045,9 @@ export default function AgentPage(): ReactNode {
                                         <MessageContent>
                                           <div className="rounded-3xl border border-border/60 bg-background px-4 py-3">
                                             {item.thinking ? (
-                                              <ThinkingBlock thinking={item.thinking} />
+                                              <ThinkingBlock
+                                                thinking={item.thinking}
+                                              />
                                             ) : null}
                                             <p className="whitespace-pre-wrap text-sm leading-6">
                                               {item.text || '...'}
@@ -3705,7 +3720,6 @@ export default function AgentPage(): ReactNode {
                       </section>
                     );
                   })}
-
                 </div>
               ) : settingsPluginKind ? (
                 <div className="mt-8 flex max-w-5xl flex-col gap-5">
@@ -4068,6 +4082,53 @@ function PatchPreview({ patch }: { patch: FilePatch }): ReactNode {
         ))}
       </div>
     </div>
+  );
+}
+
+function ContextMarkerItem({
+  item,
+  labels,
+}: {
+  item: Extract<ConversationItem, { kind: 'context_marker' }>;
+  labels: {
+    compactStarted: string;
+    compactSucceeded: string;
+    compactSkipped: string;
+    compactFailed: string;
+    compactEntriesSummarized: string;
+    compactTokens: string;
+  };
+}) {
+  const text =
+    item.status === 'started'
+      ? labels.compactStarted
+      : item.status === 'compacted'
+        ? `${labels.compactSucceeded}: ${String(item.entriesSummarized ?? 0)} ${labels.compactEntriesSummarized}, ${String(item.tokensBefore ?? 0)} -> ${String(item.tokensAfter ?? 0)} ${labels.compactTokens}.`
+        : item.status === 'skipped'
+          ? `${labels.compactSkipped}: ${item.message ?? ''}`
+          : `${labels.compactFailed}: ${item.message ?? ''}`;
+  const icon =
+    item.status === 'started' ? (
+      <RefreshCw className="animate-spin" />
+    ) : item.status === 'compacted' ? (
+      <CheckCircle2 />
+    ) : (
+      <AlertCircle />
+    );
+  const tone =
+    item.status === 'compacted'
+      ? 'text-emerald-600'
+      : item.status === 'failed'
+        ? 'text-destructive'
+        : item.status === 'skipped'
+          ? 'text-amber-600'
+          : 'text-muted-foreground';
+
+  return (
+    <Marker variant="separator" className={cn('px-2 text-xs', tone)}>
+      <MarkerIcon>{icon}</MarkerIcon>
+      <MarkerContent>{text}</MarkerContent>
+    </Marker>
   );
 }
 

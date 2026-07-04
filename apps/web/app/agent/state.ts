@@ -16,6 +16,15 @@ import type {
 export type ConversationItem =
   | { kind: 'user'; text: string }
   | {
+      kind: 'context_marker';
+      id: string;
+      status: 'started' | 'compacted' | 'skipped' | 'failed';
+      tokensBefore?: number;
+      tokensAfter?: number;
+      entriesSummarized?: number;
+      message?: string;
+    }
+  | {
       kind: 'assistant';
       runId: string;
       text: string;
@@ -297,10 +306,59 @@ export function applyAgentEvent(
         ...next,
         contextTokens: event.inputTokens ?? next.contextTokens,
       };
+    case 'context_compaction_started':
+      return {
+        ...next,
+        items: [
+          ...next.items,
+          {
+            kind: 'context_marker',
+            id: `${event.runId}-started`,
+            status: 'started',
+          },
+        ],
+      };
     case 'context_compacted':
       return {
         ...next,
+        items: [
+          ...next.items,
+          {
+            kind: 'context_marker',
+            id: `${event.runId}-compacted`,
+            status: 'compacted',
+            tokensBefore: event.tokensBefore,
+            tokensAfter: event.tokensAfter,
+            entriesSummarized: event.entriesSummarized,
+          },
+        ],
         contextTokens: event.tokensAfter,
+      };
+    case 'context_compaction_skipped':
+      return {
+        ...next,
+        items: [
+          ...next.items,
+          {
+            kind: 'context_marker',
+            id: `${event.runId}-skipped`,
+            status: 'skipped',
+            message: event.reason,
+          },
+        ],
+      };
+    case 'context_compaction_failed':
+      return {
+        ...next,
+        items: [
+          ...next.items,
+          {
+            kind: 'context_marker',
+            id: `${event.runId}-failed`,
+            status: 'failed',
+            message: event.message,
+          },
+        ],
       };
     case 'error':
       return { ...next, error: event.message };
