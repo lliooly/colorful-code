@@ -52,7 +52,7 @@
 - 修改：`.github/workflows/ci.yml`
 - 修改：`apps/desktop/package.json`
 
-- [ ] **步骤 1：把 restore 当前响应写成明确断言**
+- [x] **步骤 1：把 restore 当前响应写成明确断言**
 
 将两个失败断言补齐当前协议字段，例如：
 
@@ -68,13 +68,13 @@ assert.deepEqual(restoreRes.json(), {
 });
 ```
 
-- [ ] **步骤 2：运行 Server 测试确认基线从 2 fail 变为全绿**
+- [x] **步骤 2：运行 Server 测试确认基线从 2 fail 变为全绿**
 
 运行：`pnpm --filter @colorful-code/server test`
 
 预期：`105 pass, 0 fail`。
 
-- [ ] **步骤 3：添加统一测试脚本**
+- [x] **步骤 3：添加统一测试脚本**
 
 在根 `package.json` 增加：
 
@@ -92,7 +92,7 @@ assert.deepEqual(restoreRes.json(), {
 "test": "cargo test --manifest-path src-tauri/Cargo.toml"
 ```
 
-- [ ] **步骤 4：让 CI 实际运行测试**
+- [x] **步骤 4：让 CI 实际运行测试**
 
 Quality job 安装 Bun 后运行 `pnpm test`；Desktop job 在 `cargo check` 后运行：
 
@@ -101,7 +101,7 @@ Quality job 安装 Bun 后运行 `pnpm test`；Desktop job 在 `cargo check` 后
   run: pnpm --filter @colorful-code/desktop test
 ```
 
-- [ ] **步骤 5：验证统一入口**
+- [x] **步骤 5：验证统一入口**
 
 运行：`pnpm test`
 

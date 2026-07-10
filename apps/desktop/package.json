@@ -9,6 +9,7 @@
     "package:macos": "tauri build --bundles app",
     "lint": "cargo check --manifest-path src-tauri/Cargo.toml",
     "typecheck": "cargo check --manifest-path src-tauri/Cargo.toml",
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml",
     "clean": "cargo clean --manifest-path src-tauri/Cargo.toml"
   },
   "devDependencies": {
