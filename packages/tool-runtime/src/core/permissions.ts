@@ -292,6 +292,19 @@ export function evaluatePermission(
 
   const { mode } = permissionContext;
   const readOnly = tool.isReadOnly(input);
+  const server = mcpServerName(tool);
+  const serverTrust = server
+    ? (permissionContext.mcpTrust?.get(server) ?? 'ask')
+    : undefined;
+
+  // A blocked plugin is a security ceiling, not a convenience-mode default.
+  if (server && serverTrust === 'blocked') {
+    return {
+      behavior: 'deny',
+      message: "MCP server '" + server + "' is blocked.",
+      reason: { type: 'mcpTrust', server, trust: serverTrust },
+    };
+  }
 
   // 1. Explicit bypass.
   if (mode === 'bypass') {
@@ -418,9 +431,8 @@ export function evaluatePermission(
   }
 
   // 5. MCP tools consult their server trust level.
-  const server = mcpServerName(tool);
   if (server) {
-    const trust = permissionContext.mcpTrust?.get(server) ?? 'ask';
+    const trust = serverTrust ?? 'ask';
     if (trust === 'trusted') {
       return {
         behavior: 'allow',

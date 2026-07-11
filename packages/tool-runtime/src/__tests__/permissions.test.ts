@@ -220,6 +220,30 @@ test('evaluatePermission: MCP trust drives allow/deny/ask', () => {
     trust: 'blocked',
   });
 
+  for (const mode of [
+    'default',
+    'plan',
+    'acceptEdits',
+    'readOnly',
+    'bypass',
+    'workspaceWrite',
+  ] as const) {
+    const ceiling = evaluatePermission(
+      mcpTool,
+      { path: '/workspace/file.txt' },
+      createRuntimeContext({
+        permissionContext: {
+          ...base,
+          mode,
+          workspaceRoots: ['/workspace'],
+          rules: [{ source: 'session', behavior: 'allow', toolName: mcpTool.name }],
+          mcpTrust: new Map([['docs', 'blocked']]),
+        },
+      }),
+    );
+    assert.equal(ceiling.behavior, 'deny', mode);
+  }
+
   const ask = evaluatePermission(
     mcpTool,
     {},

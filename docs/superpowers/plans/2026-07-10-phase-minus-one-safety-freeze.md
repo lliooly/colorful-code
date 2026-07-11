@@ -385,7 +385,7 @@ git commit -m "fix(模型): 禁止服务端凭据跟随端点覆盖"
 - 修改：`apps/server/src/sessions/sessions.service.ts`
 - 修改：`apps/server/test/mcp-productization.e2e.test.ts`
 
-- [ ] **步骤 1：先写 blocked × mode 失败矩阵**
+- [x] **步骤 1：先写 blocked × mode 失败矩阵**
 
 ```ts
 for (const mode of PERMISSION_MODES) {
@@ -399,17 +399,17 @@ for (const mode of PERMISSION_MODES) {
 }
 ```
 
-- [ ] **步骤 2：写 restore 保持 rules/trust 的失败测试**
+- [x] **步骤 2：写 restore 保持 rules/trust 的失败测试**
 
 扩展 `Session.restore` deps 接受 `permissionContext`，测试恢复后调用同一个 MCP tool 仍 deny，并验证显式 deny rule 仍生效。
 
-- [ ] **步骤 3：运行测试确认 plan/readOnly/bypass 等路径错误放行**
+- [x] **步骤 3：运行测试确认 plan/readOnly/bypass 等路径错误放行**
 
 运行：`pnpm --filter @colorful-code/tool-runtime test`
 
 预期：新增矩阵失败。
 
-- [ ] **步骤 4：实现 ceiling 顺序与恢复注入**
+- [x] **步骤 4：实现 ceiling 顺序与恢复注入**
 
 在 `evaluatePermission()` 最前面解析 MCP server；若 trust 为 `blocked`，在 `bypass` 之前返回 deny。普通 `trusted`/`ask` 仍在便捷 mode 和规则之后按现有语义处理。
 
@@ -426,7 +426,7 @@ permissionContext: {
 
 Server 的两个 restore 构造路径传入 `buildRestoredPermissionContext()` 的结果。
 
-- [ ] **步骤 5：运行 Runtime 与 Server MCP 测试**
+- [x] **步骤 5：运行 Runtime 与 Server MCP 测试**
 
 运行：`pnpm --filter @colorful-code/tool-runtime test`
 

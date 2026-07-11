@@ -687,6 +687,7 @@ export class Session {
       lspManager?: LspManager;
       hooks?: HookConfig;
       watchWorkspace?: boolean;
+      permissionContext?: PermissionContext;
     },
   ): Session {
     const session = new Session({
@@ -705,9 +706,10 @@ export class Session {
         ? { watchWorkspace: deps.watchWorkspace }
         : {}),
       permissionContext: {
+        ...deps.permissionContext,
         mode: snapshot.permissionMode,
         workspaceRoots: [...snapshot.workspaceRoots],
-        rules: [],
+        rules: [...(deps.permissionContext?.rules ?? [])],
       },
     });
     for (const entry of snapshot.history) {
