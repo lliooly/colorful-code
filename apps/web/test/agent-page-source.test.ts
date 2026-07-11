@@ -2,6 +2,15 @@ import { readFileSync } from 'node:fs';
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 
+test('agent page never persists API keys in localStorage', () => {
+  const source = readFileSync(
+    new URL('../app/agent/page.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.doesNotMatch(source, /presetApiKeys,[\s\S]{0,160}localStorage\.setItem/);
+  assert.doesNotMatch(source, /customApiKey,[\s\S]{0,160}localStorage\.setItem/);
+});
+
 test('agent chat surface does not render internal connection counters', () => {
   const source = readFileSync(
     new URL('../app/agent/page.tsx', import.meta.url),

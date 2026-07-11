@@ -199,6 +199,12 @@ import {
   type ThemePreference,
 } from './preferences';
 import {
+  DEFAULT_MODEL_PREFERENCES,
+  MODEL_CONFIG_STORAGE_KEY,
+  loadPersistedModelPreferences,
+  serializeModelPreferences,
+} from './model-config-storage';
+import {
   applyAgentEvent,
   composeMessageWithAttachments,
   composeVisibleMessageWithAttachments,
@@ -1156,73 +1162,12 @@ export default function AgentPage(): ReactNode {
     }
   });
 
-  // Persisted model configuration so users don't have to re-enter API keys
-  // every time they open the app.
-  const MODEL_CONFIG_STORAGE_KEY = 'colorful-code.agent.model-config';
-  type PersistedModelConfig = {
-    presetId: string;
-    presetApiKeys: Record<string, string>;
-    presetModelOverrides: Record<string, string>;
-    customProtocol: string;
-    customBaseURL: string;
-    customModel: string;
-    customApiKey?: string;
-  };
-
-  function loadModelConfig(): PersistedModelConfig {
-    if (typeof window === 'undefined') {
-      return {
-        presetId: 'claude',
-        presetApiKeys: {},
-        presetModelOverrides: {},
-        customProtocol: 'openai',
-        customBaseURL: '',
-        customModel: '',
-        customApiKey: '',
-      };
-    }
-    try {
-      const raw = window.localStorage.getItem(MODEL_CONFIG_STORAGE_KEY);
-      if (!raw) throw new Error('no stored model config');
-      const parsed = JSON.parse(raw) as Partial<PersistedModelConfig>;
-      return {
-        presetId:
-          typeof parsed.presetId === 'string' ? parsed.presetId : 'claude',
-        presetApiKeys:
-          parsed.presetApiKeys && typeof parsed.presetApiKeys === 'object'
-            ? (parsed.presetApiKeys as Record<string, string>)
-            : {},
-        presetModelOverrides:
-          parsed.presetModelOverrides &&
-          typeof parsed.presetModelOverrides === 'object'
-            ? (parsed.presetModelOverrides as Record<string, string>)
-            : {},
-        customProtocol:
-          parsed.customProtocol === 'anthropic' ||
-          parsed.customProtocol === 'openai'
-            ? parsed.customProtocol
-            : 'openai',
-        customBaseURL:
-          typeof parsed.customBaseURL === 'string' ? parsed.customBaseURL : '',
-        customModel:
-          typeof parsed.customModel === 'string' ? parsed.customModel : '',
-        customApiKey:
-          typeof parsed.customApiKey === 'string' ? parsed.customApiKey : '',
-      };
-    } catch {
-      return {
-        presetId: 'claude',
-        presetApiKeys: {},
-        presetModelOverrides: {},
-        customProtocol: 'openai',
-        customBaseURL: '',
-        customModel: '',
-        customApiKey: '',
-      };
-    }
-  }
-
-  const savedModelConfig = loadModelConfig();
+  const savedModelConfig =
+    typeof window === 'undefined'
+      ? DEFAULT_MODEL_PREFERENCES
+      : loadPersistedModelPreferences(
+          window.localStorage.getItem(MODEL_CONFIG_STORAGE_KEY),
+        );
 
   const [presetId, setPresetId] = useState<string>(savedModelConfig.presetId);
 
@@ -1234,10 +1179,10 @@ export default function AgentPage(): ReactNode {
   );
   const [customModel, setCustomModel] = useState(savedModelConfig.customModel);
   const [customApiKey, setCustomApiKey] = useState(
-    savedModelConfig.customApiKey ?? '',
+    '',
   );
   const [presetApiKeys, setPresetApiKeys] = useState<Record<string, string>>(
-    savedModelConfig.presetApiKeys,
+    {},
   );
   const [presetModelOverrides, setPresetModelOverrides] = useState<
     Record<string, string>
@@ -1475,30 +1420,24 @@ export default function AgentPage(): ReactNode {
     );
   }, [preferences]);
 
-  // Persist model configuration to localStorage so users don't have to
-  // re-enter API keys every time they open the app.
+  // Persist only non-sensitive model preferences. API keys remain in memory.
   useEffect(() => {
-    const config: PersistedModelConfig = {
-      presetId,
-      presetApiKeys,
-      presetModelOverrides,
-      customProtocol,
-      customBaseURL,
-      customModel,
-      customApiKey,
-    };
     window.localStorage.setItem(
       MODEL_CONFIG_STORAGE_KEY,
-      JSON.stringify(config),
+      serializeModelPreferences({
+        presetId,
+        presetModelOverrides,
+        customProtocol,
+        customBaseURL,
+        customModel,
+      }),
     );
   }, [
     presetId,
-    presetApiKeys,
     presetModelOverrides,
     customProtocol,
     customBaseURL,
     customModel,
-    customApiKey,
   ]);
 
   useEffect(() => {

@@ -266,7 +266,7 @@ git commit -m "feat(备份): 添加 SQLite 一致性快照工具"
 - 修改：`apps/web/app/agent/page.tsx`
 - 修改：`apps/web/test/agent-page-source.test.ts`
 
-- [ ] **步骤 1：先写脱敏与旧数据清理失败测试**
+- [x] **步骤 1：先写脱敏与旧数据清理失败测试**
 
 ```ts
 const loaded = loadPersistedModelPreferences(JSON.stringify({
@@ -282,13 +282,13 @@ assert.doesNotMatch(JSON.stringify(loaded), /server-secret|custom-secret/);
 
 源码测试断言 `page.tsx` 不再把 `presetApiKeys` 或 `customApiKey` 放入 `localStorage` payload。
 
-- [ ] **步骤 2：运行测试确认旧实现失败**
+- [x] **步骤 2：运行测试确认旧实现失败**
 
 运行：`bun test apps/web/test/agent-model-config-storage.test.ts apps/web/test/agent-page-source.test.ts`
 
 预期：FAIL，序列化结果仍含秘密或纯函数不存在。
 
-- [ ] **步骤 3：提取非敏感存储模型**
+- [x] **步骤 3：提取非敏感存储模型**
 
 ```ts
 export type PersistedModelPreferences = {
@@ -302,7 +302,7 @@ export type PersistedModelPreferences = {
 
 加载旧 JSON 时只挑选上述白名单字段；API key state 从空值初始化，只存在 React 内存。
 
-- [ ] **步骤 4：验证秘密不再持久化**
+- [x] **步骤 4：验证秘密不再持久化**
 
 运行：`bun test apps/web/test/agent-model-config-storage.test.ts apps/web/test/agent-page-source.test.ts`
 
