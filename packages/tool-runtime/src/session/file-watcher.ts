@@ -15,6 +15,8 @@ export type FileWatchEvent = {
 };
 
 export type WorkspaceFileWatcher = {
+  /** Resolves after the initial workspace snapshot has been captured. */
+  ready(): Promise<void>;
   close(): Promise<void>;
 };
 
@@ -158,9 +160,12 @@ export function createWorkspaceFileWatcher(
     );
   };
 
-  for (const root of options.roots) {
-    const absoluteRoot = resolve(root);
-    void scan(absoluteRoot);
+  const absoluteRoots = options.roots.map((root) => resolve(root));
+  const initialScan = Promise.all(absoluteRoots.map((root) => scan(root))).then(
+    () => undefined,
+  );
+
+  for (const absoluteRoot of absoluteRoots) {
     const timer = setInterval(() => {
       const before = new Set(knownFiles.keys());
       void (async () => {
@@ -209,6 +214,9 @@ export function createWorkspaceFileWatcher(
   }
 
   return {
+    async ready() {
+      await initialScan;
+    },
     async close() {
       closed = true;
       for (const timer of pollTimers) {

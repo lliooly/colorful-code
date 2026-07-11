@@ -86,3 +86,34 @@ test("Glob honors gitignore rules", async () => {
     assert.deepEqual(outputLines(result.content), [join(dir, "src", "visible.ts")]);
   });
 });
+
+test("Grep ignores ambient ripgrep configuration", async () => {
+  await withTempDir(async (dir) => {
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "match.ts"), "const answer = 42;\n", "utf8");
+    const configPath = join(dir, "ripgreprc");
+    await writeFile(configPath, "--glob=!src/**\n", "utf8");
+    const previousConfig = process.env.RIPGREP_CONFIG_PATH;
+    process.env.RIPGREP_CONFIG_PATH = configPath;
+    try {
+      const runner = new ToolRunner(
+        new ToolRegistry(createBuiltinTools()),
+        createRuntimeContext(),
+      );
+      const result = await runner.run({
+        id: "grep-ambient-config",
+        name: "Grep",
+        input: { cwd: dir, pattern: "answer" },
+      });
+
+      assert.equal(result.isError, undefined);
+      assert.deepEqual(outputLines(result.content), [join(dir, "src", "match.ts")]);
+    } finally {
+      if (previousConfig === undefined) {
+        delete process.env.RIPGREP_CONFIG_PATH;
+      } else {
+        process.env.RIPGREP_CONFIG_PATH = previousConfig;
+      }
+    }
+  });
+});

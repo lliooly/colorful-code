@@ -29,7 +29,15 @@ async function runRipgrep(
   return await new Promise((resolveOutput, reject) => {
     const child = spawn(
       "rg",
-      ["--color", "never", "--null", "--no-require-git", ...args],
+      [
+        "--no-config",
+        "--no-ignore-global",
+        "--color",
+        "never",
+        "--null",
+        "--no-require-git",
+        ...args,
+      ],
       {
         cwd,
         stdio: ["ignore", "pipe", "pipe"],

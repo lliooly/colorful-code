@@ -47,6 +47,7 @@ test('workspace watcher emits create, change, and delete events while ignoring c
       onEvent: (event) => events.push(event),
     });
     try {
+      await watcher.ready();
       const file = join(dir, 'note.txt');
       await writeFile(file, 'one', 'utf8');
       await waitFor(
@@ -94,6 +95,7 @@ test('file watch invalidation makes Edit require a fresh Read after external cha
       onEvent: () => undefined,
     });
     try {
+      await watcher.ready();
       await runner.run({ id: 'read-1', name: 'Read', input: { path: file } });
       await writeFile(file, 'external world\n', 'utf8');
       await waitFor(
@@ -153,6 +155,7 @@ test('workspace watcher syncs external file changes to the LSP manager', async (
       onEvent: () => undefined,
     });
     try {
+      await watcher.ready();
       await writeFile(file, 'export const answer = 42;\n', 'utf8');
       await waitFor(
         () =>
