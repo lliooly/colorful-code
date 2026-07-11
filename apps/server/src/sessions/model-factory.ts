@@ -59,11 +59,11 @@ function resolveApiKey(
   env: ServerEnvironment,
   presetId: string | undefined,
   selection: ModelSelection,
-): string {
+): { value: string; source: 'request' | 'server' } {
   const preset = resolveModelPreset(presetId);
 
   if (selection.apiKey && selection.apiKey.length > 0) {
-    return selection.apiKey;
+    return { value: selection.apiKey, source: 'request' };
   }
 
   // Custom (or any selection without a named-preset key source) must bring its
@@ -82,7 +82,7 @@ function resolveApiKey(
 
   const key = keyByPreset[preset.id];
   if (key && key.length > 0) {
-    return key;
+    return { value: key, source: 'server' };
   }
 
   throw new ModelSelectionError(
@@ -98,12 +98,22 @@ export function resolveModelClientConfig(
   selection: ModelSelection = {},
 ): ModelClientConfig {
   const { preset, ...overrides } = selection;
-  const apiKey = resolveApiKey(env, preset, selection);
+  const resolvedKey = resolveApiKey(env, preset, selection);
+  const resolvedPreset = resolveModelPreset(preset);
+  if (
+    resolvedKey.source === 'server' &&
+    resolvedPreset.id !== 'custom' &&
+    (selection.baseURL !== undefined || selection.protocol !== undefined)
+  ) {
+    throw new ModelSelectionError(
+      'Named presets using server credentials do not allow protocol or endpoint override.',
+    );
+  }
   try {
     return buildModelClientConfig({
       ...(preset !== undefined ? { presetId: preset } : {}),
       overrides,
-      apiKey,
+      apiKey: resolvedKey.value,
     });
   } catch (error) {
     // buildModelClientConfig throws plain Errors for unknown preset / missing

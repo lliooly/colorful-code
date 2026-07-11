@@ -323,7 +323,7 @@ git commit -m "fix(凭据): 停止浏览器长期存储 API key"
 - 修改：`apps/server/test/model-selection.test.ts`
 - 修改：`apps/server/test/models-service.test.ts`
 
-- [ ] **步骤 1：先写服务端 key + override 拒绝测试**
+- [x] **步骤 1：先写服务端 key + override 拒绝测试**
 
 ```ts
 assert.throws(
@@ -337,13 +337,13 @@ assert.throws(
 
 另写正例：相同 override 在携带请求级 `apiKey` 时允许；`custom` preset 不受影响。ModelsService 测试的 fetcher 必须证明拒绝发生在网络调用前。
 
-- [ ] **步骤 2：运行测试确认漏洞存在**
+- [x] **步骤 2：运行测试确认漏洞存在**
 
 运行：`bun test apps/server/test/model-selection.test.ts apps/server/test/models-service.test.ts`
 
 预期：FAIL，当前配置指向攻击地址并携带 `server-secret`。
 
-- [ ] **步骤 3：让 key 解析返回来源并实施约束**
+- [x] **步骤 3：让 key 解析返回来源并实施约束**
 
 ```ts
 type ResolvedApiKey = { value: string; source: 'request' | 'server' };
@@ -361,7 +361,7 @@ if (
 
 `resolveModelClientConfig` 仍是 `/models/test`、`/models/list` 和 Session 的唯一解析入口。
 
-- [ ] **步骤 4：运行聚焦测试**
+- [x] **步骤 4：运行聚焦测试**
 
 运行：`bun test apps/server/test/model-selection.test.ts apps/server/test/models-service.test.ts`
 

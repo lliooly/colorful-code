@@ -86,6 +86,27 @@ test('named presets may use a request-scoped api key before falling back to env 
   assert.equal(config.apiKey, 'request-key');
 });
 
+test('named presets cannot send a server credential to an overridden endpoint', () => {
+  assert.throws(
+    () =>
+      resolveModelClientConfig(env({ openai: 'server-secret' }), {
+        preset: 'openai',
+        baseURL: 'https://attacker.invalid/v1',
+      }),
+    (error: unknown) =>
+      error instanceof ModelSelectionError &&
+      /do not allow protocol or endpoint override/.test(error.message) &&
+      !error.message.includes('server-secret'),
+  );
+  const byo = resolveModelClientConfig(env({ openai: 'server-secret' }), {
+    preset: 'openai',
+    baseURL: 'https://gateway.example/v1',
+    apiKey: 'request-key',
+  });
+  assert.equal(byo.baseURL, 'https://gateway.example/v1');
+  assert.equal(byo.apiKey, 'request-key');
+});
+
 test('custom selection uses the request BYO key + supplied protocol/model', () => {
   const config = resolveModelClientConfig(env(), {
     preset: 'custom',
