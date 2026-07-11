@@ -18,6 +18,7 @@ export interface ServerEnvironment {
   // `./data/colorful-code.db` (gitignored); override with `DATABASE_PATH`. The
   // special value `:memory:` opens an ephemeral in-process DB (used by tests).
   databasePath: string;
+  v2Enabled: boolean;
 }
 
 export interface RedactedServerEnvironment {
@@ -28,6 +29,7 @@ export interface RedactedServerEnvironment {
   corsOrigins: string[];
   providerKeys: Record<ProviderKeyName, '[set]' | '[unset]'>;
   databasePath: string;
+  v2Enabled: boolean;
 }
 
 type EnvironmentSource = NodeJS.ProcessEnv;
@@ -107,6 +109,10 @@ export function loadServerEnvironment(
   const port = parsePort(env.PORT);
   const corsOrigins = parseCorsOrigins(env.CORS_ORIGIN, isProduction);
   const databasePath = readNonEmpty(env.DATABASE_PATH) ?? defaultDatabasePath;
+  const v2Enabled = parseBooleanFlag(
+    env.COLORFUL_CODE_V2_ENABLED,
+    'COLORFUL_CODE_V2_ENABLED',
+  );
 
   return {
     nodeEnv,
@@ -115,6 +121,7 @@ export function loadServerEnvironment(
     port,
     corsOrigins,
     databasePath,
+    v2Enabled,
     providerKeys: {
       anthropic: readNonEmpty(env.ANTHROPIC_API_KEY),
       openai: readNonEmpty(env.OPENAI_API_KEY),
@@ -133,12 +140,20 @@ export function toRedactedServerEnvironment(
     port: config.port,
     corsOrigins: config.corsOrigins,
     databasePath: config.databasePath,
+    v2Enabled: config.v2Enabled,
     providerKeys: {
       anthropic: redact(config.providerKeys.anthropic),
       openai: redact(config.providerKeys.openai),
       deepseek: redact(config.providerKeys.deepseek),
     },
   };
+}
+
+function parseBooleanFlag(value: string | undefined, name: string): boolean {
+  const normalized = readNonEmpty(value);
+  if (normalized === undefined || normalized === 'false') return false;
+  if (normalized === 'true') return true;
+  throw new Error(`${name} must be true or false`);
 }
 
 function parseNodeEnv(value: string | undefined): NodeEnvironment {
