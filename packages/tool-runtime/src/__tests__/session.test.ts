@@ -16,6 +16,7 @@ import {
   type SessionEvent,
   type McpManager,
 } from '../index.js';
+import { deferred } from './helpers/deferred.js';
 
 const countChars = (text: string) => text.length;
 
@@ -35,6 +36,39 @@ function flush(): Promise<void> {
 }
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test('three concurrent submits execute in receive order with one active model run', async () => {
+  const gates = [deferred(), deferred(), deferred()];
+  const seen: string[] = [];
+  let active = 0;
+  let maxActive = 0;
+  const model: ModelClient = {
+    run(input) {
+      const index = seen.length;
+      const user = [...input.history].reverse().find((entry) => entry.role === 'user');
+      seen.push(String(user?.content ?? ''));
+      return (async function* () {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await gates[index]!.promise;
+        yield { type: 'text' as const, text: `done-${index}` };
+        active -= 1;
+      })();
+    },
+  };
+  const session = new Session({ model, tools: [] });
+  const submissions = [session.submit('one'), session.submit('two'), session.submit('three')];
+  await waitFor(() => seen.length === 1, 'first submit entered model');
+  gates[0]!.resolve();
+  await waitFor(() => seen.length >= 2, 'second submit entered model');
+  assert.equal(seen.length, 2, 'third submit must remain queued behind second');
+  gates[1]!.resolve();
+  await waitFor(() => seen.length === 3, 'third submit entered model');
+  gates[2]!.resolve();
+  await Promise.all(submissions);
+  assert.deepEqual(seen, ['one', 'two', 'three']);
+  assert.equal(maxActive, 1);
+});
 
 // Waits until `predicate` holds, pumping the event loop between checks. Bounded
 // so a stuck run fails the test instead of hanging.

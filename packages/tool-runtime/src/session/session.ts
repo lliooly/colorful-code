@@ -146,6 +146,8 @@ export class Session {
   }
   private activeRun: Promise<void> | undefined;
   private activeRunId: string | undefined;
+  private submitTail: Promise<void> = Promise.resolve();
+  private manualCompaction: Promise<void> | undefined;
   private watcher: WorkspaceFileWatcher | undefined;
 
   constructor(deps: SessionDeps) {
@@ -457,7 +459,13 @@ export class Session {
 
   // Appends a user message and runs a turn to completion. Concurrent submits are
   // serialized behind the active run.
-  async submit(text: string): Promise<void> {
+  submit(text: string): Promise<void> {
+    const submitted = this.submitTail.then(() => this.runSubmit(text));
+    this.submitTail = submitted.catch(() => undefined);
+    return submitted;
+  }
+
+  private async runSubmit(text: string): Promise<void> {
     if (this.activeRun) {
       await this.activeRun.catch(() => undefined);
     }
@@ -608,14 +616,19 @@ export class Session {
           });
           return;
         }
+        if (this.manualCompaction) {
+          this.emit({
+            type: 'context_compaction_skipped',
+            runId,
+            reason: 'Context compaction is already running.',
+          });
+          return;
+        }
         const compaction = this.compaction;
         const tools = describeTools(this.registry.list());
         const abortController = new AbortController();
         this.emit({ type: 'context_compaction_started', runId });
-        void (async () => {
-          while (this.activeRun) {
-            await this.activeRun.catch(() => undefined);
-          }
+        const compact = this.submitTail.then(async () => {
           const result = await compactHistory({
             history: this.history,
             model: this.model,
@@ -642,12 +655,19 @@ export class Session {
             reason:
               'There is not enough earlier conversation to summarize yet.',
           });
-        })().catch((error: unknown) => {
+        });
+        this.manualCompaction = compact;
+        this.submitTail = compact.catch(() => undefined);
+        void compact.catch((error: unknown) => {
           this.emit({
             type: 'context_compaction_failed',
             runId,
             message: error instanceof Error ? error.message : String(error),
           });
+        }).finally(() => {
+          if (this.manualCompaction === compact) {
+            this.manualCompaction = undefined;
+          }
         });
         return;
       }

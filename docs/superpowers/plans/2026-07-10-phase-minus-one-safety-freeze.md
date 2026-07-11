@@ -449,7 +449,7 @@ git commit -m "fix(权限): 将 blocked MCP 设为安全上限"
 - 修改：`packages/tool-runtime/src/session/session.ts`
 - 修改：`packages/tool-runtime/src/__tests__/session.test.ts`
 
-- [ ] **步骤 1：添加无定时器 deferred helper**
+- [x] **步骤 1：添加无定时器 deferred helper**
 
 ```ts
 export function deferred<T = void>() {
@@ -460,17 +460,17 @@ export function deferred<T = void>() {
 }
 ```
 
-- [ ] **步骤 2：先写 3 submit 的 barrier 失败测试**
+- [x] **步骤 2：先写 3 submit 的 barrier 失败测试**
 
 第 1 个 model run 等待 barrier；同时提交 2、3。释放 barrier 后断言用户消息顺序为 `one, two, three`，每一轮看到的 history 单调增长，且 model 最大并发为 1。
 
-- [ ] **步骤 3：运行测试确认旧 activeRun 窗口导致并发**
+- [x] **步骤 3：运行测试确认旧 activeRun 窗口导致并发**
 
 运行：`pnpm --filter @colorful-code/tool-runtime test`
 
 预期：新增测试 FAIL，最大并发大于 1 或 history 交错。
 
-- [ ] **步骤 4：用尾 Promise 串行 submit**
+- [x] **步骤 4：用尾 Promise 串行 submit**
 
 ```ts
 private submitTail: Promise<void> = Promise.resolve();
@@ -484,11 +484,11 @@ submit(text: string): Promise<void> {
 
 把当前实现移动到私有 `runSubmit()`；单次失败不能毒死后续队列。
 
-- [ ] **步骤 5：先写双 compact 与 compact + submit 失败测试**
+- [x] **步骤 5：先写双 compact 与 compact + submit 失败测试**
 
 使用两个 compaction barrier，触发两次 `compact` 并插入 submit；断言最多一个 compaction 运行，第二次发出明确 skipped 事件，旧 compaction 结果不会覆盖新消息。
 
-- [ ] **步骤 6：实现 manual compaction gate**
+- [x] **步骤 6：实现 manual compaction gate**
 
 新增 `manualCompaction?: Promise<void>`。已有 compaction 时立即发出：
 
@@ -502,7 +502,7 @@ submit(text: string): Promise<void> {
 
 compaction 在 `submitTail` 完成后读取 history，并在 `finally` 清 gate。
 
-- [ ] **步骤 7：运行 Runtime 全测**
+- [x] **步骤 7：运行 Runtime 全测**
 
 运行：`pnpm --filter @colorful-code/tool-runtime test`
 
@@ -522,17 +522,17 @@ git commit -m "fix(会话): 串行提交并隔离手动压缩"
 - 修改：`apps/server/src/sessions/sessions.service.ts`
 - 修改：`apps/server/test/session-model-config.test.ts`
 
-- [ ] **步骤 1：先写已配置 Session 的模型切换失败测试**
+- [x] **步骤 1：先写已配置 Session 的模型切换失败测试**
 
 工厂按 selection 返回两个带不同输出的 model。创建后配置第二个 model，再 submit，断言只出现第二个输出且 factory 仅为 configure 构建一次 client。
 
-- [ ] **步骤 2：运行测试确认配置成功但仍使用旧 model**
+- [x] **步骤 2：运行测试确认配置成功但仍使用旧 model**
 
 运行：`bun test apps/server/test/session-model-config.test.ts`
 
 预期：FAIL，输出仍来自旧 model。
 
-- [ ] **步骤 3：让所有 live Session 从一开始持有 swappable wrapper**
+- [x] **步骤 3：让所有 live Session 从一开始持有 swappable wrapper**
 
 创建/恢复时统一以 `SwappableModelClient` 包装实际 client。`configureModel()` 只构建一次：
 
@@ -544,7 +544,7 @@ entry.needsModelConfig = false;
 return { needsModelConfig: false };
 ```
 
-- [ ] **步骤 4：运行模型配置与 restore 测试**
+- [x] **步骤 4：运行模型配置与 restore 测试**
 
 运行：`bun test apps/server/test/session-model-config.test.ts apps/server/test/session-restore.e2e.test.ts`
 
@@ -566,7 +566,7 @@ git commit -m "fix(会话): 使模型切换作用于实际客户端"
 - 修改：`apps/server/test/session-store.test.ts`
 - 修改：`apps/server/test/session-model-config.test.ts`
 
-- [ ] **步骤 1：先写 delete 中途失败回滚测试**
+- [x] **步骤 1：先写 delete 中途失败回滚测试**
 
 为 `SessionStore.openAt()` 增加仅测试使用的可选 fault hook：
 
@@ -576,13 +576,13 @@ type SessionStoreFaultHooks = { afterDeleteAudit?: () => void };
 
 插入四类关联记录，hook 抛错，断言 session、checkpoint、audit、metadata 全部仍存在。
 
-- [ ] **步骤 2：运行测试确认当前 autocommit 留下部分删除**
+- [x] **步骤 2：运行测试确认当前 autocommit 留下部分删除**
 
 运行：`bun test apps/server/test/session-store.test.ts`
 
 预期：FAIL，audit 已删除而其他表仍在。
 
-- [ ] **步骤 3：使用当前连接 transaction 包裹多表删除**
+- [x] **步骤 3：使用当前连接 transaction 包裹多表删除**
 
 ```ts
 this.handle.raw.transaction(() => {
@@ -596,11 +596,11 @@ this.handle.raw.transaction(() => {
 
 `deleteSessions` 使用同样原子边界。
 
-- [ ] **步骤 4：先写 audit append 失败重试测试**
+- [x] **步骤 4：先写 audit append 失败重试测试**
 
 注入第一次 `appendAudit` 抛错、第二次成功。触发两次 persist，断言最终 audit 恰好 1 条。
 
-- [ ] **步骤 5：修复先 splice 后写入的问题**
+- [x] **步骤 5：修复先 splice 后写入的问题**
 
 ```ts
 const batch = pendingAudit.slice();
@@ -610,7 +610,7 @@ pendingAudit.splice(0, batch.length);
 
 catch 记录脱敏错误，保留 pending batch；只有 append 成功才确认删除。
 
-- [ ] **步骤 6：运行持久化聚焦测试**
+- [x] **步骤 6：运行持久化聚焦测试**
 
 运行：`bun test apps/server/test/session-store.test.ts apps/server/test/session-model-config.test.ts`
 
@@ -634,7 +634,7 @@ git commit -m "fix(持久化): 原子删除并保留失败审计"
 - 修改：`apps/server/test/environment.test.ts`
 - 修改：`apps/server/.env.example`
 
-- [ ] **步骤 1：先写 flag 与依赖边界失败测试**
+- [x] **步骤 1：先写 flag 与依赖边界失败测试**
 
 ```ts
 assert.equal(loadServerEnvironment({ NODE_ENV: 'test' }).v2Enabled, false);
@@ -643,13 +643,13 @@ assert.equal(loadServerEnvironment({ NODE_ENV: 'test', COLORFUL_CODE_V2_ENABLED:
 
 源码边界测试读取 `apps/server/src/v2` 下的 `.ts` 文件，断言不包含 `/persistence/session-store`、`SessionStore` 或 1.x 表写入。
 
-- [ ] **步骤 2：运行测试确认配置字段不存在**
+- [x] **步骤 2：运行测试确认配置字段不存在**
 
 运行：`bun test apps/server/test/environment.test.ts apps/server/test/v2-boundary.test.ts`
 
 预期：FAIL，`v2Enabled` 不存在。
 
-- [ ] **步骤 3：实现严格布尔解析与无副作用边界**
+- [x] **步骤 3：实现严格布尔解析与无副作用边界**
 
 ```ts
 export type V2Boundary = { enabled: boolean; persistenceOwner: 'none' };
@@ -661,11 +661,11 @@ export function createV2Boundary(enabled: boolean): V2Boundary {
 
 环境变量只接受 `true`/`false`，默认 `false`。本阶段不把边界注册到 Nest，不创建路由、后台任务或数据库连接。
 
-- [ ] **步骤 4：编写冻结维护说明**
+- [x] **步骤 4：编写冻结维护说明**
 
 文档明确 Web/Tauri 允许安全、稳定、测试、构建、兼容修复；禁止新增体验功能。2.0 新代码只能进入独立边界，禁止双写。
 
-- [ ] **步骤 5：运行配置和边界测试**
+- [x] **步骤 5：运行配置和边界测试**
 
 运行：`bun test apps/server/test/environment.test.ts apps/server/test/v2-boundary.test.ts`
 
