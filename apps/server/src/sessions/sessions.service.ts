@@ -721,10 +721,8 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
       model = createUnconfiguredModelClient();
       needsModelConfig = true;
     }
-    const swappableModel = needsModelConfig
-      ? new SwappableModelClient(model)
-      : undefined;
-    const effectiveModel = swappableModel ?? model;
+    const swappableModel = new SwappableModelClient(model);
+    const effectiveModel = swappableModel;
 
     const { tools, mcpManager, mcpConnections, lspManager, lspConnections } =
       await this.buildToolsMcpAndLsp(scopedOptions.cwd, mcpServers, lspServers);
@@ -747,7 +745,7 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
       ...(lspManager ? { lspManager } : {}),
       lspConnections,
       needsModelConfig,
-      ...(swappableModel ? { swappableModel } : {}),
+      swappableModel,
     });
     this.liveMetadata.set(id, {
       ...(scopedOptions.projectId
@@ -826,10 +824,8 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
       model = createUnconfiguredModelClient();
       needsModelConfig = true;
     }
-    const swappableModel = needsModelConfig
-      ? new SwappableModelClient(model)
-      : undefined;
-    const effectiveModel = swappableModel ?? model;
+    const swappableModel = new SwappableModelClient(model);
+    const effectiveModel = swappableModel;
 
     const registered = this.register(
       Session.restore(snapshot, {
@@ -851,7 +847,7 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
         ...(lspManager ? { lspManager } : {}),
         lspConnections,
         needsModelConfig,
-        ...(swappableModel ? { swappableModel } : {}),
+        swappableModel,
       },
     );
     return {
@@ -977,10 +973,8 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
       model = createUnconfiguredModelClient();
       needsModelConfig = true;
     }
-    const swappableModel = needsModelConfig
-      ? new SwappableModelClient(model)
-      : undefined;
-    const effectiveModel = swappableModel ?? model;
+    const swappableModel = new SwappableModelClient(model);
+    const effectiveModel = swappableModel;
 
     return {
       session: Session.restore(snapshot, {
@@ -1001,7 +995,7 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
       mcpConnections,
       lspConnections,
       needsModelConfig,
-      ...(swappableModel ? { swappableModel } : {}),
+      swappableModel,
     };
   }
 
@@ -1047,11 +1041,13 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
         });
       }
       if (pendingAudit.length > 0) {
-        const drained = pendingAudit.splice(0, pendingAudit.length);
-        this.store.appendAudit(session.id, drained);
+        const batch = pendingAudit.slice();
+        this.store.appendAudit(session.id, batch);
+        pendingAudit.splice(0, batch.length);
       }
-    } catch {
+    } catch (error) {
       // Swallow: persistence is a side channel; never let it break a run.
+      console.error('Failed to persist session state:', error);
     }
   }
 
@@ -1221,16 +1217,9 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
     selection: ModelSelection,
   ): { needsModelConfig: boolean } {
     const entry = this.require(id);
-    if (!entry.swappableModel) {
-      // The session was created with a real model — build a fresh one.
-      const model = this.buildModelClient(id, selection);
-      entry.swappableModel = new SwappableModelClient(model);
-    }
     const model = this.tryBuildModelClient(id, selection);
     if (model) {
-      if (entry.swappableModel) {
-        entry.swappableModel.swap(model);
-      }
+      entry.swappableModel?.swap(model);
       entry.needsModelConfig = false;
       return { needsModelConfig: false };
     }

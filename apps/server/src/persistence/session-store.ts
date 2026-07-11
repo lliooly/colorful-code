@@ -46,6 +46,10 @@ export type UpsertSessionMetadataInput = {
   pinned?: boolean;
 };
 
+export type SessionStoreFaultHooks = {
+  afterDeleteAudit?: () => void;
+};
+
 function normalizeProjectPath(path: string): string {
   return resolve(path.trim());
 }
@@ -68,6 +72,7 @@ function projectIdForPath(path: string): string {
 @Injectable()
 export class SessionStore implements OnModuleDestroy {
   private readonly handle: PersistenceDatabase;
+  private faultHooks: SessionStoreFaultHooks = {};
 
   // The Nest path injects `SERVER_ENV` and opens the configured DB file. Tests
   // call `SessionStore.openAt(path)` to bind a temp/in-memory DB without the
@@ -78,8 +83,10 @@ export class SessionStore implements OnModuleDestroy {
 
   // Test/standalone constructor: opens a store at an explicit path (a temp file
   // or `:memory:`) bypassing the injected environment.
-  static openAt(path: string): SessionStore {
-    return new SessionStore({ databasePath: path } as ServerEnvironment);
+  static openAt(path: string, faultHooks: SessionStoreFaultHooks = {}): SessionStore {
+    const store = new SessionStore({ databasePath: path } as ServerEnvironment);
+    store.faultHooks = faultHooks;
+    return store;
   }
 
   private get db(): PersistenceDatabase['db'] {
@@ -357,16 +364,13 @@ export class SessionStore implements OnModuleDestroy {
       this.loadSessionMetadata(sessionId) !== undefined ||
       this.listCheckpoints(sessionId).length > 0 ||
       this.listAudit(sessionId).length > 0;
-    this.db.delete(audit).where(eq(audit.sessionId, sessionId)).run();
-    this.db
-      .delete(checkpoints)
-      .where(eq(checkpoints.sessionId, sessionId))
-      .run();
-    this.db
-      .delete(sessionMetadata)
-      .where(eq(sessionMetadata.sessionId, sessionId))
-      .run();
-    this.db.delete(sessions).where(eq(sessions.id, sessionId)).run();
+    this.handle.raw.transaction(() => {
+      this.db.delete(audit).where(eq(audit.sessionId, sessionId)).run();
+      this.faultHooks.afterDeleteAudit?.();
+      this.db.delete(checkpoints).where(eq(checkpoints.sessionId, sessionId)).run();
+      this.db.delete(sessionMetadata).where(eq(sessionMetadata.sessionId, sessionId)).run();
+      this.db.delete(sessions).where(eq(sessions.id, sessionId)).run();
+    })();
     return hadSession;
   }
 
@@ -374,16 +378,13 @@ export class SessionStore implements OnModuleDestroy {
     if (sessionIds.length === 0) {
       return 0;
     }
-    this.db.delete(audit).where(inArray(audit.sessionId, sessionIds)).run();
-    this.db
-      .delete(checkpoints)
-      .where(inArray(checkpoints.sessionId, sessionIds))
-      .run();
-    this.db
-      .delete(sessionMetadata)
-      .where(inArray(sessionMetadata.sessionId, sessionIds))
-      .run();
-    this.db.delete(sessions).where(inArray(sessions.id, sessionIds)).run();
+    this.handle.raw.transaction(() => {
+      this.db.delete(audit).where(inArray(audit.sessionId, sessionIds)).run();
+      this.faultHooks.afterDeleteAudit?.();
+      this.db.delete(checkpoints).where(inArray(checkpoints.sessionId, sessionIds)).run();
+      this.db.delete(sessionMetadata).where(inArray(sessionMetadata.sessionId, sessionIds)).run();
+      this.db.delete(sessions).where(inArray(sessions.id, sessionIds)).run();
+    })();
     return sessionIds.length;
   }
 

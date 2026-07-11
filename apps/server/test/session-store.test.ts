@@ -75,6 +75,32 @@ test('saveSnapshot + loadSnapshot round-trip through a real file DB', async () =
   });
 });
 
+test('deleteSession rolls back every table when a delete step fails', () => {
+  const store = SessionStore.openAt(':memory:', {
+    afterDeleteAudit: () => {
+      throw new Error('injected delete failure');
+    },
+  });
+  const snapshot = sampleSnapshot();
+  store.saveSnapshot(snapshot);
+  store.saveCheckpoint({
+    id: 'checkpoint-delete',
+    sessionId: snapshot.id,
+    createdAt: 1,
+    snapshot,
+  });
+  store.appendAudit(snapshot.id, [
+    { toolUseId: 'call-delete', toolName: 'Read', behavior: 'allow', at: 1 },
+  ]);
+  store.upsertSessionMetadata({ sessionId: snapshot.id, pinned: true });
+  assert.throws(() => store.deleteSession(snapshot.id), /injected delete failure/);
+  assert.ok(store.loadSnapshot(snapshot.id));
+  assert.equal(store.listCheckpoints(snapshot.id).length, 1);
+  assert.equal(store.listAudit(snapshot.id).length, 1);
+  assert.ok(store.loadSessionMetadata(snapshot.id));
+  store.close();
+});
+
 test('saveCheckpoint + listCheckpoints preserve parent links and metadata', async () => {
   await withTempStore((store) => {
     const first: Checkpoint = {
