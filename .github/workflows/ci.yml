@@ -34,6 +34,12 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Install ripgrep
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ripgrep
+          rg --version
+
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
 
