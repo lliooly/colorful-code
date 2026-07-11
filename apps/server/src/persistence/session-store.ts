@@ -73,6 +73,11 @@ function projectIdForPath(path: string): string {
 export class SessionStore implements OnModuleDestroy {
   private readonly handle: PersistenceDatabase;
   private faultHooks: SessionStoreFaultHooks = {};
+  private closed = false;
+
+  get isClosed(): boolean {
+    return this.closed;
+  }
 
   // The Nest path injects `SERVER_ENV` and opens the configured DB file. Tests
   // call `SessionStore.openAt(path)` to bind a temp/in-memory DB without the
@@ -448,7 +453,9 @@ export class SessionStore implements OnModuleDestroy {
   // ever call it once via Nest's lifecycle (or a test's `finally`) so a second
   // close on the raw bun:sqlite handle is never attempted.
   close(): void {
+    if (this.closed) return;
     this.handle.raw.close();
+    this.closed = true;
   }
 
   onModuleDestroy(): void {

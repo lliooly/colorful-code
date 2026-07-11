@@ -7,8 +7,6 @@
   ],
   "permissionMode": "default",
   "workspaceRoots": ["/fixture/workspace"],
-  "todos": [
-    { "content": "Preserve compatibility", "status": "completed" }
-  ],
+  "todos": [{ "content": "Preserve compatibility", "status": "completed" }],
   "lastInputTokens": 128
 }

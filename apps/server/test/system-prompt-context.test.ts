@@ -40,6 +40,7 @@ function createMemoryStore(): SessionStore {
   const audit = new Map<string, PermissionAuditEntry[]>();
 
   return {
+    isClosed: false,
     saveSnapshot(snapshot: SessionSnapshot): void {
       snapshots.set(snapshot.id, snapshot);
     },
@@ -51,6 +52,9 @@ function createMemoryStore(): SessionStore {
     },
     listAudit(sessionId: string): PermissionAuditEntry[] {
       return [...(audit.get(sessionId) ?? [])];
+    },
+    upsertSessionMetadata(): never {
+      return undefined as never;
     },
     close(): void {},
     onModuleDestroy(): void {},
@@ -188,6 +192,7 @@ test('startup preload restores only sessions updated in the last three days', as
     [stale.id, stale],
   ]);
   const store = {
+    isClosed: false,
     loadSnapshot(id: string): SessionSnapshot | undefined {
       return snapshots.get(id);
     },
@@ -202,6 +207,11 @@ test('startup preload restores only sessions updated in the last three days', as
     },
     loadSessionMetadata(): undefined {
       return undefined;
+    },
+    saveSnapshot(): void {},
+    appendAudit(): void {},
+    upsertSessionMetadata(): never {
+      return undefined as never;
     },
     close(): void {},
     onModuleDestroy(): void {},

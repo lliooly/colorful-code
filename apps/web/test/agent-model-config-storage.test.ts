@@ -6,14 +6,16 @@ import {
 } from '../app/agent/model-config-storage';
 
 test('legacy model config drops persisted API keys', () => {
-  const loaded = loadPersistedModelPreferences(JSON.stringify({
-    presetId: 'openai',
-    presetApiKeys: { openai: 'server-secret' },
-    customApiKey: 'custom-secret',
-    customProtocol: 'openai',
-    customBaseURL: 'http://localhost:11434/v1',
-    customModel: 'local',
-  }));
+  const loaded = loadPersistedModelPreferences(
+    JSON.stringify({
+      presetId: 'openai',
+      presetApiKeys: { openai: 'server-secret' },
+      customApiKey: 'custom-secret',
+      customProtocol: 'openai',
+      customBaseURL: 'http://localhost:11434/v1',
+      customModel: 'local',
+    }),
+  );
   assert.equal(loaded.presetId, 'openai');
   assert.equal(loaded.customBaseURL, 'http://localhost:11434/v1');
   assert.doesNotMatch(JSON.stringify(loaded), /server-secret|custom-secret/);

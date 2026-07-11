@@ -686,11 +686,11 @@ git commit -m "chore(边界): 冻结 1.x 并隔离 2.0 模块"
 - 生成但不提交：`.backups/<timestamp>/colorful-code.db`
 - 生成但不提交：`.backups/<timestamp>/manifest.json`
 
-- [ ] **步骤 1：确认源数据库路径**
+- [x] **步骤 1：确认源数据库路径**
 
 按 Server 默认配置优先检查 `data/colorful-code.db`；如果 `DATABASE_PATH` 明确设置，则使用该路径。不得把 `apps/server/data` 和根 `data` 猜测性合并。
 
-- [ ] **步骤 2：执行一致性备份**
+- [x] **步骤 2：执行一致性备份**
 
 运行：
 
@@ -700,7 +700,7 @@ pnpm --filter @colorful-code/server db:backup -- data/colorful-code.db .backups
 
 预期：输出 backup 数据库、manifest、`integrity_check: ok`、foreign key violation `0` 和 SHA-256。
 
-- [ ] **步骤 3：执行完整自动化验证**
+- [x] **步骤 3：执行完整自动化验证**
 
 依次运行：
 
@@ -714,7 +714,7 @@ pnpm --filter @colorful-code/desktop test
 
 预期：全部退出码为 0，没有测试失败、TypeScript 错误或 lint error。
 
-- [ ] **步骤 4：执行安全边界静态复核**
+- [x] **步骤 4：执行安全边界静态复核**
 
 运行：
 
@@ -726,7 +726,7 @@ git diff --check
 
 预期：API key 只出现在内存 state/请求构造，不出现在持久化 payload；`v2` 无 1.x store 导入；diff 无空白错误。
 
-- [ ] **步骤 5：逐项对照规格验收标准**
+- [x] **步骤 5：逐项对照规格验收标准**
 
 核对设计规格第 10 节的 10 项标准。任何未满足项必须报告为未完成，不得以测试部分通过替代。
 
@@ -738,3 +738,12 @@ git commit -m "docs(安全基线): 记录 Phase -1 验收结果"
 ```
 
 备份数据库和 manifest 保持忽略，不加入 Git。
+
+## 执行结果
+
+- 根数据库备份：`.backups/20260711T054223Z/colorful-code.db`
+- `integrity_check`：`ok`
+- Foreign key violation：`0`
+- SHA-256：`aa12502aa596f49906e008b76983b5f950a1cdfedfa5fc4456ebdcdecd2afd62`
+- 自动化测试：Runtime 124、Server 116、Web 45、CLI 5、Desktop Rust 17，全部通过。
+- `pnpm lint`、`pnpm typecheck`、非 Desktop `pnpm build` 全部通过；Desktop 由独立 macOS test/build 流程负责，避免与 Web build 并发争用 Next.js build lock。

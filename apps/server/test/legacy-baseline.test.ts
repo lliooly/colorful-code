@@ -7,11 +7,7 @@ import { Database } from 'bun:sqlite';
 import { openDatabase } from '../src/persistence/database';
 import { createLegacyFixture } from '../scripts/create-legacy-fixture';
 
-const fixtureDirectory = join(
-  import.meta.dir,
-  'fixtures',
-  'legacy-v1',
-);
+const fixtureDirectory = join(import.meta.dir, 'fixtures', 'legacy-v1');
 
 type SchemaObject = { type: string; name: string; sql: string | null };
 
@@ -92,14 +88,15 @@ test('legacy fixture generation is deterministic and secret-free', async () => {
         assert.deepEqual(first.query(query).all(), second.query(query).all());
       }
       assert.equal(
-        first.query<{ integrity_check: string }, []>('PRAGMA integrity_check').get()
-          ?.integrity_check,
+        first
+          .query<{ integrity_check: string }, []>('PRAGMA integrity_check')
+          .get()?.integrity_check,
         'ok',
       );
       assert.deepEqual(first.query('PRAGMA foreign_key_check').all(), []);
-      const stored = first.query<{ snapshot: string }, []>(
-        'SELECT snapshot FROM sessions',
-      ).get();
+      const stored = first
+        .query<{ snapshot: string }, []>('SELECT snapshot FROM sessions')
+        .get();
       assertNoSecretFields(JSON.parse(stored?.snapshot ?? '{}'));
     } finally {
       first.close();

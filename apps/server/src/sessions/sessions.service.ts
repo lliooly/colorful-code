@@ -1029,6 +1029,7 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
     session: Session,
     pendingAudit: PermissionAuditEntry[],
   ): void {
+    if (this.store.isClosed) return;
     try {
       const snapshot: SessionSnapshot = session.snapshot();
       this.store.saveSnapshot(snapshot);

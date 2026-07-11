@@ -4,7 +4,7 @@
   "packageManager": "pnpm@11.0.8",
   "scripts": {
     "dev": "turbo run dev --parallel",
-    "build": "turbo run build",
+    "build": "turbo run build --filter='!@colorful-code/desktop'",
     "start:prod": "turbo run start:prod",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",

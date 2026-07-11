@@ -24,7 +24,10 @@ function sqliteString(value: string): string {
 }
 
 function defaultTimestamp(): string {
-  return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  return new Date()
+    .toISOString()
+    .replace(/[-:]/g, '')
+    .replace(/\.\d{3}Z$/, 'Z');
 }
 
 export function backupDatabase(options: {
@@ -36,7 +39,10 @@ export function backupDatabase(options: {
   const outputDirectory = resolve(options.outputDirectory);
   const timestamp = options.timestamp ?? defaultTimestamp();
   const finalDirectory = join(outputDirectory, timestamp);
-  const temporaryDirectory = join(outputDirectory, `.${timestamp}.tmp-${process.pid}`);
+  const temporaryDirectory = join(
+    outputDirectory,
+    `.${timestamp}.tmp-${process.pid}`,
+  );
   if (existsSync(finalDirectory) || existsSync(temporaryDirectory)) {
     throw new Error(`Refusing to overwrite existing backup: ${finalDirectory}`);
   }
@@ -52,7 +58,9 @@ export function backupDatabase(options: {
       .query<{ quick_check: string }, []>('PRAGMA quick_check')
       .get()?.quick_check;
     if (sourceCheck !== 'ok') {
-      throw new Error(`Source database quick_check failed: ${sourceCheck ?? 'unknown'}`);
+      throw new Error(
+        `Source database quick_check failed: ${sourceCheck ?? 'unknown'}`,
+      );
     }
     source.exec(`VACUUM INTO ${sqliteString(databasePath)}`);
     source.close();
@@ -60,9 +68,12 @@ export function backupDatabase(options: {
 
     backup = new Database(databasePath, { readonly: true });
     const integrityCheck =
-      backup.query<{ integrity_check: string }, []>('PRAGMA integrity_check').get()
-        ?.integrity_check ?? 'missing';
-    const foreignKeyViolations = backup.query('PRAGMA foreign_key_check').all().length;
+      backup
+        .query<{ integrity_check: string }, []>('PRAGMA integrity_check')
+        .get()?.integrity_check ?? 'missing';
+    const foreignKeyViolations = backup
+      .query('PRAGMA foreign_key_check')
+      .all().length;
     backup.close();
     backup = undefined;
     if (integrityCheck !== 'ok' || foreignKeyViolations !== 0) {

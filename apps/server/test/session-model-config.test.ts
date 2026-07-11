@@ -62,3 +62,22 @@ test('configureModel replaces the client used by an already configured session',
   await service.dispose(id);
   service.onModuleDestroy();
 });
+
+test('dispose skips final persistence after the store has already closed', async () => {
+  const store = SessionStore.openAt(':memory:');
+  const service = new SessionsService(
+    () => createScriptedModelClient([[{ type: 'text', text: 'ok' }]]),
+    store,
+  );
+  const { id } = await service.create();
+  const errors: unknown[][] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => errors.push(args);
+  try {
+    store.close();
+    await service.dispose(id);
+    assert.deepEqual(errors, []);
+  } finally {
+    console.error = originalError;
+  }
+});
