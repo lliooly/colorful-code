@@ -745,5 +745,5 @@ git commit -m "docs(安全基线): 记录 Phase -1 验收结果"
 - `integrity_check`：`ok`
 - Foreign key violation：`0`
 - SHA-256：`aa12502aa596f49906e008b76983b5f950a1cdfedfa5fc4456ebdcdecd2afd62`
-- 自动化测试：Runtime 124、Server 116、Web 45、CLI 5、Desktop Rust 17，全部通过。
+- 自动化测试：Runtime 124、Server 117、Web 45、CLI 5、Desktop Rust 17，全部通过。
 - `pnpm lint`、`pnpm typecheck`、非 Desktop `pnpm build` 全部通过；Desktop 由独立 macOS test/build 流程负责，避免与 Web build 并发争用 Next.js build lock。

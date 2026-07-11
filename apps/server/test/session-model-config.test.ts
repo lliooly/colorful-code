@@ -81,3 +81,59 @@ test('dispose skips final persistence after the store has already closed', async
     console.error = originalError;
   }
 });
+
+test('failed audit append remains pending and succeeds exactly once on retry', async () => {
+  const store = SessionStore.openAt(':memory:');
+  const service = new SessionsService(
+    () => createScriptedModelClient([[{ type: 'text', text: 'ok' }]]),
+    store,
+  );
+  const { id } = await service.create();
+  const entry = (
+    service as unknown as {
+      entries: Map<
+        string,
+        {
+          session: { snapshot(): unknown };
+          pendingAudit: Array<{
+            toolUseId: string;
+            toolName: string;
+            behavior: 'allow';
+            at: number;
+          }>;
+        }
+      >;
+    }
+  ).entries.get(id)!;
+  entry.pendingAudit.push({
+    toolUseId: 'retry-call',
+    toolName: 'Read',
+    behavior: 'allow',
+    at: 1,
+  });
+  const appendAudit = store.appendAudit.bind(store);
+  let attempts = 0;
+  store.appendAudit = (sessionId, entries) => {
+    attempts += 1;
+    if (attempts === 1) throw new Error('injected audit failure');
+    appendAudit(sessionId, entries);
+  };
+  const persist = (
+    service as unknown as {
+      persist(session: unknown, pending: unknown[]): void;
+    }
+  ).persist.bind(service);
+  const originalError = console.error;
+  console.error = () => undefined;
+  try {
+    persist(entry.session, entry.pendingAudit);
+    assert.equal(entry.pendingAudit.length, 1);
+    persist(entry.session, entry.pendingAudit);
+    assert.equal(entry.pendingAudit.length, 0);
+    assert.equal(store.listAudit(id).length, 1);
+  } finally {
+    console.error = originalError;
+    await service.dispose(id);
+    service.onModuleDestroy();
+  }
+});
