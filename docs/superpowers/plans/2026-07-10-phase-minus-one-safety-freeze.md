@@ -125,7 +125,7 @@ git commit -m "test(基线): 建立统一主干测试入口"
 - 创建：`apps/server/test/legacy-baseline.test.ts`
 - 修改：`apps/server/package.json`
 
-- [ ] **步骤 1：先写 Schema 与 JSON fixture 失败测试**
+- [x] **步骤 1：先写 Schema 与 JSON fixture 失败测试**
 
 测试读取 fixture，打开临时数据库并比较规范化后的 `sqlite_schema`：
 
@@ -140,13 +140,13 @@ assert.deepEqual(JSON.parse(snapshotText), expectedSnapshot);
 
 同时验证 `JSON.stringify` 后不包含 `apiKey`、`token`、`secret`。
 
-- [ ] **步骤 2：运行测试验证 fixture 尚不存在**
+- [x] **步骤 2：运行测试验证 fixture 尚不存在**
 
 运行：`bun test apps/server/test/legacy-baseline.test.ts`
 
 预期：FAIL，报错指向缺少的 `legacy-v1` fixture 或 generator。
 
-- [ ] **步骤 3：实现确定性 fixture generator**
+- [x] **步骤 3：实现确定性 fixture generator**
 
 导出纯入口：
 
@@ -167,7 +167,7 @@ export function createLegacyFixture(outputPath: string): void {
 
 所有 ID、时间戳和测试路径使用固定值；脚本支持 `bun .../create-legacy-fixture.ts <output>`。
 
-- [ ] **步骤 4：验证重复创建逻辑内容一致**
+- [x] **步骤 4：验证重复创建逻辑内容一致**
 
 测试分别生成 2 个数据库，比较各业务表的排序查询结果、Schema 和 `integrity_check`，而不是比较 SQLite 二进制字节。
 
@@ -175,7 +175,7 @@ export function createLegacyFixture(outputPath: string): void {
 
 预期：PASS。
 
-- [ ] **步骤 5：添加 fixture 命令并验证**
+- [x] **步骤 5：添加 fixture 命令并验证**
 
 在 Server package 增加：
 

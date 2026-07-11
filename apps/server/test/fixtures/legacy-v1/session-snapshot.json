@@ -1,0 +1,14 @@
+{
+  "id": "legacy-session-1",
+  "cwd": "/fixture/workspace",
+  "history": [
+    { "role": "user", "content": "Inspect the baseline." },
+    { "role": "assistant", "content": "Baseline captured." }
+  ],
+  "permissionMode": "default",
+  "workspaceRoots": ["/fixture/workspace"],
+  "todos": [
+    { "content": "Preserve compatibility", "status": "completed" }
+  ],
+  "lastInputTokens": 128
+}
