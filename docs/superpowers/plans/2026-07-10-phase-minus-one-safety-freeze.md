@@ -203,7 +203,7 @@ git commit -m "test(持久化): 固化 1.x 数据与协议基线"
 - 修改：`apps/server/package.json`
 - 修改：`.gitignore`
 
-- [ ] **步骤 1：先写备份行为失败测试**
+- [x] **步骤 1：先写备份行为失败测试**
 
 覆盖：WAL 源库快照含最新提交、目标 `integrity_check = ok`、manifest 哈希匹配、已存在目标拒绝覆盖、损坏源返回失败。
 
@@ -214,13 +214,13 @@ assert.equal(result.foreignKeyViolations, 0);
 assert.equal(sha256(readFileSync(result.databasePath)), result.sha256);
 ```
 
-- [ ] **步骤 2：运行测试验证缺少实现**
+- [x] **步骤 2：运行测试验证缺少实现**
 
 运行：`bun test apps/server/test/database-backup.test.ts`
 
 预期：FAIL，无法导入 `backupDatabase`。
 
-- [ ] **步骤 3：实现最小一致性快照流程**
+- [x] **步骤 3：实现最小一致性快照流程**
 
 核心流程：
 
@@ -234,7 +234,7 @@ const foreignKeys = backup.query('PRAGMA foreign_key_check').all();
 
 通过临时名称写数据库与 JSON manifest；全部检查通过后再 `renameSync` 发布。目标存在或任一步失败时抛错，不覆盖旧备份。
 
-- [ ] **步骤 4：添加 CLI 与忽略规则**
+- [x] **步骤 4：添加 CLI 与忽略规则**
 
 Server package 增加：
 
@@ -244,7 +244,7 @@ Server package 增加：
 
 `.gitignore` 增加 `.backups/` 和 `data/backups/`。
 
-- [ ] **步骤 5：运行备份测试**
+- [x] **步骤 5：运行备份测试**
 
 运行：`bun test apps/server/test/database-backup.test.ts`
 

@@ -9,6 +9,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm --filter @colorful-code/tool-runtime --filter @colorful-code/prompts build && bun test ./test",
     "fixture:legacy": "bun scripts/create-legacy-fixture.ts",
+    "db:backup": "bun scripts/backup-database.ts",
     "start": "bun src/main.ts",
     "start:prod": "bun src/main.ts",
     "clean": "rm -rf dist dist-test"

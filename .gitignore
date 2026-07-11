@@ -30,3 +30,5 @@ apps/server/data/
 *.db
 *.db-wal
 *.db-shm
+.backups/
+data/backups/
