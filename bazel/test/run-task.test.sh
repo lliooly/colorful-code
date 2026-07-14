@@ -159,10 +159,19 @@ assert_stderr_equals "" "$(cat "$TMP_DIR/stderr")" "pnpm exit status"
 pass_count=$((pass_count + 1))
 printf 'ok - pnpm exit status propagated\n'
 
-expected_root_build=$'sh_binary(\n    name = "build",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["build"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "lint",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["lint"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "typecheck",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["typecheck"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "test",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["test"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "desktop-sidecar",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["desktop-sidecar"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "desktop-check",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["desktop-check"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "desktop-test",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["desktop-test"],\n    visibility = ["//visibility:public"],\n)'
+expected_root_build=$'load("@rules_shell//shell:sh_binary.bzl", "sh_binary")\n\nsh_binary(\n    name = "build",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["build"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "lint",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["lint"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "typecheck",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["typecheck"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "test",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["test"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "desktop-sidecar",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["desktop-sidecar"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "desktop-check",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["desktop-check"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "desktop-test",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["desktop-test"],\n    visibility = ["//visibility:public"],\n)'
 assert_file_content_equals "$expected_root_build" "$WORKSPACE_ROOT/BUILD.bazel" "root orchestration targets"
 pass_count=$((pass_count + 1))
 printf 'ok - exactly seven orchestration targets share the adapter\n'
+
+expected_module=$'module(\n    name = "colorful_code",\n    version = "0.0.0",\n)\n\nbazel_dep(name = "rules_shell", version = "0.8.0")'
+assert_file_content_equals "$expected_module" "$WORKSPACE_ROOT/MODULE.bazel" "Bazel module dependencies"
+pass_count=$((pass_count + 1))
+printf 'ok - Bazel module loads the pinned shell rules\n'
+
+[[ -f "$WORKSPACE_ROOT/MODULE.bazel.lock" ]] || fail "Bazel module lockfile is missing"
+pass_count=$((pass_count + 1))
+printf 'ok - Bazel module lockfile exists\n'
 
 bazel_command=""
 if command -v bazel >/dev/null 2>&1; then
@@ -174,7 +183,8 @@ fi
 if [[ -n "$bazel_command" ]]; then
   expected_query=$'sh_binary rule //:build\nsh_binary rule //:desktop-check\nsh_binary rule //:desktop-sidecar\nsh_binary rule //:desktop-test\nsh_binary rule //:lint\nsh_binary rule //:test\nsh_binary rule //:typecheck'
   actual_query="$(cd "$WORKSPACE_ROOT" && "$bazel_command" query --output=label_kind '//:*')"
-  [[ "$actual_query" == "$expected_query" ]] || fail "Bazel query: unexpected root target graph"
+  actual_rules="$(printf '%s\n' "$actual_query" | awk '$2 == "rule"')"
+  [[ "$actual_rules" == "$expected_query" ]] || fail "Bazel query: unexpected root target graph"
   pass_count=$((pass_count + 1))
   printf 'ok - Bazel query reports seven sh_binary targets\n'
 else
