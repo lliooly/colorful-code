@@ -137,7 +137,7 @@ type SqliteDiagnostics = Readonly<{
   connectionRole: SqliteConnectionRole;
   journalMode: 'wal';
   foreignKeys: true;
-  backupCapability: boolean;
+  backupMethod: 'online-backup' | 'vacuum-into';
   returningSupport: boolean;
   compileOptions: readonly string[];
 }>;
@@ -148,11 +148,13 @@ type SqliteDiagnostics = Readonly<{
 - `sqlite_version()`；
 - WAL 实际启用结果；
 - foreign key enforcement 实际结果，并拒绝 `OMIT_FOREIGN_KEY` / `OMIT_TRIGGER`；
-- 当前 Bun SQLite driver 的 backup API 能力；
+- 当前 Bun SQLite driver 是否提供 Online Backup，以及 SQLite 是否提供仓库现有受控 `VACUUM INTO` 一致性 fallback；诊断记录实际选用的方法；
 - SQLite `RETURNING` 语法所需版本，供后续 Phase 使用；
 - 与安全边界相关的编译选项。
 
-诊断只保存版本、布尔能力、连接角色、固定配置和编译选项名称。任何可能包含用户目录、数据库文件名、URI query、token 或 credential 的文本都必须过滤。诊断序列化测试使用带敏感路径和伪凭据的输入验证输出不泄漏。
+当前 Bun 1.3.14 没有暴露 Online Backup 方法，因此本阶段的预期诊断方法是 `vacuum-into`。只有 Online Backup 和 `VACUUM INTO` 都不可用时才以缺少 backup capability 拒绝启动；不能因为驱动未暴露 Online Backup 而否定已经验证的一致性 fallback。
+
+诊断只保存版本、布尔能力、备份方法、连接角色、固定配置和编译选项名称。任何可能包含用户目录、数据库文件名、URI query、token 或 credential 的文本都必须过滤。诊断序列化测试使用带敏感路径和伪凭据的输入验证输出不泄漏。
 
 ### 3.6 Provider checkpoint 与关闭
 
@@ -162,14 +164,19 @@ type SqliteDiagnostics = Readonly<{
 
 ```ts
 type WalCheckpointResult = Readonly<{
-  status: 'completed' | 'busy' | 'interrupted';
-  busyFrames: number;
+  status: 'completed' | 'incomplete' | 'interrupted';
+  sqliteBusy: boolean;
   logFrames: number;
   checkpointedFrames: number;
+  remainingFrames: number;
 }>;
 ```
 
-`PASSIVE` 不强制等待 reader，不使用无界循环。返回 busy 时记录结果并继续关闭；SQLite 报错或测试注入关闭中断时仍尝试关闭连接。checkpoint error、connection close error 和 ownership release error 按发生顺序进入 `AggregateError`，原始错误不被后续清理错误覆盖。
+SQLite 返回的 `busy` 是 0/1 标志，不是 frame 数；而且长读事务阻止部分 frame checkpoint 时，`PASSIVE` 可能返回 `busy = 0` 但 `checkpointed < log`。因此 `completed` 只由 `logFrames === checkpointedFrames` 判定，`incomplete` 表示仍有 frame，`remainingFrames` 为非负差值，`sqliteBusy` 单独保存 SQLite 原始标志。`interrupted` 只用于明确的关闭中断，不伪装为 SQLite busy。
+
+`PASSIVE` 不强制等待 reader，不使用无界循环。返回 incomplete 时记录结果并继续关闭；SQLite 报错或测试注入关闭中断时仍尝试关闭连接。checkpoint error、connection close error 和 ownership release error 按发生顺序进入 `AggregateError`，原始错误不被后续清理错误覆盖。
+
+Provider 使用 active-operation lease 协调关闭：`close()` 首次调用立即拒绝新操作，但必须等待已进入的 read 或 transaction attempt 离开后再 checkpoint 和物理 close。read、transaction callback 或 Database Clock 内重入调用 `close()` 只获得一个待完成 Promise，不能同步关闭当前连接；正在 retry sleep 的 transaction 不得开始下一次 attempt。transaction ownership 覆盖整个 retry Promise，因此等待期间第二个 transaction 仍以 concurrent/nested error 拒绝。
 
 启动和关闭均禁止自动执行 `VACUUM`。备份模块现有的受控 fallback 不等于启动时维护性 VACUUM，仍受其独立一致性和边界约束。
 
@@ -235,7 +242,9 @@ withRawTestConnection<T>(
 
 ### 4.5 清理与错误保留
 
-工厂按逆序跟踪它创建的每个资源：故障连接和计时器、Provider、Instance Lock、临时目录。`close()` 幂等，重复调用共享同一 Promise。
+工厂按依赖顺序跟踪它创建的资源：先取消计时器并释放 busy/raw connection，再关闭 Provider；只有 Provider 连接已确认关闭才释放 Instance Lock；只有连接和锁均确认释放才删除临时目录。`close()` 幂等，重复调用共享同一 Promise。不能在 Provider close 失败且物理连接状态未知时继续删除打开的数据库或释放 daemon ownership lock。
+
+用于测试清理错误聚合的 fault 在真实资源成功释放后再抛出 synthetic error，既能证明错误顺序，也不会故意遗留连接、锁或目录。
 
 测试 helper 捕获测试主体错误后仍执行清理。若主体和清理都失败，抛出 `AggregateError([bodyError, ...cleanupErrors])`；若只有清理失败，则抛出按资源逆序排列的清理错误。清理失败不得掩盖原始测试失败。
 
@@ -248,7 +257,9 @@ withRawTestConnection<T>(
 - 测试工厂文件只位于 `apps/server/test/support`；
 - 生产 `src` 不得 import 测试工厂或 fixture generator；
 - `persistence/index.ts` 和 Nest modules 不导出测试 factory；
-- production build 输出扫描不得出现 `createTestDatabase`、`withRawTestConnection` 或 fixture 路径；
+- `database-provider.testing.ts` 和 `createInternalTestDatabaseProvider` 从生产 `src` 移入 test support，当前已存在的测试 hook 不再进入 `dist`；
+- production build 先清理旧产物，构建完成后扫描输出，不得出现 `.testing`、`createTestDatabase`、`withRawTestConnection`、`createTestDatabaseProvider`、`TestDatabaseProviderOptions` 或 fixture 路径；
+- lint 和 typecheck 使用可工作的 Bun ESM 测试配置覆盖 test support、新 Gate 测试和 build verifier，不能只检查 `src`；
 - 数据库访问边界测试继续限制 `bun:sqlite` 和 Provider internals 的允许位置。
 
 ## 5. 1.x Schema Baseline
@@ -306,7 +317,9 @@ Migration Framework 使用独立版本轴：
 bootstrap 在创建 migration metadata 之前先分类数据库：
 
 - 空数据库：运行 migration 1，创建 canonical 1.x Schema 并登记 checksum。
-- 已有 1.x Schema、没有 migration metadata：完整 manifest 匹配后 adoption；migration 1 的幂等 DDL 不改变业务对象，只登记 migration history。
+- 已有 1.x Schema、没有 migration metadata：完整 manifest 匹配后 adoption；先创建一致性备份，再在 `BEGIN IMMEDIATE` 内复验 manifest 和 metadata 仍未出现，只创建 migration metadata 并登记 migration 1，不重复执行 baseline DDL。
+- 已有完整 1.x Schema 和合法但为空的 migration metadata：视为 adoption metadata 写入中断，在事务内复验后补 migration 1 记录。
+- 只有 migration metadata、没有 1.x 业务对象：视为空库初始化中断，migration 1 创建 baseline DDL。
 - 已有合法 migration metadata：按正常 checksum 和 forward-only 规则验证。
 - metadata 表示比程序更新的版本：抛出 `database_newer_than_program`。
 - 业务对象存在但 manifest 不匹配任何受支持 1.x baseline：拒绝 adoption，进入明确的 incompatible/corrupt recovery 路径。
@@ -364,7 +377,7 @@ WAL fixture 必须在第二条连接仍可观察 WAL 时提交数据并保留未
 → 创建并配置 Provider
 ```
 
-正常 1.x 数据库 adoption 不改变 1.x 业务数据。migration 前后分别计算 `legacySchemaChecksum`，必须与冻结值一致；migration 后的 `databaseSchemaChecksum` 必须与当前 registry 预期一致。
+正常 1.x 数据库 adoption 不运行 baseline DDL，也不改变 1.x 业务数据。migration 前后分别计算 `legacySchemaChecksum` 和各表 logical rows checksum，必须与冻结值一致；migration 后的 `databaseSchemaChecksum` 必须与当前 registry 预期一致。虽然 daemon 持有合作进程使用的 Instance Lock，adoption 事务仍必须复验，因为第三方 SQLite connection 不受该锁协议约束。
 
 损坏 fixture、baseline manifest 不匹配、migration checksum 被修改或 post-migration 验证失败时，沿用既有 quarantine + atomic restore 流程，恢复后仍以 migration failure 退出。较新版本明确拒绝，不尝试 downgrade、覆盖 metadata 或继续业务写入。
 
