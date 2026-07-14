@@ -159,6 +159,7 @@ assert_stderr_equals "" "$(cat "$TMP_DIR/stderr")" "pnpm exit status"
 pass_count=$((pass_count + 1))
 printf 'ok - pnpm exit status propagated\n'
 
+# Full-text checks are intentional: extra targets or active configuration must fail.
 expected_root_build=$'load("@rules_shell//shell:sh_binary.bzl", "sh_binary")\n\nsh_binary(\n    name = "build",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["build"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "lint",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["lint"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "typecheck",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["typecheck"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "test",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["test"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "desktop-sidecar",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["desktop-sidecar"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "desktop-check",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["desktop-check"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "desktop-test",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["desktop-test"],\n    visibility = ["//visibility:public"],\n)'
 assert_file_content_equals "$expected_root_build" "$WORKSPACE_ROOT/BUILD.bazel" "root orchestration targets"
 pass_count=$((pass_count + 1))
@@ -181,14 +182,45 @@ elif command -v bazelisk >/dev/null 2>&1; then
 fi
 
 if [[ -n "$bazel_command" ]]; then
+  lock_checksum_before="$(cksum "$WORKSPACE_ROOT/MODULE.bazel.lock")"
   expected_query=$'sh_binary rule //:build\nsh_binary rule //:desktop-check\nsh_binary rule //:desktop-sidecar\nsh_binary rule //:desktop-test\nsh_binary rule //:lint\nsh_binary rule //:test\nsh_binary rule //:typecheck'
-  actual_query="$(cd "$WORKSPACE_ROOT" && "$bazel_command" query --output=label_kind '//:*')"
+  actual_query="$(cd "$WORKSPACE_ROOT" && "$bazel_command" --ignore_all_rc_files query --lockfile_mode=error --order_output=full --output=label_kind '//:*' | LC_ALL=C sort)"
   actual_rules="$(printf '%s\n' "$actual_query" | awk '$2 == "rule"')"
   [[ "$actual_rules" == "$expected_query" ]] || fail "Bazel query: unexpected root target graph"
   pass_count=$((pass_count + 1))
   printf 'ok - Bazel query reports seven sh_binary targets\n'
+
+  (
+    cd "$WORKSPACE_ROOT"
+    "$bazel_command" --ignore_all_rc_files build --lockfile_mode=error \
+      //:build //:lint //:typecheck //:test \
+      //:desktop-sidecar //:desktop-check //:desktop-test
+  )
+  pass_count=$((pass_count + 1))
+  printf 'ok - Bazel builds all seven sh_binary launchers\n'
+
+  : >"$PNPM_LOG"
+  : >"$PWD_LOG"
+  set +e
+  (
+    cd "$WORKSPACE_ROOT"
+    PNPM_LOG="$PNPM_LOG" PWD_LOG="$PWD_LOG" PNPM_EXIT=0 PATH="$BIN_DIR:$PATH" \
+      "$bazel_command" --ignore_all_rc_files run --lockfile_mode=error //:lint
+  ) >"$TMP_DIR/bazel-run-stdout" 2>"$TMP_DIR/bazel-run-stderr"
+  status=$?
+  set -e
+  assert_status 0 "$status" "Bazel lint run"
+  assert_file_equals $'turbo\nrun\nlint\n--filter=!@colorful-code/desktop' "$PNPM_LOG" "Bazel lint run"
+  assert_file_equals "$WORKSPACE_ROOT" "$PWD_LOG" "Bazel lint working directory"
+  pass_count=$((pass_count + 1))
+  printf 'ok - Bazel lint target executes through the mock adapter\n'
+
+  lock_checksum_after="$(cksum "$WORKSPACE_ROOT/MODULE.bazel.lock")"
+  [[ "$lock_checksum_after" == "$lock_checksum_before" ]] || fail "Bazel commands changed MODULE.bazel.lock"
+  pass_count=$((pass_count + 1))
+  printf 'ok - Bazel commands leave the module lock unchanged\n'
 else
-  printf 'ok - Bazel query skipped (bazel unavailable)\n'
+  printf 'ok - Bazel query/build/run skipped (bazel unavailable)\n'
 fi
 
 expected_bazel_build=$'exports_files(\n    ["run-task.sh"],\n    visibility = ["//visibility:public"],\n)'
