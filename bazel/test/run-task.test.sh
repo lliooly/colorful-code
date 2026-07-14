@@ -159,10 +159,27 @@ assert_stderr_equals "" "$(cat "$TMP_DIR/stderr")" "pnpm exit status"
 pass_count=$((pass_count + 1))
 printf 'ok - pnpm exit status propagated\n'
 
-expected_root_build=$'def _task(name, task):\n    native.sh_binary(\n        name = name,\n        srcs = ["//bazel:run-task.sh"],\n        args = [task],\n        visibility = ["//visibility:public"],\n    )\n\n_task(name = "build", task = "build")\n_task(name = "lint", task = "lint")\n_task(name = "typecheck", task = "typecheck")\n_task(name = "test", task = "test")\n_task(name = "desktop-sidecar", task = "desktop-sidecar")\n_task(name = "desktop-check", task = "desktop-check")\n_task(name = "desktop-test", task = "desktop-test")'
+expected_root_build=$'sh_binary(\n    name = "build",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["build"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "lint",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["lint"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "typecheck",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["typecheck"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "test",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["test"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "desktop-sidecar",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["desktop-sidecar"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "desktop-check",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["desktop-check"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "desktop-test",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["desktop-test"],\n    visibility = ["//visibility:public"],\n)'
 assert_file_content_equals "$expected_root_build" "$WORKSPACE_ROOT/BUILD.bazel" "root orchestration targets"
 pass_count=$((pass_count + 1))
 printf 'ok - exactly seven orchestration targets share the adapter\n'
+
+bazel_command=""
+if command -v bazel >/dev/null 2>&1; then
+  bazel_command="bazel"
+elif command -v bazelisk >/dev/null 2>&1; then
+  bazel_command="bazelisk"
+fi
+
+if [[ -n "$bazel_command" ]]; then
+  expected_query=$'sh_binary rule //:build\nsh_binary rule //:desktop-check\nsh_binary rule //:desktop-sidecar\nsh_binary rule //:desktop-test\nsh_binary rule //:lint\nsh_binary rule //:test\nsh_binary rule //:typecheck'
+  actual_query="$(cd "$WORKSPACE_ROOT" && "$bazel_command" query --output=label_kind '//:*')"
+  [[ "$actual_query" == "$expected_query" ]] || fail "Bazel query: unexpected root target graph"
+  pass_count=$((pass_count + 1))
+  printf 'ok - Bazel query reports seven sh_binary targets\n'
+else
+  printf 'ok - Bazel query skipped (bazel unavailable)\n'
+fi
 
 expected_bazel_build=$'exports_files(\n    ["run-task.sh"],\n    visibility = ["//visibility:public"],\n)'
 assert_file_content_equals "$expected_bazel_build" "$WORKSPACE_ROOT/bazel/BUILD.bazel" "adapter export"
