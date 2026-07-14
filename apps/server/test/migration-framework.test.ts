@@ -1,5 +1,13 @@
 import { strict as assert } from 'node:assert';
-import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  access,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -7,6 +15,7 @@ import { Database } from 'bun:sqlite';
 import {
   bootstrapMigrations,
   MIGRATIONS,
+  MigrationRecoveryError,
 } from '../src/persistence/migration-bootstrap';
 import {
   MigrationError,
@@ -31,6 +40,13 @@ async function withDatabase(
 
 function migration(version: number, name: string, source: string): Migration {
   return { version, name, source, up() {} };
+}
+
+function noPendingMigration(version = 0) {
+  return {
+    inspectSchema: () => ({ initialized: true, version }),
+    verifyMigratedDatabase: () => undefined,
+  };
 }
 
 test('production migration registry is frozen and initially empty', () => {
@@ -92,6 +108,7 @@ test('bootstrap reopens a file database without reapplying a recorded migration'
     await bootstrapMigrations(databasePath, { migrations: [entry] });
 
     assert.equal(upCalls, 1);
+    assert.equal((await readdir(join(directory, 'backups'))).length, 1);
     const reopened = new Database(databasePath, { readonly: true });
     try {
       assert.deepEqual(
@@ -126,6 +143,293 @@ test('bootstrap reopens a file database without reapplying a recorded migration'
   }
 });
 
+test('bootstrap closes, quarantines, and restores the pre-migration backup after a later migration fails', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'migration-recovery-'));
+  const databasePath = join(directory, 'app.db');
+  const base: Migration = {
+    version: 1,
+    name: 'base',
+    source: 'create notes table and seed old content',
+    up(database) {
+      database.exec('CREATE TABLE notes(body TEXT NOT NULL)');
+      database.exec("INSERT INTO notes VALUES ('old content')");
+    },
+  };
+  const committedBeforeFailure: Migration = {
+    version: 2,
+    name: 'committed_before_failure',
+    source: 'insert committed content',
+    up(database) {
+      database.exec("INSERT INTO notes VALUES ('migration 2 content')");
+    },
+  };
+  const failing: Migration = {
+    version: 3,
+    name: 'failing',
+    source: 'create then fail',
+    up(database) {
+      database.exec('CREATE TABLE should_rollback(id INTEGER)');
+      throw new Error('injected migration failure');
+    },
+  };
+
+  try {
+    const initial = new Database(databasePath, { create: true });
+    runMigrations(initial, [base]);
+    initial.close(true);
+
+    await assert.rejects(
+      bootstrapMigrations(databasePath, {
+        migrations: [base, committedBeforeFailure, failing],
+      }),
+      (error: unknown) =>
+        error instanceof MigrationRecoveryError &&
+        error.code === 'migration_failed_recovered',
+    );
+
+    const restored = new Database(databasePath, { readonly: true });
+    try {
+      assert.deepEqual(
+        restored.query<{ body: string }, []>('SELECT body FROM notes').all(),
+        [{ body: 'old content' }],
+      );
+      assert.deepEqual(
+        restored
+          .query<
+            { version: number },
+            []
+          >('SELECT version FROM schema_migrations ORDER BY version')
+          .all(),
+        [{ version: 1 }],
+      );
+    } finally {
+      restored.close(true);
+    }
+
+    const backupEntries = await readdir(join(directory, 'backups'));
+    assert.equal(backupEntries.length, 1);
+    const manifest = JSON.parse(
+      await readFile(
+        join(directory, 'backups', backupEntries[0]!, 'manifest.json'),
+        'utf8',
+      ),
+    );
+    assert.equal(manifest.sourceSchemaVersion, 1);
+    assert.equal(manifest.targetSchemaVersion, 3);
+
+    const quarantineEntries = await readdir(
+      join(directory, 'migration-quarantine'),
+    );
+    assert.equal(quarantineEntries.length, 1);
+    const failed = new Database(
+      join(directory, 'migration-quarantine', quarantineEntries[0]!, 'app.db'),
+      { readonly: true },
+    );
+    try {
+      assert.deepEqual(
+        failed.query<{ body: string }, []>('SELECT body FROM notes').all(),
+        [{ body: 'old content' }, { body: 'migration 2 content' }],
+      );
+    } finally {
+      failed.close(true);
+    }
+    assert.equal(
+      (await readdir(directory)).some((name) => name.startsWith('.restore-')),
+      false,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('bootstrap keeps the failed database quarantined and original path absent when recovery fails', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'migration-recovery-fail-'));
+  const databasePath = join(directory, 'app.db');
+  const first: Migration = {
+    version: 1,
+    name: 'first',
+    source: 'create recovery probe',
+    up(database) {
+      database.exec('CREATE TABLE recovery_probe(value TEXT)');
+    },
+  };
+  const failing: Migration = {
+    version: 2,
+    name: 'failing',
+    source: 'fail recovery probe',
+    up() {
+      throw new Error('migration failed');
+    },
+  };
+  const restoreError = new Error('injected restore failure');
+
+  try {
+    const initial = new Database(databasePath, { create: true });
+    runMigrations(initial, [first]);
+    initial.close(true);
+
+    await assert.rejects(
+      bootstrapMigrations(databasePath, {
+        migrations: [first, failing],
+        restoreBackup: () => {
+          throw restoreError;
+        },
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof MigrationRecoveryError);
+        assert.equal(error.code, 'migration_failed_recovery_failed');
+        assert.ok(error.cause instanceof AggregateError);
+        assert.equal(error.cause.errors.at(-1), restoreError);
+        return true;
+      },
+    );
+    await assert.rejects(access(databasePath));
+    assert.equal(
+      (await readdir(join(directory, 'migration-quarantine'))).length,
+      1,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('bootstrap closes without quarantining when pre-migration backup creation fails', async () => {
+  const backupError = new Error('backup failed');
+  const events: string[] = [];
+  await assert.rejects(
+    bootstrapMigrations('/data/bootstrap.db', {
+      mkdir: async () => undefined,
+      inspectSchema: () => ({ initialized: false, version: 0 }),
+      openDatabase: () => ({
+        close: () => {
+          events.push('close');
+        },
+      }),
+      createBackup: () => {
+        events.push('backup');
+        throw backupError;
+      },
+      quarantineFailedDatabase: () => {
+        events.push('quarantine');
+        throw new Error('must not quarantine');
+      },
+    }),
+    (error: unknown) =>
+      error instanceof MigrationRecoveryError &&
+      error.code === 'backup_failed' &&
+      error.cause === backupError,
+  );
+  assert.deepEqual(events, ['backup', 'close']);
+});
+
+test('bootstrap attempts quarantine and restore only after close even when close fails', async () => {
+  const migrationError = new Error('migration failed');
+  const closeError = new Error('close failed');
+  const events: string[] = [];
+  const backup = {
+    directoryPath: '/data/backups/backup',
+    databasePath: '/data/backups/backup/colorful-code.db',
+    manifestPath: '/data/backups/backup/manifest.json',
+    manifest: {
+      formatVersion: 1 as const,
+      sourceDatabasePath: '/data/bootstrap.db',
+      sourceSchemaVersion: 0,
+      targetSchemaVersion: 1,
+      createdAt: '2026-07-14T00:00:00.000Z',
+      databaseFile: 'colorful-code.db',
+      sizeBytes: 1,
+      sha256: '0'.repeat(64),
+      integrityCheck: 'ok' as const,
+      foreignKeyViolations: 0 as const,
+    },
+  };
+
+  await assert.rejects(
+    bootstrapMigrations('/data/bootstrap.db', {
+      migrations: [migration(1, 'pending', 'SELECT 1')],
+      mkdir: async () => undefined,
+      inspectSchema: () => ({ initialized: false, version: 0 }),
+      openDatabase: () => ({
+        close: () => {
+          events.push('close');
+          throw closeError;
+        },
+      }),
+      createBackup: () => {
+        events.push('backup');
+        return backup;
+      },
+      runMigrations: () => {
+        events.push('migrate');
+        throw migrationError;
+      },
+      quarantineFailedDatabase: () => {
+        events.push('quarantine');
+        return { directoryPath: '/data/quarantine/failed' };
+      },
+      restoreBackup: () => {
+        events.push('restore');
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof MigrationRecoveryError);
+      assert.equal(error.code, 'migration_failed_recovered');
+      assert.ok(error.cause instanceof AggregateError);
+      assert.deepEqual(error.cause.errors, [migrationError, closeError]);
+      return true;
+    },
+  );
+  assert.deepEqual(events, [
+    'backup',
+    'migrate',
+    'close',
+    'quarantine',
+    'restore',
+  ]);
+});
+
+test('bootstrap restores when post-migration foreign key verification fails', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'migration-fk-recovery-'));
+  const databasePath = join(directory, 'app.db');
+  const invalidForeignKey: Migration = {
+    version: 1,
+    name: 'invalid_foreign_key',
+    source: 'create invalid foreign key data',
+    up(database) {
+      database.exec('CREATE TABLE parents(id INTEGER PRIMARY KEY)');
+      database.exec(
+        'CREATE TABLE children(parent_id INTEGER REFERENCES parents(id))',
+      );
+      database.exec('INSERT INTO children VALUES (999)');
+    },
+  };
+
+  try {
+    await assert.rejects(
+      bootstrapMigrations(databasePath, { migrations: [invalidForeignKey] }),
+      (error: unknown) =>
+        error instanceof MigrationRecoveryError &&
+        error.code === 'migration_failed_recovered',
+    );
+    const restored = new Database(databasePath, { readonly: true });
+    try {
+      assert.equal(
+        restored
+          .query<
+            { count: number },
+            []
+          >("SELECT count(*) AS count FROM sqlite_schema WHERE type = 'table'")
+          .get()!.count,
+        0,
+      );
+    } finally {
+      restored.close(true);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('bootstrap closes its controlled connection exactly once after success', async () => {
   const closeArguments: unknown[] = [];
   const registry = [migration(1, 'controlled', 'SELECT 1')];
@@ -136,6 +440,7 @@ test('bootstrap closes its controlled connection exactly once after success', as
   let receivedMigrations: readonly Migration[] | undefined;
 
   await bootstrapMigrations('/data/bootstrap.db', {
+    ...noPendingMigration(1),
     migrations: registry,
     mkdir: async () => undefined,
     openDatabase: (databasePath, options) => {
@@ -150,7 +455,9 @@ test('bootstrap closes its controlled connection exactly once after success', as
   });
 
   assert.equal(receivedDatabase, database);
-  assert.equal(receivedMigrations, registry);
+  assert.notEqual(receivedMigrations, registry);
+  assert.deepEqual(receivedMigrations, registry);
+  assert.equal(Object.isFrozen(receivedMigrations), true);
   assert.deepEqual(closeArguments, [true]);
 });
 
@@ -160,6 +467,7 @@ test('bootstrap preserves migration failure and closes exactly once', async () =
 
   await assert.rejects(
     bootstrapMigrations('/data/bootstrap.db', {
+      ...noPendingMigration(),
       mkdir: async () => undefined,
       openDatabase: () => ({
         close: (force?: boolean) => closeArguments.push(force),
@@ -180,6 +488,7 @@ test('bootstrap aggregates migration and close failures in primary-first order',
 
   await assert.rejects(
     bootstrapMigrations('/data/bootstrap.db', {
+      ...noPendingMigration(),
       mkdir: async () => undefined,
       openDatabase: () => ({
         close: async () => {
@@ -203,6 +512,7 @@ test('bootstrap does not lose an undefined migration failure when close also fai
 
   await assert.rejects(
     bootstrapMigrations('/data/bootstrap.db', {
+      ...noPendingMigration(),
       mkdir: async () => undefined,
       openDatabase: () => ({
         close: async () => {
@@ -226,6 +536,7 @@ test('bootstrap throws a close failure after successful migration', async () => 
 
   await assert.rejects(
     bootstrapMigrations('/data/bootstrap.db', {
+      ...noPendingMigration(),
       mkdir: async () => undefined,
       openDatabase: () => ({
         close: () => {
@@ -246,6 +557,7 @@ test('bootstrap awaits an asynchronous close before completing', async () => {
   let completed = false;
 
   const bootstrapping = bootstrapMigrations('/data/bootstrap.db', {
+    ...noPendingMigration(),
     mkdir: async () => undefined,
     openDatabase: () => ({ close: async () => closeGate }),
     runMigrations: () => undefined,
@@ -265,6 +577,7 @@ test('bootstrap throws an asynchronous close rejection after migration succeeds'
 
   await assert.rejects(
     bootstrapMigrations('/data/bootstrap.db', {
+      ...noPendingMigration(),
       mkdir: async () => undefined,
       openDatabase: () => ({
         close: async () => {
@@ -283,6 +596,7 @@ test('bootstrap aggregates a migration rejection with asynchronous close rejecti
 
   await assert.rejects(
     bootstrapMigrations('/data/bootstrap.db', {
+      ...noPendingMigration(),
       mkdir: async () => undefined,
       openDatabase: () => ({
         close: async () => {

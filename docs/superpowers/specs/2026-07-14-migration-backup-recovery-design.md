@@ -51,7 +51,7 @@ capture migration failure
 -> close bootstrap connection
 -> quarantine failed database and SQLite sidecars
 -> restore verified backup to a temporary SQLite database
--> atomically rename restored database to the original path
+-> atomically publish restored database without replacing the original path
 -> verify restored database
 -> throw migration failure even when recovery succeeded
 ```
@@ -61,6 +61,8 @@ capture migration failure
 ## 3. 一致性备份与 manifest
 
 自动备份目录固定为源数据库同级的 `backups/`。每个正式备份使用 `<UTC compact timestamp>-<UUID>` 目录；构建时使用 `.<id>.tmp` 目录，完成后以同文件系统 rename 原子发布。任何目标已存在都拒绝覆盖。
+
+所有自动迁移 writer 都必须在 Instance Lock 保护下调用 `createMigrationBackup()`，并通过同级隐藏 reservation 文件排他取得固定 UUID 名称的发布权。reservation 是协作式 no-replace 协议：清理时必须核对打开文件的 `dev` 与 `ino`，路径已不存在或已被替换时不得删除。底层 rename 不承诺 no-replace；非协作或恶意的文件系统修改不在当前信任边界内。该方案只依赖跨平台文件 API，不引入平台专用 FFI。
 
 快照使用同一个 bootstrap connection 执行 `VACUUM INTO`。SQLite 会从当前逻辑数据库生成独立、完整的数据库文件，因此 WAL 中已提交但尚未 checkpoint 的数据会进入快照；禁止复制正在使用的主数据库文件。
 
@@ -96,9 +98,11 @@ manifest 使用格式版本 `1`，记录：
 
 隔离目录位于数据库同级的 `migration-quarantine/<UTC compact timestamp>-<UUID>/`。关闭连接后，将主数据库以及存在的 `-wal`、`-shm` sidecar 移入该目录。只有原路径不再存在，才允许开始恢复。quarantine 不自动删除。
 
-恢复首先读取并校验 manifest：格式、源路径、版本字段、文件名、大小和 SHA-256 必须匹配。然后以只读方式打开备份，通过 `VACUUM INTO` 在源数据库同目录创建唯一 `.restore-<UUID>.tmp` 文件并执行完整性检查。发布前若原数据库路径已存在，恢复明确拒绝覆盖；因此重复恢复不会覆盖已恢复或新建的业务数据库。
+恢复首先读取并严格校验 manifest：字段集合、绝对源路径、版本字段、文件名、大小和 SHA-256 必须匹配。然后以只读方式打开备份，在源数据库同目录排他创建唯一 `.restore-<UUID>.tmp/` staging 目录并记录目录身份，通过 `VACUUM INTO` 在其中生成恢复数据库并执行完整性检查。发布前若原数据库、`-wal` 或 `-shm` 任一目录项（包括 dangling symlink）已存在，恢复明确拒绝覆盖；因此重复恢复不会覆盖已恢复或新建的业务数据库。
 
-临时恢复文件通过 rename 原子发布到原路径。发布后再次从原路径打开只读 connection 做完整检查。若恢复失败，原路径必须保持不存在；若失败发生在发布后的最终检查，已发布文件会重新移入同一 quarantine，避免损坏数据库被业务启动使用。
+staging 中的恢复文件通过同文件系统 hard link 排他创建原路径，目标已存在时由文件系统原子拒绝，成功后删除 staging link。发布边界前后均检查 WAL/SHM，不允许 sidecar 混入恢复数据库。清理 staging 时必须核对目录的 `dev` 与 `ino`，不得删除被替换的路径。发布后再次从原路径打开只读 connection 做完整检查。若恢复失败，原路径必须保持不存在；若失败发生在发布后的 sidecar 检查或最终完整性检查，已发布文件会重新移入同一 quarantine，避免损坏数据库被业务启动使用。
+
+数据库 checksum 使用固定大小 buffer 增量读取和 SHA-256 更新，不把整个数据库一次性载入内存。
 
 ## 6. 错误状态
 
@@ -118,7 +122,7 @@ manifest 使用格式版本 `1`，记录：
 
 - WAL 模式下保持 writer connection 打开且不手动 checkpoint，确认快照含最新提交；
 - migration 在已提交的前置 migration 之后失败，确认源库被隔离并恢复到 migration 前版本；
-- 注入恢复生成、rename 或最终检查失败，确认原路径不可作为业务库；
+- 注入恢复生成、排他发布或最终检查失败，确认原路径不可作为业务库；
 - 篡改备份字节或 manifest checksum，确认恢复拒绝损坏备份；
 - 对已经存在的恢复目标重复恢复，确认不会覆盖；
 - 断言成功与失败路径均无 `.tmp` 备份目录或 `.restore-*.tmp` 文件；

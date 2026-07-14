@@ -5,3 +5,16 @@ export * from './schema';
 export * from './database';
 export * from './session-store';
 export * from './persistence.module';
+export {
+  createMigrationBackup,
+  MigrationBackupRecoveryError,
+  quarantineDatabase,
+  restoreMigrationBackup,
+  verifyDatabase,
+  type MigrationBackup,
+  type MigrationBackupManifest,
+  type MigrationBackupRecoveryErrorCode,
+  type QuarantinedDatabase,
+  type RestoreMigrationBackupOptions,
+} from './migration-backup-recovery';
+export * from './migration-bootstrap';
