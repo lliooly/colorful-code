@@ -10,8 +10,6 @@ const CLOCK_QUERY = `
 `;
 
 const READ_DATABASE_PROPERTIES = new Set<PropertyKey>([
-  '$count',
-  'query',
   'select',
   'selectDistinct',
 ]);
@@ -39,7 +37,7 @@ export class DatabaseFacadeRevokedError extends Error {
 
 export type ReadDatabase = Pick<
   PersistenceDrizzleDatabase,
-  '$count' | 'query' | 'select' | 'selectDistinct'
+  'select' | 'selectDistinct'
 >;
 
 export interface DatabaseConnection {
@@ -105,6 +103,22 @@ export function createDatabaseConnectionFacade(
         assertActive(state);
         return null;
       },
+      set() {
+        assertActive(state);
+        return false;
+      },
+      defineProperty() {
+        assertActive(state);
+        return false;
+      },
+      deleteProperty() {
+        assertActive(state);
+        return false;
+      },
+      setPrototypeOf() {
+        assertActive(state);
+        return false;
+      },
       has(target, property) {
         assertActive(state);
         return (
@@ -142,6 +156,22 @@ export function createDatabaseConnectionFacade(
     getPrototypeOf() {
       assertActive(state);
       return null;
+    },
+    set() {
+      assertActive(state);
+      return false;
+    },
+    defineProperty() {
+      assertActive(state);
+      return false;
+    },
+    deleteProperty() {
+      assertActive(state);
+      return false;
+    },
+    setPrototypeOf() {
+      assertActive(state);
+      return false;
     },
     has(target, property) {
       assertActive(state);

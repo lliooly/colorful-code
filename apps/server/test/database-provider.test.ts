@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -15,8 +15,8 @@ import {
   DatabaseProviderClosedError,
   DatabaseProviderOwnershipError,
   createDatabaseProvider,
-  createTestDatabaseProvider,
 } from '../src/persistence/database-provider';
+import { createTestDatabaseProvider } from '../src/persistence/database-provider.testing';
 import { sessions } from '../src/persistence/schema';
 
 async function withTempDirectory<T>(
@@ -106,6 +106,38 @@ test('close is idempotent and closes the physical connection exactly once', asyn
   });
 });
 
+test('a failed physical close keeps ownership and returns the same failure', async () => {
+  await withTempDirectory(async (directory) => {
+    const databasePath = join(directory, 'database.sqlite');
+    const closeError = new Error('close failed');
+    let raw: Database | undefined;
+    const provider = createTestDatabaseProvider(databasePath, {
+      connectionFactory: (path) => {
+        raw = new Database(path);
+        return raw;
+      },
+      closeConnection: () => {
+        throw closeError;
+      },
+    });
+
+    try {
+      await assert.rejects(provider.close(), (error) => error === closeError);
+      await assert.rejects(provider.close(), (error) => error === closeError);
+      assert.throws(
+        () => createDatabaseProvider(databasePath),
+        DatabaseProviderOwnershipError,
+      );
+      assert.throws(
+        () => provider.read(() => undefined),
+        DatabaseProviderClosedError,
+      );
+    } finally {
+      raw?.close();
+    }
+  });
+});
+
 test('owns a normalized data directory until close and allows other directories', async () => {
   await withTempDirectory(async (directory) => {
     const firstPath = join(directory, 'nested', '..', 'first.sqlite');
@@ -123,6 +155,25 @@ test('owns a normalized data directory until close and allows other directories'
     const reopened = createDatabaseProvider(sameDirectoryPath);
     await reopened.close();
     await other.close();
+  });
+});
+
+test('resolves parent directory symlinks before claiming ownership', async () => {
+  await withTempDirectory(async (directory) => {
+    const realDirectory = join(directory, 'real');
+    const aliasDirectory = join(directory, 'alias');
+    mkdirSync(realDirectory);
+    symlinkSync(realDirectory, aliasDirectory, 'dir');
+
+    const first = createDatabaseProvider(join(realDirectory, 'first.sqlite'));
+    try {
+      assert.throws(
+        () => createDatabaseProvider(join(aliasDirectory, 'second.sqlite')),
+        DatabaseProviderOwnershipError,
+      );
+    } finally {
+      await first.close();
+    }
   });
 });
 
@@ -187,8 +238,10 @@ test('initialization and cleanup failures preserve the original error first', as
       },
     );
 
-    const reopened = createDatabaseProvider(join(directory, 'database.sqlite'));
-    await reopened.close();
+    assert.throws(
+      () => createDatabaseProvider(join(directory, 'database.sqlite')),
+      DatabaseProviderOwnershipError,
+    );
     assert.ok(openedConnection);
   });
 });
@@ -225,9 +278,26 @@ test('opens a business connection distinct from the migration connection', async
 
 test('SQLite clock queries the current connection as a UTC Unix millisecond integer', async () => {
   await withTempDirectory(async (directory) => {
+    let clockQueryCalls = 0;
     const provider = createTestDatabaseProvider(
       join(directory, 'database.sqlite'),
-      { clock: new SqliteDatabaseClock() },
+      {
+        clock: new SqliteDatabaseClock(),
+        connectionFactory: (databasePath) => {
+          const raw = new Database(databasePath);
+          const query = raw.query.bind(raw);
+          Object.defineProperty(raw, 'query', {
+            configurable: true,
+            value: (...arguments_: unknown[]) => {
+              if (String(arguments_[0]).includes("strftime('%s', 'now')")) {
+                clockQueryCalls += 1;
+              }
+              return Reflect.apply(query, raw, arguments_);
+            },
+          });
+          return raw;
+        },
+      },
     );
     try {
       const before = Date.now();
@@ -236,6 +306,7 @@ test('SQLite clock queries the current connection as a UTC Unix millisecond inte
 
       assert.ok(Number.isSafeInteger(now));
       assert.ok(now >= before - 1_000 && now <= after + 1_000);
+      assert.equal(clockQueryCalls, 1);
     } finally {
       await provider.close();
     }
@@ -316,7 +387,9 @@ test('read facade rejects write and manual transaction capabilities', async () =
       provider.read((connection) => {
         for (const forbidden of [
           '$client',
+          '$count',
           'session',
+          'query',
           'insert',
           'update',
           'delete',
@@ -359,6 +432,9 @@ test('query builders cannot leak raw state or execute after their read callback'
       });
 
       assert.throws(() => capturedBuilder.all(), DatabaseFacadeRevokedError);
+      assert.throws(() => {
+        (capturedBuilder as unknown as Record<string, unknown>).escaped = true;
+      }, DatabaseFacadeRevokedError);
     } finally {
       await provider.close();
     }
