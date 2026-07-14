@@ -6,14 +6,20 @@ import { AppService } from './app.service';
 import { ModelsModule } from './model/models.module';
 import { PluginsModule } from './plugins/plugins.module';
 import { SessionsModule } from './sessions/sessions.module';
+import type { DatabaseProvider } from './persistence/database-provider';
+import { DatabaseProviderModule } from './persistence/database-provider.module';
 
 @Module({})
 export class AppModule {
-  static forRoot(environment: ServerEnvironment): DynamicModule {
+  static forRoot(
+    environment: ServerEnvironment,
+    provider: DatabaseProvider,
+  ): DynamicModule {
     return {
       module: AppModule,
       imports: [
         ConfigModule.forRoot(environment),
+        DatabaseProviderModule.forRoot(provider),
         ModelsModule,
         PluginsModule,
         SessionsModule,

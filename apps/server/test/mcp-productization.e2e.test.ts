@@ -20,6 +20,10 @@ import {
   type ModelClientFactory,
 } from '../src/sessions/model-factory';
 import { SessionStore } from '../src/persistence/session-store';
+import {
+  closeTestSessionStores,
+  createTestSessionStore,
+} from './support/test-session-store';
 
 const fixtureServer = {
   type: 'stdio',
@@ -51,7 +55,7 @@ const scriptedFactory: ModelClientFactory = (): ModelClient =>
   providers: [
     SessionsService,
     { provide: MODEL_CLIENT_FACTORY, useValue: scriptedFactory },
-    { provide: SessionStore, useValue: SessionStore.openAt(':memory:') },
+    { provide: SessionStore, useFactory: createTestSessionStore },
   ],
 })
 class TestAppModule {}
@@ -73,6 +77,7 @@ afterEach(async () => {
     await app.close();
     app = undefined;
   }
+  await closeTestSessionStores();
 });
 
 async function waitFor(

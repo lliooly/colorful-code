@@ -9,8 +9,10 @@ import {
 } from '../src/runtime/data-directory-instance-lock';
 import {
   type DaemonApplication,
-  startDaemon,
+  startDaemon as startDaemonRuntime,
+  type StartDaemonOptions,
 } from '../src/runtime/daemon-lifecycle';
+import type { DatabaseProvider } from '../src/persistence/database-provider';
 
 class FakeApplication implements DaemonApplication {
   closeCallbacks: Array<() => Promise<void>> = [];
@@ -55,6 +57,121 @@ class FakeApplication implements DaemonApplication {
     if (errors.length > 1) throw new AggregateError(errors, 'close failed');
   }
 }
+
+function fakeProvider(close: () => Promise<void>): DatabaseProvider {
+  return { close } as DatabaseProvider;
+}
+
+function startDaemon(
+  options: Omit<StartDaemonOptions, 'createProvider'> &
+    Partial<Pick<StartDaemonOptions, 'createProvider'>>,
+): Promise<DaemonApplication> {
+  return startDaemonRuntime({
+    createProvider: async () => fakeProvider(async () => undefined),
+    ...options,
+  });
+}
+
+test('owns migration, Provider, application, and lock in strict lifecycle order', async () => {
+  const events: string[] = [];
+  const provider = fakeProvider(async () => {
+    events.push('close-provider');
+  });
+  const application = new FakeApplication({
+    events,
+    runCallbacksOnClose: true,
+  });
+
+  const started = await startDaemon({
+    databasePath: '/data/database.sqlite',
+    acquireLock: async () => {
+      events.push('acquire-lock');
+      return {
+        release: async () => {
+          events.push('release-lock');
+        },
+      };
+    },
+    migrateDatabase: async () => {
+      events.push('migrate-and-close-bootstrap-connection');
+    },
+    createProvider: async () => {
+      events.push('create-provider');
+      return provider;
+    },
+    createApplication: async (_databasePath, receivedProvider) => {
+      assert.equal(receivedProvider, provider);
+      events.push('create-app');
+      return application;
+    },
+  });
+  await started.close();
+
+  assert.deepEqual(events, [
+    'acquire-lock',
+    'migrate-and-close-bootstrap-connection',
+    'create-provider',
+    'create-app',
+    'register-close',
+    'listen',
+    'close-app',
+    'close-provider',
+    'release-lock',
+  ]);
+});
+
+test('Provider creation failure releases the lock before app creation', async () => {
+  const providerError = new Error('provider failed');
+  const events: string[] = [];
+
+  await assert.rejects(
+    startDaemon({
+      databasePath: '/data/database.sqlite',
+      acquireLock: async () => ({
+        release: async () => {
+          events.push('release-lock');
+        },
+      }),
+      migrateDatabase: async () => {
+        events.push('migrate');
+      },
+      createProvider: async () => {
+        events.push('create-provider');
+        throw providerError;
+      },
+      createApplication: async () => {
+        events.push('create-app');
+        return new FakeApplication();
+      },
+    }),
+    (error) => error === providerError,
+  );
+
+  assert.deepEqual(events, ['migrate', 'create-provider', 'release-lock']);
+});
+
+test('Provider close failure keeps the Instance Lock fail-closed', async () => {
+  const closeError = new Error('provider close failed');
+  let lockReleaseCalls = 0;
+  const application = new FakeApplication({ runCallbacksOnClose: true });
+  const started = await startDaemon({
+    databasePath: '/data/database.sqlite',
+    acquireLock: async () => ({
+      release: async () => {
+        lockReleaseCalls += 1;
+      },
+    }),
+    migrateDatabase: async () => undefined,
+    createProvider: async () =>
+      fakeProvider(async () => {
+        throw closeError;
+      }),
+    createApplication: async () => application,
+  });
+
+  await assert.rejects(started.close(), (error) => error === closeError);
+  assert.equal(lockReleaseCalls, 0);
+});
 
 test('acquires the lock and migrates before creating or listening to the app', async () => {
   const events: string[] = [];

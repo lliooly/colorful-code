@@ -15,6 +15,25 @@ export type PersistenceDatabase = {
   raw: Database;
 };
 
+export type PersistenceDrizzleDatabase = BunSQLiteDatabase<typeof schema>;
+
+export function configureDatabaseConnection(raw: Database): void {
+  raw.exec('PRAGMA journal_mode = WAL;');
+  raw.exec('PRAGMA foreign_keys = ON;');
+  raw.exec('PRAGMA busy_timeout = 5000;');
+  raw.exec('PRAGMA synchronous = FULL;');
+}
+
+export function initializeLegacySchema(raw: Database): void {
+  raw.exec(SCHEMA_DDL);
+}
+
+export function createDrizzleDatabase(
+  raw: Database,
+): PersistenceDrizzleDatabase {
+  return drizzle(raw, { schema });
+}
+
 // In-memory sentinel paths that bun:sqlite understands directly — they have no
 // parent directory to create.
 function isInMemoryPath(path: string): boolean {
@@ -32,11 +51,9 @@ export function openDatabase(path: string): PersistenceDatabase {
   }
 
   const raw = new Database(path);
-  // WAL improves concurrent read/write behaviour for a file DB; harmless for an
-  // in-memory DB.
-  raw.exec('PRAGMA journal_mode = WAL;');
-  raw.exec(SCHEMA_DDL);
+  configureDatabaseConnection(raw);
+  initializeLegacySchema(raw);
 
-  const db = drizzle(raw, { schema });
+  const db = createDrizzleDatabase(raw);
   return { db, raw };
 }

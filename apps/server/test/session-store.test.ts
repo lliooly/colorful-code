@@ -8,6 +8,11 @@ import type {
   PermissionAuditEntry,
   SessionSnapshot,
 } from '@colorful-code/tool-runtime';
+import { FixedDatabaseClock } from '../src/persistence/database-clock';
+import {
+  createTestDatabaseProvider,
+  type TestDatabaseProviderOptions,
+} from '../src/persistence/database-provider.testing';
 import { SessionStore } from '../src/persistence/session-store';
 
 // ---------------------------------------------------------------------------
@@ -22,15 +27,20 @@ import { SessionStore } from '../src/persistence/session-store';
 // guaranteeing the connection is closed and the temp dir removed afterward.
 async function withTempStore(
   body: (store: SessionStore, dbPath: string) => void | Promise<void>,
+  options: TestDatabaseProviderOptions & {
+    faultHooks?: ConstructorParameters<typeof SessionStore>[1];
+  } = {},
 ): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'colorful-code-store-'));
   // Nested under a not-yet-existing `data/` dir to exercise mkdir-recursive.
   const dbPath = join(dir, 'data', 'colorful-code.db');
-  const store = SessionStore.openAt(dbPath);
+  const provider = createTestDatabaseProvider(dbPath, options);
+  const store = new SessionStore(provider, options.faultHooks);
   try {
     await body(store, dbPath);
   } finally {
     store.close();
+    await provider.close();
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -53,9 +63,9 @@ function sampleSnapshot(
 }
 
 test('saveSnapshot + loadSnapshot round-trip through a real file DB', async () => {
-  await withTempStore((store, dbPath) => {
+  await withTempStore(async (store, dbPath) => {
     const snapshot = sampleSnapshot();
-    store.saveSnapshot(snapshot);
+    await store.saveSnapshot(snapshot);
 
     // The file must actually exist on disk (proves it is not an in-memory DB).
     assert.ok(existsSync(dbPath), 'the SQLite file was created on disk');
@@ -75,34 +85,50 @@ test('saveSnapshot + loadSnapshot round-trip through a real file DB', async () =
   });
 });
 
-test('deleteSession rolls back every table when a delete step fails', () => {
-  const store = SessionStore.openAt(':memory:', {
-    afterDeleteAudit: () => {
-      throw new Error('injected delete failure');
+test('deleteSession rolls back every table when a delete step fails', async () => {
+  await withTempStore(
+    async (store) => {
+      const snapshot = sampleSnapshot();
+      await store.saveSnapshot(snapshot);
+      await store.saveCheckpoint({
+        id: 'checkpoint-delete',
+        sessionId: snapshot.id,
+        createdAt: 1,
+        snapshot,
+      });
+      await store.appendAudit(snapshot.id, [
+        {
+          toolUseId: 'call-delete',
+          toolName: 'Read',
+          behavior: 'allow',
+          at: 1,
+        },
+      ]);
+      await store.upsertSessionMetadata({
+        sessionId: snapshot.id,
+        pinned: true,
+      });
+      await assert.rejects(
+        store.deleteSession(snapshot.id),
+        /injected delete failure/,
+      );
+      assert.ok(store.loadSnapshot(snapshot.id));
+      assert.equal(store.listCheckpoints(snapshot.id).length, 1);
+      assert.equal(store.listAudit(snapshot.id).length, 1);
+      assert.ok(store.loadSessionMetadata(snapshot.id));
     },
-  });
-  const snapshot = sampleSnapshot();
-  store.saveSnapshot(snapshot);
-  store.saveCheckpoint({
-    id: 'checkpoint-delete',
-    sessionId: snapshot.id,
-    createdAt: 1,
-    snapshot,
-  });
-  store.appendAudit(snapshot.id, [
-    { toolUseId: 'call-delete', toolName: 'Read', behavior: 'allow', at: 1 },
-  ]);
-  store.upsertSessionMetadata({ sessionId: snapshot.id, pinned: true });
-  assert.throws(() => store.deleteSession(snapshot.id), /injected delete failure/);
-  assert.ok(store.loadSnapshot(snapshot.id));
-  assert.equal(store.listCheckpoints(snapshot.id).length, 1);
-  assert.equal(store.listAudit(snapshot.id).length, 1);
-  assert.ok(store.loadSessionMetadata(snapshot.id));
-  store.close();
+    {
+      faultHooks: {
+        afterDeleteAudit: () => {
+          throw new Error('injected delete failure');
+        },
+      },
+    },
+  );
 });
 
 test('saveCheckpoint + listCheckpoints preserve parent links and metadata', async () => {
-  await withTempStore((store) => {
+  await withTempStore(async (store) => {
     const first: Checkpoint = {
       id: 'checkpoint-1',
       sessionId: 'session-1',
@@ -126,9 +152,9 @@ test('saveCheckpoint + listCheckpoints preserve parent links and metadata', asyn
       }),
     };
 
-    store.saveCheckpoint(first);
-    store.saveCheckpoint(second);
-    store.saveCheckpoint({
+    await store.saveCheckpoint(first);
+    await store.saveCheckpoint(second);
+    await store.saveCheckpoint({
       ...first,
       id: 'checkpoint-other',
       sessionId: 'session-2',
@@ -154,9 +180,9 @@ test('saveCheckpoint + listCheckpoints preserve parent links and metadata', asyn
 });
 
 test('saveSnapshot upserts: second save keeps one row with the latest value', async () => {
-  await withTempStore((store) => {
-    store.saveSnapshot(sampleSnapshot({ permissionMode: 'default' }));
-    store.saveSnapshot(
+  await withTempStore(async (store) => {
+    await store.saveSnapshot(sampleSnapshot({ permissionMode: 'default' }));
+    await store.saveSnapshot(
       sampleSnapshot({
         permissionMode: 'acceptEdits',
         history: [{ role: 'user', content: 'updated' }],
@@ -176,9 +202,11 @@ test('saveSnapshot upserts: second save keeps one row with the latest value', as
 });
 
 test('listSessions returns persisted snapshots newest first', async () => {
-  await withTempStore((store) => {
-    store.saveSnapshot(sampleSnapshot({ id: 'older' }));
-    store.saveSnapshot(sampleSnapshot({ id: 'newer', cwd: '/work/newer' }));
+  await withTempStore(async (store) => {
+    await store.saveSnapshot(sampleSnapshot({ id: 'older' }));
+    await store.saveSnapshot(
+      sampleSnapshot({ id: 'newer', cwd: '/work/newer' }),
+    );
 
     const listed = store.listSessions();
 
@@ -193,7 +221,7 @@ test('listSessions returns persisted snapshots newest first', async () => {
 });
 
 test('appendAudit + listAudit returns entries in order, reason JSON round-trips', async () => {
-  await withTempStore((store) => {
+  await withTempStore(async (store) => {
     const entries: PermissionAuditEntry[] = [
       {
         toolUseId: 'call-1',
@@ -221,7 +249,7 @@ test('appendAudit + listAudit returns entries in order, reason JSON round-trips'
       },
     ];
 
-    store.appendAudit('session-1', entries);
+    await store.appendAudit('session-1', entries);
 
     const listed = store.listAudit('session-1');
     assert.deepEqual(listed, entries, 'audit round-trips in insertion order');
@@ -237,15 +265,15 @@ test('appendAudit + listAudit returns entries in order, reason JSON round-trips'
 });
 
 test('listAudit is filtered by sessionId and preserves per-session order', async () => {
-  await withTempStore((store) => {
-    store.appendAudit('session-a', [
+  await withTempStore(async (store) => {
+    await store.appendAudit('session-a', [
       { toolUseId: 'a-1', toolName: 'TaskList', behavior: 'allow', at: 10 },
     ]);
-    store.appendAudit('session-b', [
+    await store.appendAudit('session-b', [
       { toolUseId: 'b-1', toolName: 'Write', behavior: 'deny', at: 20 },
     ]);
     // A second batch for session-a appended after session-b's row exists.
-    store.appendAudit('session-a', [
+    await store.appendAudit('session-a', [
       { toolUseId: 'a-2', toolName: 'Bash', behavior: 'ask', at: 30 },
     ]);
 
@@ -275,21 +303,25 @@ test('a reopened file DB still sees previously persisted data', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'colorful-code-store-reopen-'));
   const dbPath = join(dir, 'data', 'colorful-code.db');
   try {
-    const first = SessionStore.openAt(dbPath);
-    first.saveSnapshot(sampleSnapshot({ id: 'persisted' }));
-    first.appendAudit('persisted', [
+    const firstProvider = createTestDatabaseProvider(dbPath);
+    const first = new SessionStore(firstProvider);
+    await first.saveSnapshot(sampleSnapshot({ id: 'persisted' }));
+    await first.appendAudit('persisted', [
       { toolUseId: 'c-1', toolName: 'TaskList', behavior: 'allow', at: 99 },
     ]);
     first.close();
+    await firstProvider.close();
 
     // A brand-new store over the SAME file must observe the prior writes — the
     // idempotent DDL must not wipe existing tables on reopen.
-    const second = SessionStore.openAt(dbPath);
+    const secondProvider = createTestDatabaseProvider(dbPath);
+    const second = new SessionStore(secondProvider);
     try {
       assert.equal(second.loadSnapshot('persisted')?.id, 'persisted');
       assert.equal(second.listAudit('persisted').length, 1);
     } finally {
       second.close();
+      await secondProvider.close();
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -297,9 +329,9 @@ test('a reopened file DB still sees previously persisted data', async () => {
 });
 
 test('projects are imported idempotently by normalized path', async () => {
-  await withTempStore((store) => {
-    const first = store.upsertProject('/work/project/');
-    const second = store.upsertProject('/work/project');
+  await withTempStore(async (store) => {
+    const first = await store.upsertProject('/work/project/');
+    const second = await store.upsertProject('/work/project');
 
     assert.equal(second.id, first.id);
     assert.equal(second.path, '/work/project');
@@ -311,15 +343,33 @@ test('projects are imported idempotently by normalized path', async () => {
   });
 });
 
+test('generated persistence timestamps use one injected database Clock value', async () => {
+  const now = 1_700_000_000_123;
+  await withTempStore(
+    async (store) => {
+      const project = await store.upsertProject('/work/clocked');
+      await store.saveSnapshot(sampleSnapshot({ id: 'clocked-session' }));
+      const listed = store
+        .listSessions()
+        .find((entry) => entry.snapshot.id === 'clocked-session');
+
+      assert.equal(project.createdAt, now);
+      assert.equal(project.updatedAt, now);
+      assert.equal(listed?.updatedAt, now);
+    },
+    { clock: new FixedDatabaseClock(now) },
+  );
+});
+
 test('session metadata stores project scope and pinned state', async () => {
-  await withTempStore((store) => {
-    const project = store.upsertProject('/work/project');
-    store.saveSnapshot(sampleSnapshot({ id: 'project-session' }));
-    store.upsertSessionMetadata({
+  await withTempStore(async (store) => {
+    const project = await store.upsertProject('/work/project');
+    await store.saveSnapshot(sampleSnapshot({ id: 'project-session' }));
+    await store.upsertSessionMetadata({
       sessionId: 'project-session',
       projectId: project.id,
     });
-    store.setSessionPinned('project-session', true);
+    await store.setSessionPinned('project-session', true);
 
     const metadata = store.loadSessionMetadata('project-session');
     assert.equal(metadata?.projectId, project.id);
@@ -328,24 +378,24 @@ test('session metadata stores project scope and pinned state', async () => {
 });
 
 test('deleteSession hard-deletes snapshot, checkpoints, audit, and metadata', async () => {
-  await withTempStore((store) => {
-    const project = store.upsertProject('/work/project');
-    store.saveSnapshot(sampleSnapshot({ id: 'session-delete' }));
-    store.upsertSessionMetadata({
+  await withTempStore(async (store) => {
+    const project = await store.upsertProject('/work/project');
+    await store.saveSnapshot(sampleSnapshot({ id: 'session-delete' }));
+    await store.upsertSessionMetadata({
       sessionId: 'session-delete',
       projectId: project.id,
     });
-    store.saveCheckpoint({
+    await store.saveCheckpoint({
       id: 'checkpoint-delete',
       sessionId: 'session-delete',
       createdAt: 1,
       snapshot: sampleSnapshot({ id: 'session-delete' }),
     });
-    store.appendAudit('session-delete', [
+    await store.appendAudit('session-delete', [
       { toolUseId: 'call-delete', toolName: 'Read', behavior: 'allow', at: 1 },
     ]);
 
-    assert.equal(store.deleteSession('session-delete'), true);
+    assert.equal(await store.deleteSession('session-delete'), true);
 
     assert.equal(store.loadSnapshot('session-delete'), undefined);
     assert.deepEqual(store.listCheckpoints('session-delete'), []);

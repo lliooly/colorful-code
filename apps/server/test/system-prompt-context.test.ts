@@ -53,6 +53,9 @@ function createMemoryStore(): SessionStore {
     listAudit(sessionId: string): PermissionAuditEntry[] {
       return [...(audit.get(sessionId) ?? [])];
     },
+    now(): number {
+      return 1_700_000_000_000;
+    },
     upsertSessionMetadata(): never {
       return undefined as never;
     },

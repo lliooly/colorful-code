@@ -1,16 +1,17 @@
-import { Inject, Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { asc, eq } from 'drizzle-orm';
-import { SERVER_ENV } from '../config/config.module';
 import type {
   McpServerConfigWithTrust,
   McpServersConfig,
 } from '../config/mcp-config';
 import type { LspServersConfig } from '../config/lsp-config';
-import type { ServerEnvironment } from '../config/environment';
 import {
-  openDatabase,
-  type PersistenceDatabase,
-} from '../persistence/database';
+  type DatabaseConnection,
+  type DatabaseProvider,
+  type SynchronousTransactionResult,
+} from '../persistence/database-provider';
+import { DATABASE_PROVIDER } from '../persistence/database-provider.module';
+import type { WriteDatabaseConnection } from '../persistence/database-clock';
 import {
   installedPlugins,
   type InstalledPluginRow,
@@ -46,67 +47,88 @@ function isLspPluginConfig(
 }
 
 @Injectable()
-export class PluginStore implements OnModuleDestroy {
-  private readonly handle: PersistenceDatabase;
+export class PluginStore {
+  constructor(
+    @Inject(DATABASE_PROVIDER) private readonly provider: DatabaseProvider,
+  ) {}
 
-  constructor(@Inject(SERVER_ENV) env: ServerEnvironment) {
-    this.handle = openDatabase(env.databasePath);
+  private read<T>(operation: (database: DatabaseConnection['db']) => T): T {
+    return this.provider.read((connection) => operation(connection.db));
   }
 
-  static openAt(path: string): PluginStore {
-    return new PluginStore({ databasePath: path } as ServerEnvironment);
+  private write<T>(
+    operation: (database: WriteDatabaseConnection['db'], now: number) => T,
+  ): Promise<T> {
+    return this.provider.transaction<T>(
+      (transaction) =>
+        operation(
+          transaction.database.db,
+          transaction.now,
+        ) as SynchronousTransactionResult<T>,
+    );
   }
 
-  private get db(): PersistenceDatabase['db'] {
-    return this.handle.db;
-  }
-
-  installMcpPlugin(input: InstallMcpPluginInput): InstalledPlugin {
-    const existing = this.load(pluginId('mcp', input.registryName));
-    const existingMcpConfig =
-      existing?.kind === 'mcp'
-        ? (existing.config as McpServerConfigWithTrust)
-        : undefined;
-    return this.installRow({
-      kind: 'mcp',
-      registryName: input.registryName,
-      title: input.title,
-      description: input.description,
-      version: input.version,
-      enabled: existing?.enabled,
-      installedAt: existing?.installedAt,
-      config: {
-        ...input.config,
-        trust: input.config.trust ?? existingMcpConfig?.trust ?? 'ask',
-      },
+  installMcpPlugin(input: InstallMcpPluginInput): Promise<InstalledPlugin> {
+    return this.write((database, now) => {
+      const existing = this.loadFrom(
+        database,
+        pluginId('mcp', input.registryName),
+      );
+      const existingMcpConfig =
+        existing?.kind === 'mcp'
+          ? (existing.config as McpServerConfigWithTrust)
+          : undefined;
+      return this.installRow(database, now, {
+        kind: 'mcp',
+        registryName: input.registryName,
+        title: input.title,
+        description: input.description,
+        version: input.version,
+        enabled: existing?.enabled,
+        installedAt: existing?.installedAt,
+        config: {
+          ...input.config,
+          trust: input.config.trust ?? existingMcpConfig?.trust ?? 'ask',
+        },
+      });
     });
   }
 
-  installCatalogPlugin(input: InstallCatalogPluginInput): InstalledPlugin {
-    const existing = this.load(pluginId(input.kind, input.registryName));
-    return this.installRow({
-      kind: input.kind,
-      registryName: input.registryName,
-      title: input.title,
-      description: input.description,
-      version: input.version,
-      enabled: existing?.enabled,
-      installedAt: existing?.installedAt,
-      config: input.config,
+  installCatalogPlugin(
+    input: InstallCatalogPluginInput,
+  ): Promise<InstalledPlugin> {
+    return this.write((database, now) => {
+      const existing = this.loadFrom(
+        database,
+        pluginId(input.kind, input.registryName),
+      );
+      return this.installRow(database, now, {
+        kind: input.kind,
+        registryName: input.registryName,
+        title: input.title,
+        description: input.description,
+        version: input.version,
+        enabled: existing?.enabled,
+        installedAt: existing?.installedAt,
+        config: input.config,
+      });
     });
   }
 
-  private installRow(input: {
-    kind: InstalledPlugin['kind'];
-    registryName: string;
-    title?: string;
-    description?: string;
-    version: string;
-    enabled?: boolean;
-    installedAt?: number;
-    config: InstalledPluginConfig;
-  }): InstalledPlugin {
-    const now = Date.now();
+  private installRow(
+    database: WriteDatabaseConnection['db'],
+    now: number,
+    input: {
+      kind: InstalledPlugin['kind'];
+      registryName: string;
+      title?: string;
+      description?: string;
+      version: string;
+      enabled?: boolean;
+      installedAt?: number;
+      config: InstalledPluginConfig;
+    },
+  ): InstalledPlugin {
     const row = {
       id: pluginId(input.kind, input.registryName),
       kind: input.kind,
@@ -120,7 +142,7 @@ export class PluginStore implements OnModuleDestroy {
       updatedAt: now,
     };
 
-    this.db
+    database
       .insert(installedPlugins)
       .values(row)
       .onConflictDoUpdate({
@@ -139,20 +161,28 @@ export class PluginStore implements OnModuleDestroy {
       })
       .run();
 
-    return this.load(row.id) as InstalledPlugin;
+    return this.toInstalledPlugin(row);
   }
 
   listInstalled(): InstalledPlugin[] {
-    return this.db
-      .select()
-      .from(installedPlugins)
-      .orderBy(asc(installedPlugins.registryName))
-      .all()
-      .map((row) => this.toInstalledPlugin(row));
+    return this.read((database) =>
+      database
+        .select()
+        .from(installedPlugins)
+        .orderBy(asc(installedPlugins.registryName))
+        .all(),
+    ).map((row) => this.toInstalledPlugin(row));
   }
 
   load(id: string): InstalledPlugin | undefined {
-    const rows = this.db
+    return this.read((database) => this.loadFrom(database, id));
+  }
+
+  private loadFrom(
+    database: DatabaseConnection['db'] | WriteDatabaseConnection['db'],
+    id: string,
+  ): InstalledPlugin | undefined {
+    const rows = database
       .select()
       .from(installedPlugins)
       .where(eq(installedPlugins.id, id))
@@ -162,46 +192,59 @@ export class PluginStore implements OnModuleDestroy {
     return row ? this.toInstalledPlugin(row) : undefined;
   }
 
-  updateInstalled(id: string, patch: InstalledPluginPatch): InstalledPlugin {
-    const current = this.load(id);
-    if (!current) {
-      throw new Error('Unknown installed plugin: ' + id);
-    }
+  updateInstalled(
+    id: string,
+    patch: InstalledPluginPatch,
+  ): Promise<InstalledPlugin> {
+    return this.write((database, now) => {
+      const current = this.loadFrom(database, id);
+      if (!current) {
+        throw new Error('Unknown installed plugin: ' + id);
+      }
 
-    if (patch.trust && current.kind !== 'mcp') {
-      throw new Error('Trust can only be updated for MCP plugins.');
-    }
+      if (patch.trust && current.kind !== 'mcp') {
+        throw new Error('Trust can only be updated for MCP plugins.');
+      }
 
-    const config: InstalledPluginConfig =
-      patch.trust && current.kind === 'mcp'
-        ? {
-            ...(current.config as McpServerConfigWithTrust),
-            trust: patch.trust,
-          }
-        : current.config;
+      const config: InstalledPluginConfig =
+        patch.trust && current.kind === 'mcp'
+          ? {
+              ...(current.config as McpServerConfigWithTrust),
+              trust: patch.trust,
+            }
+          : current.config;
 
-    this.db
-      .update(installedPlugins)
-      .set({
-        ...(patch.enabled !== undefined
-          ? { enabled: patch.enabled ? 1 : 0 }
-          : {}),
-        config: JSON.stringify(config),
-        updatedAt: Date.now(),
-      })
-      .where(eq(installedPlugins.id, id))
-      .run();
+      database
+        .update(installedPlugins)
+        .set({
+          ...(patch.enabled !== undefined
+            ? { enabled: patch.enabled ? 1 : 0 }
+            : {}),
+          config: JSON.stringify(config),
+          updatedAt: now,
+        })
+        .where(eq(installedPlugins.id, id))
+        .run();
 
-    return this.load(id) as InstalledPlugin;
+      return {
+        ...current,
+        enabled: patch.enabled ?? current.enabled,
+        config,
+        updatedAt: now,
+      };
+    });
   }
 
-  deleteInstalled(id: string): boolean {
-    const existing = this.load(id);
-    if (!existing) {
-      return false;
-    }
-    this.db.delete(installedPlugins).where(eq(installedPlugins.id, id)).run();
-    return true;
+  deleteInstalled(id: string): Promise<boolean> {
+    return this.write((database) => {
+      const existing = this.loadFrom(database, id);
+      if (!existing) return false;
+      database
+        .delete(installedPlugins)
+        .where(eq(installedPlugins.id, id))
+        .run();
+      return true;
+    });
   }
 
   enabledMcpServers(): McpServersConfig {
@@ -244,13 +287,5 @@ export class PluginStore implements OnModuleDestroy {
       installedAt: row.installedAt,
       updatedAt: row.updatedAt,
     };
-  }
-
-  close(): void {
-    this.handle.raw.close();
-  }
-
-  onModuleDestroy(): void {
-    this.close();
   }
 }

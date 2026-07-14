@@ -1,4 +1,4 @@
-import { Inject, Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { basename, resolve } from 'node:path';
 import { and, asc, desc, eq, inArray } from 'drizzle-orm';
@@ -9,9 +9,13 @@ import type {
   PermissionDecisionReason,
   SessionSnapshot,
 } from '@colorful-code/tool-runtime';
-import { SERVER_ENV } from '../config/config.module';
-import type { ServerEnvironment } from '../config/environment';
-import { openDatabase, type PersistenceDatabase } from './database';
+import {
+  type DatabaseProvider,
+  type DatabaseConnection,
+  type SynchronousTransactionResult,
+} from './database-provider';
+import { DATABASE_PROVIDER } from './database-provider.module';
+import type { WriteDatabaseConnection } from './database-clock';
 import {
   audit,
   checkpoints,
@@ -70,8 +74,7 @@ function projectIdForPath(path: string): string {
 // back the runtime types (`SessionSnapshot`, `PermissionAuditEntry`), never the
 // stringified columns.
 @Injectable()
-export class SessionStore implements OnModuleDestroy {
-  private readonly handle: PersistenceDatabase;
+export class SessionStore {
   private faultHooks: SessionStoreFaultHooks = {};
   private closed = false;
 
@@ -79,52 +82,74 @@ export class SessionStore implements OnModuleDestroy {
     return this.closed;
   }
 
-  // The Nest path injects `SERVER_ENV` and opens the configured DB file. Tests
-  // call `SessionStore.openAt(path)` to bind a temp/in-memory DB without the
-  // container.
-  constructor(@Inject(SERVER_ENV) env: ServerEnvironment) {
-    this.handle = openDatabase(env.databasePath);
+  constructor(
+    @Inject(DATABASE_PROVIDER) private readonly provider: DatabaseProvider,
+    @Optional()
+    faultHooks: SessionStoreFaultHooks = {},
+  ) {
+    this.faultHooks = faultHooks;
   }
 
-  // Test/standalone constructor: opens a store at an explicit path (a temp file
-  // or `:memory:`) bypassing the injected environment.
-  static openAt(path: string, faultHooks: SessionStoreFaultHooks = {}): SessionStore {
-    const store = new SessionStore({ databasePath: path } as ServerEnvironment);
-    store.faultHooks = faultHooks;
-    return store;
+  private read<T>(operation: (database: DatabaseConnection['db']) => T): T {
+    this.assertOpen();
+    return this.provider.read((connection) => operation(connection.db));
   }
 
-  private get db(): PersistenceDatabase['db'] {
-    return this.handle.db;
+  private write<T>(
+    operation: (database: WriteDatabaseConnection['db'], now: number) => T,
+  ): Promise<T> {
+    this.assertOpen();
+    return this.provider.transaction<T>(
+      (transaction) =>
+        operation(
+          transaction.database.db,
+          transaction.now,
+        ) as SynchronousTransactionResult<T>,
+    );
+  }
+
+  private assertOpen(): void {
+    if (this.closed) throw new Error('SessionStore is closed');
+  }
+
+  now(): number {
+    this.assertOpen();
+    return this.provider.read((connection) =>
+      this.provider.clock.now(connection),
+    );
   }
 
   // Upserts the session row: one row per session id, replacing snapshot +
   // updatedAt on conflict. The snapshot is JSON-serialized here.
-  saveSnapshot(snapshot: SessionSnapshot): void {
-    const row = {
-      id: snapshot.id,
-      snapshot: JSON.stringify(snapshot),
-      updatedAt: Date.now(),
-    };
-    this.db
-      .insert(sessions)
-      .values(row)
-      .onConflictDoUpdate({
-        target: sessions.id,
-        set: { snapshot: row.snapshot, updatedAt: row.updatedAt },
-      })
-      .run();
+  saveSnapshot(snapshot: SessionSnapshot): Promise<void> {
+    return this.write((database, now) => {
+      const row = {
+        id: snapshot.id,
+        snapshot: JSON.stringify(snapshot),
+        updatedAt: now,
+      };
+      database
+        .insert(sessions)
+        .values(row)
+        .onConflictDoUpdate({
+          target: sessions.id,
+          set: { snapshot: row.snapshot, updatedAt: row.updatedAt },
+        })
+        .run();
+    });
   }
 
   // Reads back and parses the persisted snapshot, or `undefined` if the id has
   // never been saved.
   loadSnapshot(id: string): SessionSnapshot | undefined {
-    const rows = this.db
-      .select({ snapshot: sessions.snapshot })
-      .from(sessions)
-      .where(eq(sessions.id, id))
-      .limit(1)
-      .all();
+    const rows = this.read((database) =>
+      database
+        .select({ snapshot: sessions.snapshot })
+        .from(sessions)
+        .where(eq(sessions.id, id))
+        .limit(1)
+        .all(),
+    );
     const row = rows[0];
     if (!row) {
       return undefined;
@@ -133,144 +158,197 @@ export class SessionStore implements OnModuleDestroy {
   }
 
   listSessions(): Array<{ snapshot: SessionSnapshot; updatedAt: number }> {
-    return this.db
-      .select({ snapshot: sessions.snapshot, updatedAt: sessions.updatedAt })
-      .from(sessions)
-      .orderBy(desc(sessions.updatedAt), asc(sessions.id))
-      .all()
-      .map((row) => ({
-        snapshot: JSON.parse(row.snapshot) as SessionSnapshot,
-        updatedAt: row.updatedAt,
-      }));
+    return this.read((database) =>
+      database
+        .select({ snapshot: sessions.snapshot, updatedAt: sessions.updatedAt })
+        .from(sessions)
+        .orderBy(desc(sessions.updatedAt), asc(sessions.id))
+        .all(),
+    ).map((row) => ({
+      snapshot: JSON.parse(row.snapshot) as SessionSnapshot,
+      updatedAt: row.updatedAt,
+    }));
   }
 
-  upsertProject(path: string): ProjectRecord {
+  upsertProject(path: string): Promise<ProjectRecord> {
     const normalized = normalizeProjectPath(path);
-    const existing = this.loadProjectByPath(normalized);
-    if (existing) {
-      this.db
-        .update(projects)
-        .set({ updatedAt: Date.now() })
-        .where(eq(projects.id, existing.id))
-        .run();
-      return this.loadProject(existing.id) as ProjectRecord;
-    }
+    return this.write((database, now) => {
+      const existingRow = database
+        .select()
+        .from(projects)
+        .where(eq(projects.path, normalized))
+        .limit(1)
+        .all()[0];
+      if (existingRow) {
+        database
+          .update(projects)
+          .set({ updatedAt: now })
+          .where(eq(projects.id, existingRow.id))
+          .run();
+        return this.toProjectRecord({ ...existingRow, updatedAt: now });
+      }
 
-    const now = Date.now();
-    const row = {
-      id: projectIdForPath(normalized),
-      name: basename(normalized) || normalized,
-      path: normalized,
-      createdAt: now,
-      updatedAt: now,
-    };
-    this.db.insert(projects).values(row).run();
-    return this.toProjectRecord(row);
+      const row = {
+        id: projectIdForPath(normalized),
+        name: basename(normalized) || normalized,
+        path: normalized,
+        createdAt: now,
+        updatedAt: now,
+      };
+      database.insert(projects).values(row).run();
+      return this.toProjectRecord(row);
+    });
   }
 
   listProjects(): ProjectRecord[] {
-    return this.db
-      .select()
-      .from(projects)
-      .orderBy(asc(projects.name), asc(projects.path))
-      .all()
-      .map((row) => this.toProjectRecord(row));
+    return this.read((database) =>
+      database
+        .select()
+        .from(projects)
+        .orderBy(asc(projects.name), asc(projects.path))
+        .all(),
+    ).map((row) => this.toProjectRecord(row));
   }
 
   loadProject(id: string): ProjectRecord | undefined {
-    const rows = this.db
-      .select()
-      .from(projects)
-      .where(eq(projects.id, id))
-      .limit(1)
-      .all();
+    const rows = this.read((database) =>
+      database
+        .select()
+        .from(projects)
+        .where(eq(projects.id, id))
+        .limit(1)
+        .all(),
+    );
     const row = rows[0];
     return row ? this.toProjectRecord(row) : undefined;
   }
 
   loadProjectByPath(path: string): ProjectRecord | undefined {
     const normalized = normalizeProjectPath(path);
-    const rows = this.db
-      .select()
-      .from(projects)
-      .where(eq(projects.path, normalized))
-      .limit(1)
-      .all();
+    const rows = this.read((database) =>
+      database
+        .select()
+        .from(projects)
+        .where(eq(projects.path, normalized))
+        .limit(1)
+        .all(),
+    );
     const row = rows[0];
     return row ? this.toProjectRecord(row) : undefined;
   }
 
-  deleteProject(id: string): boolean {
-    const existing = this.loadProject(id);
-    if (!existing) {
-      return false;
-    }
-    this.db
-      .update(sessionMetadata)
-      .set({ projectId: null, updatedAt: Date.now() })
-      .where(eq(sessionMetadata.projectId, id))
-      .run();
-    this.db.delete(projects).where(eq(projects.id, id)).run();
-    return true;
+  deleteProject(id: string): Promise<boolean> {
+    return this.write((database, now) => {
+      const existing = database
+        .select({ id: projects.id })
+        .from(projects)
+        .where(eq(projects.id, id))
+        .limit(1)
+        .all()[0];
+      if (!existing) return false;
+      database
+        .update(sessionMetadata)
+        .set({ projectId: null, updatedAt: now })
+        .where(eq(sessionMetadata.projectId, id))
+        .run();
+      database.delete(projects).where(eq(projects.id, id)).run();
+      return true;
+    });
   }
 
   upsertSessionMetadata(
     input: UpsertSessionMetadataInput,
-  ): SessionMetadataRecord {
-    const existing = this.loadSessionMetadata(input.sessionId);
-    const now = Date.now();
-    const row = {
-      sessionId: input.sessionId,
-      projectId:
-        input.projectId === undefined
-          ? (existing?.projectId ?? null)
-          : input.projectId,
-      pinned: (input.pinned ?? existing?.pinned) === true ? 1 : 0,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-    };
+  ): Promise<SessionMetadataRecord> {
+    return this.write((database, now) => {
+      const existingRow = database
+        .select()
+        .from(sessionMetadata)
+        .where(eq(sessionMetadata.sessionId, input.sessionId))
+        .limit(1)
+        .all()[0];
+      const existing = existingRow
+        ? this.toSessionMetadataRecord(existingRow)
+        : undefined;
+      const row = {
+        sessionId: input.sessionId,
+        projectId:
+          input.projectId === undefined
+            ? (existing?.projectId ?? null)
+            : input.projectId,
+        pinned: (input.pinned ?? existing?.pinned) === true ? 1 : 0,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      };
 
-    this.db
-      .insert(sessionMetadata)
-      .values(row)
-      .onConflictDoUpdate({
-        target: sessionMetadata.sessionId,
-        set: {
-          projectId: row.projectId,
-          pinned: row.pinned,
-          updatedAt: row.updatedAt,
-        },
-      })
-      .run();
-
-    return this.loadSessionMetadata(input.sessionId) as SessionMetadataRecord;
+      database
+        .insert(sessionMetadata)
+        .values(row)
+        .onConflictDoUpdate({
+          target: sessionMetadata.sessionId,
+          set: {
+            projectId: row.projectId,
+            pinned: row.pinned,
+            updatedAt: row.updatedAt,
+          },
+        })
+        .run();
+      return this.toSessionMetadataRecord(row);
+    });
   }
 
   loadSessionMetadata(sessionId: string): SessionMetadataRecord | undefined {
-    const rows = this.db
-      .select()
-      .from(sessionMetadata)
-      .where(eq(sessionMetadata.sessionId, sessionId))
-      .limit(1)
-      .all();
+    const rows = this.read((database) =>
+      database
+        .select()
+        .from(sessionMetadata)
+        .where(eq(sessionMetadata.sessionId, sessionId))
+        .limit(1)
+        .all(),
+    );
     const row = rows[0];
     return row ? this.toSessionMetadataRecord(row) : undefined;
   }
 
-  setSessionPinned(sessionId: string, pinned: boolean): boolean {
-    const existing = this.loadSessionMetadata(sessionId);
-    if (!existing && !this.loadSnapshot(sessionId)) {
-      return false;
-    }
-    this.upsertSessionMetadata({
-      sessionId,
-      projectId: existing?.projectId ?? null,
-      pinned,
+  setSessionPinned(sessionId: string, pinned: boolean): Promise<boolean> {
+    return this.write((database, now) => {
+      const existingRow = database
+        .select()
+        .from(sessionMetadata)
+        .where(eq(sessionMetadata.sessionId, sessionId))
+        .limit(1)
+        .all()[0];
+      const snapshotExists =
+        database
+          .select({ id: sessions.id })
+          .from(sessions)
+          .where(eq(sessions.id, sessionId))
+          .limit(1)
+          .all().length > 0;
+      if (!existingRow && !snapshotExists) return false;
+      const row = {
+        sessionId,
+        projectId: existingRow?.projectId ?? null,
+        pinned: pinned ? 1 : 0,
+        createdAt: existingRow?.createdAt ?? now,
+        updatedAt: now,
+      };
+      database
+        .insert(sessionMetadata)
+        .values(row)
+        .onConflictDoUpdate({
+          target: sessionMetadata.sessionId,
+          set: {
+            projectId: row.projectId,
+            pinned: row.pinned,
+            updatedAt: row.updatedAt,
+          },
+        })
+        .run();
+      return true;
     });
-    return true;
   }
 
-  saveCheckpoint(checkpoint: Checkpoint): void {
+  saveCheckpoint(checkpoint: Checkpoint): Promise<void> {
     const row = {
       id: checkpoint.id,
       sessionId: checkpoint.sessionId,
@@ -285,32 +363,36 @@ export class SessionStore implements OnModuleDestroy {
           ? null
           : JSON.stringify(checkpoint.fileChanges),
     };
-    this.db
-      .insert(checkpoints)
-      .values(row)
-      .onConflictDoUpdate({
-        target: checkpoints.id,
-        set: {
-          sessionId: row.sessionId,
-          parentCheckpointId: row.parentCheckpointId,
-          createdAt: row.createdAt,
-          runId: row.runId,
-          label: row.label,
-          summary: row.summary,
-          snapshot: row.snapshot,
-          fileChanges: row.fileChanges,
-        },
-      })
-      .run();
+    return this.write((database) => {
+      database
+        .insert(checkpoints)
+        .values(row)
+        .onConflictDoUpdate({
+          target: checkpoints.id,
+          set: {
+            sessionId: row.sessionId,
+            parentCheckpointId: row.parentCheckpointId,
+            createdAt: row.createdAt,
+            runId: row.runId,
+            label: row.label,
+            summary: row.summary,
+            snapshot: row.snapshot,
+            fileChanges: row.fileChanges,
+          },
+        })
+        .run();
+    });
   }
 
   listCheckpoints(sessionId: string): Checkpoint[] {
-    const rows = this.db
-      .select()
-      .from(checkpoints)
-      .where(eq(checkpoints.sessionId, sessionId))
-      .orderBy(asc(checkpoints.createdAt), asc(checkpoints.id))
-      .all();
+    const rows = this.read((database) =>
+      database
+        .select()
+        .from(checkpoints)
+        .where(eq(checkpoints.sessionId, sessionId))
+        .orderBy(asc(checkpoints.createdAt), asc(checkpoints.id))
+        .all(),
+    );
     return rows.map((row) => this.toCheckpoint(row));
   }
 
@@ -318,17 +400,19 @@ export class SessionStore implements OnModuleDestroy {
     sessionId: string,
     checkpointId: string,
   ): Checkpoint | undefined {
-    const rows = this.db
-      .select()
-      .from(checkpoints)
-      .where(
-        and(
-          eq(checkpoints.sessionId, sessionId),
-          eq(checkpoints.id, checkpointId),
-        ),
-      )
-      .limit(1)
-      .all();
+    const rows = this.read((database) =>
+      database
+        .select()
+        .from(checkpoints)
+        .where(
+          and(
+            eq(checkpoints.sessionId, sessionId),
+            eq(checkpoints.id, checkpointId),
+          ),
+        )
+        .limit(1)
+        .all(),
+    );
     const row = rows[0];
     return row ? this.toCheckpoint(row) : undefined;
   }
@@ -336,9 +420,12 @@ export class SessionStore implements OnModuleDestroy {
   // Appends permission-audit entries for a session. Append-only: existing rows
   // are never touched. The `reason` is JSON-serialized (or NULL when absent). A
   // no-op for an empty batch.
-  appendAudit(sessionId: string, entries: PermissionAuditEntry[]): void {
+  appendAudit(
+    sessionId: string,
+    entries: PermissionAuditEntry[],
+  ): Promise<void> {
     if (entries.length === 0) {
-      return;
+      return Promise.resolve();
     }
     const rows = entries.map((entry) => ({
       sessionId,
@@ -348,49 +435,85 @@ export class SessionStore implements OnModuleDestroy {
       reason: entry.reason === undefined ? null : JSON.stringify(entry.reason),
       at: entry.at,
     }));
-    this.db.insert(audit).values(rows).run();
+    return this.write((database) => {
+      database.insert(audit).values(rows).run();
+    });
   }
 
   // Reads a session's audit trail in insertion order (ascending autoincrement
   // id), parsing each row back into a `PermissionAuditEntry`.
   listAudit(sessionId: string): PermissionAuditEntry[] {
-    const rows = this.db
-      .select()
-      .from(audit)
-      .where(eq(audit.sessionId, sessionId))
-      .orderBy(asc(audit.id))
-      .all();
+    const rows = this.read((database) =>
+      database
+        .select()
+        .from(audit)
+        .where(eq(audit.sessionId, sessionId))
+        .orderBy(asc(audit.id))
+        .all(),
+    );
     return rows.map((row) => this.toAuditEntry(row));
   }
 
-  deleteSession(sessionId: string): boolean {
-    const hadSession =
-      this.loadSnapshot(sessionId) !== undefined ||
-      this.loadSessionMetadata(sessionId) !== undefined ||
-      this.listCheckpoints(sessionId).length > 0 ||
-      this.listAudit(sessionId).length > 0;
-    this.handle.raw.transaction(() => {
-      this.db.delete(audit).where(eq(audit.sessionId, sessionId)).run();
+  deleteSession(sessionId: string): Promise<boolean> {
+    return this.write((database) => {
+      const hadSession =
+        database
+          .select({ id: sessions.id })
+          .from(sessions)
+          .where(eq(sessions.id, sessionId))
+          .limit(1)
+          .all().length > 0 ||
+        database
+          .select({ sessionId: sessionMetadata.sessionId })
+          .from(sessionMetadata)
+          .where(eq(sessionMetadata.sessionId, sessionId))
+          .limit(1)
+          .all().length > 0 ||
+        database
+          .select({ id: checkpoints.id })
+          .from(checkpoints)
+          .where(eq(checkpoints.sessionId, sessionId))
+          .limit(1)
+          .all().length > 0 ||
+        database
+          .select({ id: audit.id })
+          .from(audit)
+          .where(eq(audit.sessionId, sessionId))
+          .limit(1)
+          .all().length > 0;
+      database.delete(audit).where(eq(audit.sessionId, sessionId)).run();
       this.faultHooks.afterDeleteAudit?.();
-      this.db.delete(checkpoints).where(eq(checkpoints.sessionId, sessionId)).run();
-      this.db.delete(sessionMetadata).where(eq(sessionMetadata.sessionId, sessionId)).run();
-      this.db.delete(sessions).where(eq(sessions.id, sessionId)).run();
-    })();
-    return hadSession;
+      database
+        .delete(checkpoints)
+        .where(eq(checkpoints.sessionId, sessionId))
+        .run();
+      database
+        .delete(sessionMetadata)
+        .where(eq(sessionMetadata.sessionId, sessionId))
+        .run();
+      database.delete(sessions).where(eq(sessions.id, sessionId)).run();
+      return hadSession;
+    });
   }
 
-  deleteSessions(sessionIds: string[]): number {
+  deleteSessions(sessionIds: string[]): Promise<number> {
     if (sessionIds.length === 0) {
-      return 0;
+      return Promise.resolve(0);
     }
-    this.handle.raw.transaction(() => {
-      this.db.delete(audit).where(inArray(audit.sessionId, sessionIds)).run();
+    return this.write((database) => {
+      database.delete(audit).where(inArray(audit.sessionId, sessionIds)).run();
       this.faultHooks.afterDeleteAudit?.();
-      this.db.delete(checkpoints).where(inArray(checkpoints.sessionId, sessionIds)).run();
-      this.db.delete(sessionMetadata).where(inArray(sessionMetadata.sessionId, sessionIds)).run();
-      this.db.delete(sessions).where(inArray(sessions.id, sessionIds)).run();
-    })();
-    return sessionIds.length;
+      database
+        .delete(checkpoints)
+        .where(inArray(checkpoints.sessionId, sessionIds))
+        .run();
+      database
+        .delete(sessionMetadata)
+        .where(inArray(sessionMetadata.sessionId, sessionIds))
+        .run();
+      database.delete(sessions).where(inArray(sessions.id, sessionIds)).run();
+      return sessionIds.length;
+    });
   }
 
   private toAuditEntry(row: AuditRow): PermissionAuditEntry {
@@ -449,16 +572,10 @@ export class SessionStore implements OnModuleDestroy {
     };
   }
 
-  // Closes the underlying connection. Idempotent enough for shutdown — we only
-  // ever call it once via Nest's lifecycle (or a test's `finally`) so a second
-  // close on the raw bun:sqlite handle is never attempted.
+  // Store shutdown is logical only. The daemon-owned Provider closes the one
+  // physical business connection after all stores and services stop.
   close(): void {
     if (this.closed) return;
-    this.handle.raw.close();
     this.closed = true;
-  }
-
-  onModuleDestroy(): void {
-    this.close();
   }
 }

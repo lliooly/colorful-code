@@ -484,12 +484,12 @@ export class SessionsController {
   }
 
   @Patch(':id')
-  patch(
+  async patch(
     @Param('id') id: string,
     @Body() body: PatchSessionBody = {},
-  ): SessionSummary {
+  ): Promise<SessionSummary> {
     const pinned = validatePinned(body.pinned);
-    return this.sessions.updateSession(id, {
+    return await this.sessions.updateSession(id, {
       ...(pinned !== undefined ? { pinned } : {}),
     });
   }

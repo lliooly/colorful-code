@@ -23,6 +23,10 @@ import {
   type ModelClientFactory,
 } from '../src/sessions/model-factory';
 import { SessionStore } from '../src/persistence/session-store';
+import {
+  closeTestSessionStores,
+  createTestSessionStore,
+} from './support/test-session-store';
 
 const scriptedFactory: ModelClientFactory = (): ModelClient =>
   createScriptedModelClient([[{ type: 'text', text: 'ok' }]]);
@@ -34,7 +38,7 @@ const scriptedFactory: ModelClientFactory = (): ModelClient =>
     { provide: MODEL_CLIENT_FACTORY, useValue: scriptedFactory },
     {
       provide: SessionStore,
-      useFactory: () => SessionStore.openAt(':memory:'),
+      useFactory: () => createTestSessionStore(),
     },
   ],
 })
@@ -47,6 +51,7 @@ afterEach(async () => {
     await app.close();
     app = undefined;
   }
+  await closeTestSessionStores();
 });
 
 async function boot(): Promise<NestFastifyApplication> {

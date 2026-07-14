@@ -27,6 +27,10 @@ import {
   type ModelClientFactory,
 } from '../src/sessions/model-factory';
 import { SessionStore } from '../src/persistence/session-store';
+import {
+  closeTestSessionStores,
+  createTestSessionStore,
+} from './support/test-session-store';
 
 // ---------------------------------------------------------------------------
 // Test harness: boot the real Nest app on the Fastify platform in-process and
@@ -64,7 +68,7 @@ const scriptedFactory: ModelClientFactory = (): ModelClient =>
   providers: [
     SessionsService,
     { provide: MODEL_CLIENT_FACTORY, useValue: scriptedFactory },
-    { provide: SessionStore, useValue: SessionStore.openAt(':memory:') },
+    { provide: SessionStore, useFactory: createTestSessionStore },
   ],
 })
 class TestAppModule {}
@@ -96,7 +100,7 @@ const editFactory: ModelClientFactory = (): ModelClient =>
   providers: [
     SessionsService,
     { provide: MODEL_CLIENT_FACTORY, useValue: editFactory },
-    { provide: SessionStore, useValue: SessionStore.openAt(':memory:') },
+    { provide: SessionStore, useFactory: createTestSessionStore },
   ],
 })
 class EditFlowTestAppModule {}
@@ -124,6 +128,7 @@ afterEach(async () => {
     await app.close();
     app = undefined;
   }
+  await closeTestSessionStores();
 });
 
 function jsonBody<T>(response: { payload: string }): T {
