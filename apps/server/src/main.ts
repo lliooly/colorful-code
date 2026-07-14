@@ -50,9 +50,6 @@ export async function bootstrap(
     databasePath: serverEnvironment.databasePath,
     createProvider: createDatabaseProvider,
     createApplication: (databasePath, provider) => {
-      if (provider === undefined) {
-        throw new Error('Daemon did not initialize its DatabaseProvider');
-      }
       return dependencies.createNestApplication(
         {
           ...serverEnvironment,

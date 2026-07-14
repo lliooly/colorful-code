@@ -1,5 +1,9 @@
 import { strict as assert } from 'node:assert';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
+import { NestFactory } from '@nestjs/core';
 import {
   bootstrap,
   createNestApplication,
@@ -12,6 +16,7 @@ import { ConfigModule, SERVER_ENV } from '../src/config/config.module';
 import { DataDirectoryLockConflictError } from '../src/runtime/data-directory-instance-lock';
 import type { DaemonApplication } from '../src/runtime/daemon-lifecycle';
 import type { DatabaseProvider } from '../src/persistence/database-provider';
+import { createDatabaseProvider } from '../src/persistence/database-provider';
 import {
   DATABASE_PROVIDER,
   DatabaseProviderModule,
@@ -164,6 +169,26 @@ test('creates Nest from a dynamic AppModule carrying the exact resolved environm
     (provider) => provider.provide === DATABASE_PROVIDER,
   );
   assert.equal(databaseProviderBinding?.useValue, databaseProvider);
+});
+
+test('full AppModule resolves production stores from the daemon-owned Provider', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'colorful-code-app-module-'));
+  const environment = {
+    ...serverEnvironment,
+    databasePath: join(directory, 'database.sqlite'),
+  };
+  const provider = createDatabaseProvider(environment.databasePath);
+
+  try {
+    const context = await NestFactory.createApplicationContext(
+      AppModule.forRoot(environment, provider),
+      { abortOnError: false, logger: false },
+    );
+    await context.close();
+  } finally {
+    await provider.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('awaits the registered close callback through the Fastify onClose hook', async () => {

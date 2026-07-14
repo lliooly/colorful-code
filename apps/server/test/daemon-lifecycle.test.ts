@@ -9,7 +9,8 @@ import {
 } from '../src/runtime/data-directory-instance-lock';
 import {
   type DaemonApplication,
-  startDaemon,
+  startDaemon as startDaemonRuntime,
+  type StartDaemonOptions,
 } from '../src/runtime/daemon-lifecycle';
 import type { DatabaseProvider } from '../src/persistence/database-provider';
 
@@ -59,6 +60,16 @@ class FakeApplication implements DaemonApplication {
 
 function fakeProvider(close: () => Promise<void>): DatabaseProvider {
   return { close } as DatabaseProvider;
+}
+
+function startDaemon(
+  options: Omit<StartDaemonOptions, 'createProvider'> &
+    Partial<Pick<StartDaemonOptions, 'createProvider'>>,
+): Promise<DaemonApplication> {
+  return startDaemonRuntime({
+    createProvider: async () => fakeProvider(async () => undefined),
+    ...options,
+  });
 }
 
 test('owns migration, Provider, application, and lock in strict lifecycle order', async () => {

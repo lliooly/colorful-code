@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { basename, resolve } from 'node:path';
 import { and, asc, desc, eq, inArray } from 'drizzle-orm';
@@ -84,6 +84,7 @@ export class SessionStore {
 
   constructor(
     @Inject(DATABASE_PROVIDER) private readonly provider: DatabaseProvider,
+    @Optional()
     faultHooks: SessionStoreFaultHooks = {},
   ) {
     this.faultHooks = faultHooks;

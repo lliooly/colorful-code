@@ -17,12 +17,12 @@ export interface StartDaemonOptions {
   databasePath: string;
   acquireLock?: (dataDirectory: string) => Promise<InstanceLockHandle>;
   migrateDatabase?: (databasePath: string) => void | Promise<void>;
-  createProvider?: (
+  createProvider: (
     databasePath: string,
   ) => DatabaseProvider | Promise<DatabaseProvider>;
   createApplication: (
     databasePath: string,
-    provider?: DatabaseProvider,
+    provider: DatabaseProvider,
   ) => Promise<DaemonApplication>;
 }
 
@@ -43,18 +43,17 @@ export async function startDaemon(
     releaseCoordinator = createReleaseCoordinator(lock);
     const lockReleaseCoordinator = releaseCoordinator;
     await migrateDatabase(resolvedPath.databasePath);
-    const provider = await options.createProvider?.(resolvedPath.databasePath);
-    if (provider !== undefined) {
-      providerCloseCoordinator = createReleaseCoordinator({
-        release: () => provider.close(),
-      });
-    }
+    const provider = await options.createProvider(resolvedPath.databasePath);
+    providerCloseCoordinator = createReleaseCoordinator({
+      release: () => provider.close(),
+    });
+    const closeProviderCoordinator = providerCloseCoordinator;
     application = await options.createApplication(
       resolvedPath.databasePath,
       provider,
     );
     application.onClose(async () => {
-      await providerCloseCoordinator?.release();
+      await closeProviderCoordinator.release();
       await lockReleaseCoordinator.release();
     });
     await application.listen();

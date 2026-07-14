@@ -95,7 +95,19 @@ test('Provider internals and test hooks cannot leak into production business cod
 test('business writes use synchronous transaction callbacks and database time', () => {
   const files = sourceFiles();
   assert.deepEqual(
-    violations(files, /\.transaction\s*\(\s*async\b/, new Set()),
+    violations(files, /\.transaction(?:<[^>]+>)?\s*\(\s*async\b/, new Set()),
+    [],
+  );
+  assert.deepEqual(
+    violations(
+      files,
+      /\b(?:database|db)\s*\.\s*(?:insert|update|delete)\s*\(/,
+      new Set([
+        'persistence/migration-framework.ts',
+        'persistence/session-store.ts',
+        'plugins/plugin-store.ts',
+      ]),
+    ),
     [],
   );
   assert.deepEqual(
@@ -113,5 +125,23 @@ test('business writes use synchronous transaction callbacks and database time', 
     const file = files.find((candidate) => candidate.path === path);
     assert.ok(file);
     assert.doesNotMatch(file.source, /Date\.now\s*\(/);
+  }
+});
+
+test('business transaction owners cannot acquire external side-effect capabilities', () => {
+  const files = sourceFiles();
+  const transactionOwners = files.filter(({ source }) =>
+    /\bprovider\.transaction(?:<[^>]+>)?\s*\(/.test(source),
+  );
+  assert.deepEqual(transactionOwners.map(({ path }) => path).sort(), [
+    'persistence/session-store.ts',
+    'plugins/plugin-store.ts',
+  ]);
+  for (const { path, source } of transactionOwners) {
+    assert.doesNotMatch(
+      source,
+      /(?:from\s+['"]node:(?:fs|fs\/promises|child_process|http|https|net)['"]|\bfetch\s*\()/,
+      `${path} must not acquire filesystem, process, or network capabilities`,
+    );
   }
 });
