@@ -1,0 +1,4 @@
+exports_files(
+    ["run-task.sh"],
+    visibility = ["//visibility:public"],
+)

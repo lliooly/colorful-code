@@ -1,2 +1,3 @@
 build --enable_bzlmod
 common --announce_rc
+run --action_env=NEXT_PUBLIC_API_BASE_URL

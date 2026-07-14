@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_TASK="$(cd "$SCRIPT_DIR/.." && pwd)/run-task.sh"
+WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
@@ -50,6 +51,26 @@ assert_stderr_equals() {
   local actual="$2"
   local context="$3"
   [[ "$actual" == "$expected" ]] || fail "$context: expected stderr [$expected], got [$actual]"
+}
+
+assert_file_content_equals() {
+  local expected="$1"
+  local file="$2"
+  local context="$3"
+  local actual
+  [[ -f "$file" ]] || fail "$context: missing file $file"
+  actual="$(cat "$file")"
+  [[ "$actual" == "$expected" ]] || fail "$context: unexpected declarations in $file"
+}
+
+assert_active_lines_equal() {
+  local expected="$1"
+  local file="$2"
+  local context="$3"
+  local actual
+  [[ -f "$file" ]] || fail "$context: missing file $file"
+  actual="$(awk 'NF && $1 !~ /^#/' "$file")"
+  [[ "$actual" == "$expected" ]] || fail "$context: unexpected active configuration in $file"
 }
 
 run_adapter() {
@@ -137,5 +158,24 @@ assert_status 23 "$status" "pnpm exit status"
 assert_stderr_equals "" "$(cat "$TMP_DIR/stderr")" "pnpm exit status"
 pass_count=$((pass_count + 1))
 printf 'ok - pnpm exit status propagated\n'
+
+expected_root_build=$'def _task(name, task):\n    native.sh_binary(\n        name = name,\n        srcs = ["//bazel:run-task.sh"],\n        args = [task],\n        visibility = ["//visibility:public"],\n    )\n\n_task(name = "build", task = "build")\n_task(name = "lint", task = "lint")\n_task(name = "typecheck", task = "typecheck")\n_task(name = "test", task = "test")\n_task(name = "desktop-sidecar", task = "desktop-sidecar")\n_task(name = "desktop-check", task = "desktop-check")\n_task(name = "desktop-test", task = "desktop-test")'
+assert_file_content_equals "$expected_root_build" "$WORKSPACE_ROOT/BUILD.bazel" "root orchestration targets"
+pass_count=$((pass_count + 1))
+printf 'ok - exactly seven orchestration targets share the adapter\n'
+
+expected_bazel_build=$'exports_files(\n    ["run-task.sh"],\n    visibility = ["//visibility:public"],\n)'
+assert_file_content_equals "$expected_bazel_build" "$WORKSPACE_ROOT/bazel/BUILD.bazel" "adapter export"
+pass_count=$((pass_count + 1))
+printf 'ok - adapter is exported publicly\n'
+
+assert_file_content_equals '9.1.0' "$WORKSPACE_ROOT/.bazelversion" "Bazel version"
+pass_count=$((pass_count + 1))
+printf 'ok - Bazel version is pinned\n'
+
+expected_bazelrc=$'build --enable_bzlmod\ncommon --announce_rc\nrun --action_env=NEXT_PUBLIC_API_BASE_URL'
+assert_active_lines_equal "$expected_bazelrc" "$WORKSPACE_ROOT/.bazelrc" "Bazel rc"
+pass_count=$((pass_count + 1))
+printf 'ok - Bazel rc contains only required settings\n'
 
 printf '%s tests passed\n' "$pass_count"
