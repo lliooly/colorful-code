@@ -22,6 +22,11 @@ import {
 import { PluginStore } from '../src/plugins/plugin-store';
 import { PluginsController } from '../src/plugins/plugins.controller';
 import { PluginsService } from '../src/plugins/plugins.service';
+import { FixedDatabaseClock } from '../src/persistence/database-clock';
+import {
+  closeTestPluginStores,
+  createTestPluginStore,
+} from './support/test-plugin-store';
 
 const registryServer = {
   name: 'io.example/demo',
@@ -54,7 +59,7 @@ const fakeRegistryClient: McpRegistryClient = {
   controllers: [PluginsController],
   providers: [
     PluginsService,
-    { provide: PluginStore, useFactory: () => PluginStore.openAt(':memory:') },
+    { provide: PluginStore, useFactory: createTestPluginStore },
     { provide: PLUGIN_REGISTRY_CLIENT, useValue: fakeRegistryClient },
   ],
 })
@@ -77,6 +82,7 @@ afterEach(async () => {
     await app.close();
     app = undefined;
   }
+  await closeTestPluginStores();
 });
 
 test('deriveMcpConfigFromRegistryServer maps npm stdio packages to npx', () => {
@@ -198,98 +204,101 @@ test('deriveMcpConfigFromRegistryServer rejects unsupported packages', () => {
   );
 });
 
-test('PluginStore persists installed plugins and updates enabled/trust fields', () => {
-  const store = PluginStore.openAt(':memory:');
-  try {
-    const installed = store.installMcpPlugin({
-      registryName: 'io.example/demo',
-      title: 'Demo MCP',
-      description: 'Demo server',
-      version: '1.0.0',
-      config: {
-        type: 'stdio',
-        command: 'npx',
-        args: ['-y', '@example/demo-mcp'],
-        trust: 'ask',
-      },
-    });
-
-    assert.equal(store.listInstalled().length, 1);
-    assert.equal(store.enabledMcpServers()['io-example-demo']?.trust, 'ask');
-
-    const patched = store.updateInstalled(installed.id, {
-      enabled: false,
-      trust: 'trusted',
-    });
-    assert.equal(patched.enabled, false);
-    assert.equal(patched.config.trust, 'trusted');
-    assert.deepEqual(store.enabledMcpServers(), {});
-
-    assert.equal(store.deleteInstalled(installed.id), true);
-    assert.deepEqual(store.listInstalled(), []);
-  } finally {
-    store.close();
-  }
-});
-
-test('PluginStore keeps enabled MCP server keys unique across registry namespaces', () => {
-  const store = PluginStore.openAt(':memory:');
-  try {
-    const config = {
+test('PluginStore persists installed plugins and updates enabled/trust fields', async () => {
+  const store = createTestPluginStore();
+  const installed = await store.installMcpPlugin({
+    registryName: 'io.example/demo',
+    title: 'Demo MCP',
+    description: 'Demo server',
+    version: '1.0.0',
+    config: {
       type: 'stdio',
       command: 'npx',
-      args: ['-y', '@example/github-mcp'],
+      args: ['-y', '@example/demo-mcp'],
       trust: 'ask',
-    } as const;
-    store.installMcpPlugin({
-      registryName: 'io.foo/github',
-      version: '1.0.0',
-      config,
-    });
-    store.installMcpPlugin({
-      registryName: 'io.bar/github',
-      version: '1.0.0',
-      config,
-    });
+    },
+  });
 
-    assert.deepEqual(Object.keys(store.enabledMcpServers()).sort(), [
-      'io-bar-github',
-      'io-foo-github',
-    ]);
-  } finally {
-    store.close();
-  }
+  assert.equal(store.listInstalled().length, 1);
+  assert.equal(store.enabledMcpServers()['io-example-demo']?.trust, 'ask');
+
+  const patched = await store.updateInstalled(installed.id, {
+    enabled: false,
+    trust: 'trusted',
+  });
+  assert.equal(patched.enabled, false);
+  assert.equal(patched.config.trust, 'trusted');
+  assert.deepEqual(store.enabledMcpServers(), {});
+
+  assert.equal(await store.deleteInstalled(installed.id), true);
+  assert.deepEqual(store.listInstalled(), []);
 });
 
-test('PluginStore keeps enabled LSP server keys unique across registry namespaces', () => {
-  const store = PluginStore.openAt(':memory:');
-  try {
-    const config = {
-      command: 'typescript-language-server',
-      args: ['--stdio'],
-      language: 'typescript',
-      fileExtensions: ['.ts', '.tsx'],
-    } as const;
-    store.installCatalogPlugin({
-      kind: 'lsp',
-      registryName: 'io.foo/typescript',
-      version: 'latest',
-      config,
-    });
-    store.installCatalogPlugin({
-      kind: 'lsp',
-      registryName: 'io.bar/typescript',
-      version: 'latest',
-      config,
-    });
+test('PluginStore uses the injected database Clock for persistent timestamps', async () => {
+  const now = 1_782_777_123_456;
+  const store = createTestPluginStore(new FixedDatabaseClock(now));
 
-    assert.deepEqual(Object.keys(store.enabledLspServers()).sort(), [
-      'io-bar-typescript',
-      'io-foo-typescript',
-    ]);
-  } finally {
-    store.close();
-  }
+  const installed = await store.installMcpPlugin({
+    registryName: 'io.example/clock',
+    version: '1.0.0',
+    config: { type: 'stdio', command: 'clock-server', trust: 'ask' },
+  });
+
+  assert.equal(installed.installedAt, now);
+  assert.equal(installed.updatedAt, now);
+  assert.equal(store.load(installed.id)?.updatedAt, now);
+});
+
+test('PluginStore keeps enabled MCP server keys unique across registry namespaces', async () => {
+  const store = createTestPluginStore();
+  const config = {
+    type: 'stdio',
+    command: 'npx',
+    args: ['-y', '@example/github-mcp'],
+    trust: 'ask',
+  } as const;
+  await store.installMcpPlugin({
+    registryName: 'io.foo/github',
+    version: '1.0.0',
+    config,
+  });
+  await store.installMcpPlugin({
+    registryName: 'io.bar/github',
+    version: '1.0.0',
+    config,
+  });
+
+  assert.deepEqual(Object.keys(store.enabledMcpServers()).sort(), [
+    'io-bar-github',
+    'io-foo-github',
+  ]);
+});
+
+test('PluginStore keeps enabled LSP server keys unique across registry namespaces', async () => {
+  const store = createTestPluginStore();
+  const config = {
+    command: 'typescript-language-server',
+    args: ['--stdio'],
+    language: 'typescript',
+    fileExtensions: ['.ts', '.tsx'],
+  } as const;
+  await store.installCatalogPlugin({
+    kind: 'lsp',
+    registryName: 'io.foo/typescript',
+    version: 'latest',
+    config,
+  });
+  await store.installCatalogPlugin({
+    kind: 'lsp',
+    registryName: 'io.bar/typescript',
+    version: 'latest',
+    config,
+  });
+
+  assert.deepEqual(Object.keys(store.enabledLspServers()).sort(), [
+    'io-bar-typescript',
+    'io-foo-typescript',
+  ]);
 });
 
 test('curated catalogs expose skill and LSP plugin entries', () => {
@@ -300,45 +309,41 @@ test('curated catalogs expose skill and LSP plugin entries', () => {
   assert.ok(listLspCatalog().some((item) => item.kind === 'lsp'));
 });
 
-test('PluginStore persists skill and LSP plugins separately', () => {
-  const store = PluginStore.openAt(':memory:');
-  try {
-    const skill = store.installCatalogPlugin({
-      kind: 'skill',
-      registryName: 'github:colorful-code/skills/code-review',
-      title: 'Code Review Skill',
-      version: 'latest',
-      config: {
-        type: 'skill',
-        source: 'github',
-        repository: 'colorful-code/skills',
-        path: 'code-review',
-        entry: 'SKILL.md',
-        installHint: 'Install into a configured skill root.',
-      },
-    });
-    const lsp = store.installCatalogPlugin({
-      kind: 'lsp',
-      registryName: 'typescript-language-server',
-      title: 'TypeScript LSP',
-      version: 'latest',
-      config: {
-        command: 'typescript-language-server',
-        args: ['--stdio'],
-        language: 'typescript',
-        fileExtensions: ['.ts', '.tsx', '.js', '.jsx'],
-      },
-    });
+test('PluginStore persists skill and LSP plugins separately', async () => {
+  const store = createTestPluginStore();
+  const skill = await store.installCatalogPlugin({
+    kind: 'skill',
+    registryName: 'github:colorful-code/skills/code-review',
+    title: 'Code Review Skill',
+    version: 'latest',
+    config: {
+      type: 'skill',
+      source: 'github',
+      repository: 'colorful-code/skills',
+      path: 'code-review',
+      entry: 'SKILL.md',
+      installHint: 'Install into a configured skill root.',
+    },
+  });
+  const lsp = await store.installCatalogPlugin({
+    kind: 'lsp',
+    registryName: 'typescript-language-server',
+    title: 'TypeScript LSP',
+    version: 'latest',
+    config: {
+      command: 'typescript-language-server',
+      args: ['--stdio'],
+      language: 'typescript',
+      fileExtensions: ['.ts', '.tsx', '.js', '.jsx'],
+    },
+  });
 
-    assert.equal(skill.kind, 'skill');
-    assert.equal(lsp.kind, 'lsp');
-    assert.equal(
-      store.enabledLspServers()['typescript-language-server']?.command,
-      'typescript-language-server',
-    );
-  } finally {
-    store.close();
-  }
+  assert.equal(skill.kind, 'skill');
+  assert.equal(lsp.kind, 'lsp');
+  assert.equal(
+    store.enabledLspServers()['typescript-language-server']?.command,
+    'typescript-language-server',
+  );
 });
 
 test('plugins API installs, lists, patches, and deletes MCP plugins', async () => {

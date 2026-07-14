@@ -1,17 +1,21 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { createScriptedModelClient, type SessionEvent } from '@colorful-code/tool-runtime';
-import { SessionStore } from '../src/persistence/session-store';
+import {
+  createScriptedModelClient,
+  type SessionEvent,
+} from '@colorful-code/tool-runtime';
 import { ModelSelectionError } from '../src/sessions/model-factory';
 import { SessionsService } from '../src/sessions/sessions.service';
+import {
+  closeTestSessionStores,
+  createTestSessionStore,
+} from './support/test-session-store';
 
 test('submit emits a model-config error correlated to the session when no run starts', async () => {
-  const service = new SessionsService(
-    () => {
-      throw new ModelSelectionError('No API key configured for test model.');
-    },
-    SessionStore.openAt(':memory:'),
-  );
+  const store = createTestSessionStore();
+  const service = new SessionsService(() => {
+    throw new ModelSelectionError('No API key configured for test model.');
+  }, store);
 
   const { id, needsModelConfig } = await service.create();
   assert.equal(needsModelConfig, true);
@@ -31,17 +35,24 @@ test('submit emits a model-config error correlated to the session when no run st
   } finally {
     subscription.unsubscribe();
     await service.dispose(id);
-    service.onModuleDestroy();
+    await service.onModuleDestroy();
+    await closeTestSessionStores();
   }
 });
 
 test('configureModel replaces the client used by an already configured session', async () => {
+  const store = createTestSessionStore();
   const service = new SessionsService(
     ({ selection }) =>
       createScriptedModelClient([
-        [{ type: 'text', text: selection?.model === 'new-model' ? 'new' : 'old' }],
+        [
+          {
+            type: 'text',
+            text: selection?.model === 'new-model' ? 'new' : 'old',
+          },
+        ],
       ]),
-    SessionStore.openAt(':memory:'),
+    store,
   );
   const { id } = await service.create();
   service.configureModel(id, {
@@ -53,18 +64,22 @@ test('configureModel replaces the client used by an already configured session',
   const completed = new Promise<void>((resolve) => {
     service.events(id).subscribe((event) => {
       seen.push(event);
-      if (event.type === 'run_status' && event.status === 'completed') resolve();
+      if (event.type === 'run_status' && event.status === 'completed')
+        resolve();
     });
   });
   service.submit(id, 'Hello');
   await completed;
-  assert.ok(seen.some((event) => event.type === 'message' && event.content === 'new'));
+  assert.ok(
+    seen.some((event) => event.type === 'message' && event.content === 'new'),
+  );
   await service.dispose(id);
-  service.onModuleDestroy();
+  await service.onModuleDestroy();
+  await closeTestSessionStores();
 });
 
 test('dispose skips final persistence after the store has already closed', async () => {
-  const store = SessionStore.openAt(':memory:');
+  const store = createTestSessionStore();
   const service = new SessionsService(
     () => createScriptedModelClient([[{ type: 'text', text: 'ok' }]]),
     store,
@@ -79,11 +94,12 @@ test('dispose skips final persistence after the store has already closed', async
     assert.deepEqual(errors, []);
   } finally {
     console.error = originalError;
+    await closeTestSessionStores();
   }
 });
 
 test('failed audit append remains pending and succeeds exactly once on retry', async () => {
-  const store = SessionStore.openAt(':memory:');
+  const store = createTestSessionStore();
   const service = new SessionsService(
     () => createScriptedModelClient([[{ type: 'text', text: 'ok' }]]),
     store,
@@ -113,27 +129,28 @@ test('failed audit append remains pending and succeeds exactly once on retry', a
   });
   const appendAudit = store.appendAudit.bind(store);
   let attempts = 0;
-  store.appendAudit = (sessionId, entries) => {
+  store.appendAudit = async (sessionId, entries) => {
     attempts += 1;
     if (attempts === 1) throw new Error('injected audit failure');
-    appendAudit(sessionId, entries);
+    await appendAudit(sessionId, entries);
   };
   const persist = (
     service as unknown as {
-      persist(session: unknown, pending: unknown[]): void;
+      persist(session: unknown, pending: unknown[]): Promise<void>;
     }
   ).persist.bind(service);
   const originalError = console.error;
   console.error = () => undefined;
   try {
-    persist(entry.session, entry.pendingAudit);
+    await persist(entry.session, entry.pendingAudit);
     assert.equal(entry.pendingAudit.length, 1);
-    persist(entry.session, entry.pendingAudit);
+    await persist(entry.session, entry.pendingAudit);
     assert.equal(entry.pendingAudit.length, 0);
     assert.equal(store.listAudit(id).length, 1);
   } finally {
     console.error = originalError;
     await service.dispose(id);
-    service.onModuleDestroy();
+    await service.onModuleDestroy();
+    await closeTestSessionStores();
   }
 });

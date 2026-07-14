@@ -1,4 +1,5 @@
 import { resolveDatabasePath } from '../persistence/database-path';
+import type { DatabaseProvider } from '../persistence/database-provider';
 import { bootstrapMigrations } from '../persistence/migration-bootstrap';
 import { DataDirectoryInstanceLock } from './data-directory-instance-lock';
 
@@ -16,7 +17,13 @@ export interface StartDaemonOptions {
   databasePath: string;
   acquireLock?: (dataDirectory: string) => Promise<InstanceLockHandle>;
   migrateDatabase?: (databasePath: string) => void | Promise<void>;
-  createApplication: (databasePath: string) => Promise<DaemonApplication>;
+  createProvider?: (
+    databasePath: string,
+  ) => DatabaseProvider | Promise<DatabaseProvider>;
+  createApplication: (
+    databasePath: string,
+    provider?: DatabaseProvider,
+  ) => Promise<DaemonApplication>;
 }
 
 export async function startDaemon(
@@ -28,14 +35,28 @@ export async function startDaemon(
     DataDirectoryInstanceLock.acquire.bind(DataDirectoryInstanceLock);
   const migrateDatabase = options.migrateDatabase ?? bootstrapMigrations;
   let releaseCoordinator: ReleaseCoordinator | undefined;
+  let providerCloseCoordinator: ReleaseCoordinator | undefined;
   let application: DaemonApplication | undefined;
 
   try {
     const lock = await acquireLock(resolvedPath.dataDirectory);
     releaseCoordinator = createReleaseCoordinator(lock);
+    const lockReleaseCoordinator = releaseCoordinator;
     await migrateDatabase(resolvedPath.databasePath);
-    application = await options.createApplication(resolvedPath.databasePath);
-    application.onClose(releaseCoordinator.release);
+    const provider = await options.createProvider?.(resolvedPath.databasePath);
+    if (provider !== undefined) {
+      providerCloseCoordinator = createReleaseCoordinator({
+        release: () => provider.close(),
+      });
+    }
+    application = await options.createApplication(
+      resolvedPath.databasePath,
+      provider,
+    );
+    application.onClose(async () => {
+      await providerCloseCoordinator?.release();
+      await lockReleaseCoordinator.release();
+    });
     await application.listen();
     return application;
   } catch (startupError) {
@@ -50,15 +71,34 @@ export async function startDaemon(
         errors.push(closeError);
       }
     }
-    try {
-      const releaseAttempt =
-        releaseCoordinator.attemptCount > releaseAttemptsBeforeClose
-          ? releaseCoordinator.lastAttempt!
-          : releaseCoordinator.release();
-      await releaseAttempt;
-    } catch (releaseError) {
-      if (!errors.some((error) => errorContainsIdentity(error, releaseError))) {
-        errors.push(releaseError);
+    let providerClosed = true;
+    if (providerCloseCoordinator !== undefined) {
+      try {
+        await providerCloseCoordinator.release();
+      } catch (providerCloseError) {
+        providerClosed = false;
+        if (
+          !errors.some((error) =>
+            errorContainsIdentity(error, providerCloseError),
+          )
+        ) {
+          errors.push(providerCloseError);
+        }
+      }
+    }
+    if (providerClosed) {
+      try {
+        const releaseAttempt =
+          releaseCoordinator.attemptCount > releaseAttemptsBeforeClose
+            ? releaseCoordinator.lastAttempt!
+            : releaseCoordinator.release();
+        await releaseAttempt;
+      } catch (releaseError) {
+        if (
+          !errors.some((error) => errorContainsIdentity(error, releaseError))
+        ) {
+          errors.push(releaseError);
+        }
       }
     }
 

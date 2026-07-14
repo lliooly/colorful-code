@@ -20,6 +20,10 @@ import {
   type ModelClientFactory,
 } from '../src/sessions/model-factory';
 import { SessionStore } from '../src/persistence/session-store';
+import {
+  closeTestSessionStores,
+  createTestSessionStore,
+} from './support/test-session-store';
 
 const fixtureServer = {
   command: process.execPath,
@@ -40,7 +44,11 @@ const scriptedFactory: ModelClientFactory = (): ModelClient =>
         type: 'tool_use',
         toolUseId: 'lsp-call-1',
         name: 'LSPGoToDefinition',
-        input: { file: join(process.cwd(), 'test/sample.ts'), line: 0, character: 1 },
+        input: {
+          file: join(process.cwd(), 'test/sample.ts'),
+          line: 0,
+          character: 1,
+        },
       },
     ],
     [{ type: 'text', text: 'LSP call completed.' }],
@@ -51,7 +59,7 @@ const scriptedFactory: ModelClientFactory = (): ModelClient =>
   providers: [
     SessionsService,
     { provide: MODEL_CLIENT_FACTORY, useValue: scriptedFactory },
-    { provide: SessionStore, useValue: SessionStore.openAt(':memory:') },
+    { provide: SessionStore, useFactory: createTestSessionStore },
   ],
 })
 class TestAppModule {}
@@ -73,6 +81,7 @@ afterEach(async () => {
     await app.close();
     app = undefined;
   }
+  await closeTestSessionStores();
 });
 
 async function waitFor(
@@ -108,7 +117,11 @@ test('POST /sessions rejects malformed LSP config with 400', async () => {
     url: '/sessions',
     payload: {
       lspServers: {
-        fixture: { command: '', language: 'typescript', fileExtensions: ['.ts'] },
+        fixture: {
+          command: '',
+          language: 'typescript',
+          fileExtensions: ['.ts'],
+        },
       },
     },
   });
@@ -137,15 +150,12 @@ test('session-created LSP tools are registered and callable by the model', async
     id,
     (event) => event.type === 'lsp_status',
   );
-  assert.deepEqual(
-    status.type === 'lsp_status' && status.servers[0],
-    {
-      name: 'fixture',
-      language: 'typescript',
-      fileExtensions: ['.ts'],
-      status: 'connected',
-    },
-  );
+  assert.deepEqual(status.type === 'lsp_status' && status.servers[0], {
+    name: 'fixture',
+    language: 'typescript',
+    fileExtensions: ['.ts'],
+    status: 'connected',
+  });
 
   service.submit(id, 'call the fixture LSP server');
   const call = await waitFor(

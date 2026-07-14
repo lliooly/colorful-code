@@ -11,6 +11,13 @@ import { AppModule } from '../src/app.module';
 import { ConfigModule, SERVER_ENV } from '../src/config/config.module';
 import { DataDirectoryLockConflictError } from '../src/runtime/data-directory-instance-lock';
 import type { DaemonApplication } from '../src/runtime/daemon-lifecycle';
+import type { DatabaseProvider } from '../src/persistence/database-provider';
+import {
+  DATABASE_PROVIDER,
+  DatabaseProviderModule,
+} from '../src/persistence/database-provider.module';
+
+const databaseProvider = {} as DatabaseProvider;
 
 const application: DaemonApplication = {
   listen: async () => undefined,
@@ -38,7 +45,8 @@ test('bootstrap delegates application creation exclusively to startDaemon', asyn
   const dependencies: BootstrapDependencies = {
     loadDevelopmentEnvFiles: () => events.push('load-env-files'),
     loadEnvironment: () => serverEnvironment,
-    createNestApplication: async () => {
+    createNestApplication: async (_environment, provider) => {
+      assert.equal(provider, databaseProvider);
       events.push('create-nest-app');
       return application;
     },
@@ -48,6 +56,7 @@ test('bootstrap delegates application creation exclusively to startDaemon', asyn
       assert.deepEqual(events, ['load-env-files', 'start-daemon']);
       const created = await options.createApplication(
         '/tmp/colorful-code/resolved-main-test.sqlite',
+        databaseProvider,
       );
       assert.equal(created, application);
       return created;
@@ -69,12 +78,16 @@ test('bootstrap passes the resolved daemon database path into Nest environment',
   const dependencies: BootstrapDependencies = {
     loadDevelopmentEnvFiles: () => undefined,
     loadEnvironment: () => serverEnvironment,
-    createNestApplication: async (environment) => {
+    createNestApplication: async (environment, provider) => {
+      assert.equal(provider, databaseProvider);
       receivedEnvironment = environment;
       return application;
     },
     startDaemon: async (options) =>
-      options.createApplication('/tmp/colorful-code/resolved.sqlite'),
+      options.createApplication(
+        '/tmp/colorful-code/resolved.sqlite',
+        databaseProvider,
+      ),
   };
 
   await bootstrap(dependencies);
@@ -100,6 +113,7 @@ test('creates Nest with abortOnError disabled so startup cleanup can run', async
 
   await createNestApplication(
     serverEnvironment,
+    databaseProvider,
     async (_module, _adapter, options) => {
       factoryOptions = options;
       return nestApplication;
@@ -119,10 +133,14 @@ test('creates Nest from a dynamic AppModule carrying the exact resolved environm
     close: async () => undefined,
   } as unknown as NestFastifyApplication;
 
-  await createNestApplication(serverEnvironment, async (module) => {
-    receivedModule = module;
-    return nestApplication;
-  });
+  await createNestApplication(
+    serverEnvironment,
+    databaseProvider,
+    async (module) => {
+      receivedModule = module;
+      return nestApplication;
+    },
+  );
 
   const appDynamicModule = receivedModule as {
     module?: unknown;
@@ -139,6 +157,13 @@ test('creates Nest from a dynamic AppModule carrying the exact resolved environm
     (provider) => provider.provide === SERVER_ENV,
   );
   assert.equal(environmentProvider?.useValue, serverEnvironment);
+  const databaseDynamicModule = appDynamicModule.imports?.find(
+    (entry) => entry.module === DatabaseProviderModule,
+  );
+  const databaseProviderBinding = databaseDynamicModule?.providers?.find(
+    (provider) => provider.provide === DATABASE_PROVIDER,
+  );
+  assert.equal(databaseProviderBinding?.useValue, databaseProvider);
 });
 
 test('awaits the registered close callback through the Fastify onClose hook', async () => {
@@ -157,6 +182,7 @@ test('awaits the registered close callback through the Fastify onClose hook', as
 
   const daemonApplication = await createNestApplication(
     serverEnvironment,
+    databaseProvider,
     async (_module, adapter) => {
       closeAdapter = () => adapter.close();
       return nestApplication;

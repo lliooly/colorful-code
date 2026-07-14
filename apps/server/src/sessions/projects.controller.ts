@@ -47,7 +47,7 @@ export class ProjectsController {
   }
 
   @Post()
-  importProject(@Body() body: ImportProjectBody = {}): ProjectRecord {
+  importProject(@Body() body: ImportProjectBody = {}): Promise<ProjectRecord> {
     return this.store.upsertProject(validateProjectPath(body.path));
   }
 

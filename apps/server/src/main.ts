@@ -12,6 +12,10 @@ import {
 } from './config/environment';
 import { buildCorsOptions } from './config/cors';
 import type { ServerEnvironment } from './config/environment';
+import {
+  createDatabaseProvider,
+  type DatabaseProvider,
+} from './persistence/database-provider';
 import { DataDirectoryLockConflictError } from './runtime/data-directory-instance-lock';
 import {
   type DaemonApplication,
@@ -24,6 +28,7 @@ export interface BootstrapDependencies {
   loadEnvironment: () => ServerEnvironment;
   createNestApplication: (
     environment: ServerEnvironment,
+    provider: DatabaseProvider,
   ) => Promise<DaemonApplication>;
   startDaemon: (options: StartDaemonOptions) => Promise<DaemonApplication>;
 }
@@ -43,11 +48,19 @@ export async function bootstrap(
 
   return dependencies.startDaemon({
     databasePath: serverEnvironment.databasePath,
-    createApplication: (databasePath) =>
-      dependencies.createNestApplication({
-        ...serverEnvironment,
-        databasePath,
-      }),
+    createProvider: createDatabaseProvider,
+    createApplication: (databasePath, provider) => {
+      if (provider === undefined) {
+        throw new Error('Daemon did not initialize its DatabaseProvider');
+      }
+      return dependencies.createNestApplication(
+        {
+          ...serverEnvironment,
+          databasePath,
+        },
+        provider,
+      );
+    },
   });
 }
 
@@ -59,13 +72,14 @@ export type NestApplicationCreator = (
 
 export async function createNestApplication(
   serverEnvironment: ServerEnvironment,
+  provider: DatabaseProvider,
   createApplication: NestApplicationCreator = (module, adapter, options) =>
     NestFactory.create<NestFastifyApplication>(module, adapter, options),
 ): Promise<DaemonApplication> {
   const adapter = new FastifyAdapter();
 
   const app = await createApplication(
-    AppModule.forRoot(serverEnvironment),
+    AppModule.forRoot(serverEnvironment, provider),
     adapter,
     {
       abortOnError: false,

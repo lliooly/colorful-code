@@ -21,6 +21,14 @@ import {
   type ModelClientFactory,
 } from '../src/sessions/model-factory';
 import { SessionStore } from '../src/persistence/session-store';
+import {
+  closeTestSessionStores,
+  createTestSessionStore,
+} from './support/test-session-store';
+import {
+  closeTestPluginStores,
+  createTestPluginStore,
+} from './support/test-plugin-store';
 
 const fixtureServer = {
   type: 'stdio',
@@ -44,9 +52,9 @@ const scriptedFactory: ModelClientFactory = (): ModelClient =>
     { provide: MODEL_CLIENT_FACTORY, useValue: scriptedFactory },
     {
       provide: SessionStore,
-      useFactory: () => SessionStore.openAt(':memory:'),
+      useFactory: () => createTestSessionStore(),
     },
-    { provide: PluginStore, useFactory: () => PluginStore.openAt(':memory:') },
+    { provide: PluginStore, useFactory: createTestPluginStore },
   ],
 })
 class TestAppModule {}
@@ -68,6 +76,8 @@ afterEach(async () => {
     await app.close();
     app = undefined;
   }
+  await closeTestSessionStores();
+  await closeTestPluginStores();
 });
 
 async function waitFor(
@@ -112,7 +122,7 @@ test('sessions merge enabled installed MCP plugins', async () => {
   const pluginStore = app.get(PluginStore);
   const service = app.get(SessionsService);
 
-  pluginStore.installMcpPlugin({
+  await pluginStore.installMcpPlugin({
     registryName: 'io.example/fixture',
     title: 'Fixture',
     version: '1.0.0',
@@ -141,13 +151,13 @@ test('sessions exclude disabled installed MCP plugins', async () => {
   const pluginStore = app.get(PluginStore);
   const service = app.get(SessionsService);
 
-  const installed = pluginStore.installMcpPlugin({
+  const installed = await pluginStore.installMcpPlugin({
     registryName: 'io.example/fixture',
     title: 'Fixture',
     version: '1.0.0',
     config: fixtureServer,
   });
-  pluginStore.updateInstalled(installed.id, { enabled: false });
+  await pluginStore.updateInstalled(installed.id, { enabled: false });
 
   const { id } = await service.create();
   const entry = (await collectReplay(service, id)).find(
@@ -162,7 +172,7 @@ test('sessions report failed installed MCP plugins instead of hiding them', asyn
   const pluginStore = app.get(PluginStore);
   const service = app.get(SessionsService);
 
-  pluginStore.installMcpPlugin({
+  await pluginStore.installMcpPlugin({
     registryName: 'io.example/broken',
     title: 'Broken MCP',
     version: '1.0.0',
@@ -200,7 +210,7 @@ test('sessions merge enabled installed LSP plugins', async () => {
   const pluginStore = app.get(PluginStore);
   const service = app.get(SessionsService);
 
-  pluginStore.installCatalogPlugin({
+  await pluginStore.installCatalogPlugin({
     kind: 'lsp',
     registryName: 'test-lsp',
     title: 'Test LSP',
@@ -235,7 +245,7 @@ test('sessions exclude disabled installed LSP plugins', async () => {
   const pluginStore = app.get(PluginStore);
   const service = app.get(SessionsService);
 
-  const installed = pluginStore.installCatalogPlugin({
+  const installed = await pluginStore.installCatalogPlugin({
     kind: 'lsp',
     registryName: 'test-lsp',
     title: 'Test LSP',
@@ -247,7 +257,7 @@ test('sessions exclude disabled installed LSP plugins', async () => {
       fileExtensions: ['.test'],
     },
   });
-  pluginStore.updateInstalled(installed.id, { enabled: false });
+  await pluginStore.updateInstalled(installed.id, { enabled: false });
 
   const { id } = await service.create();
   const entry = (await collectReplay(service, id)).find(

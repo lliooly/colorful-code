@@ -165,7 +165,7 @@ export class PluginsService {
       if (!entry || entry.kind !== 'skill') {
         throw new NotFoundException('Unknown skill plugin: ' + registryName);
       }
-      return this.store.installCatalogPlugin({
+      return await this.store.installCatalogPlugin({
         kind: 'skill',
         registryName: entry.name,
         title: entry.title,
@@ -180,7 +180,7 @@ export class PluginsService {
       if (!entry || entry.kind !== 'lsp') {
         throw new NotFoundException('Unknown LSP plugin: ' + registryName);
       }
-      return this.store.installCatalogPlugin({
+      return await this.store.installCatalogPlugin({
         kind: 'lsp',
         registryName: entry.name,
         title: entry.title,
@@ -200,7 +200,7 @@ export class PluginsService {
       throw new BadRequestException(message);
     }
 
-    return this.store.installMcpPlugin({
+    return await this.store.installMcpPlugin({
       registryName: server.name,
       ...(server.title ? { title: server.title } : {}),
       ...(server.description ? { description: server.description } : {}),
@@ -209,7 +209,10 @@ export class PluginsService {
     });
   }
 
-  update(id: string, body: Record<string, unknown>): InstalledPlugin {
+  async update(
+    id: string,
+    body: Record<string, unknown>,
+  ): Promise<InstalledPlugin> {
     const enabled = validateEnabled(body.enabled);
     const trust = validateTrust(body.trust);
     if (enabled === undefined && trust === undefined) {
@@ -217,7 +220,7 @@ export class PluginsService {
     }
 
     try {
-      return this.store.updateInstalled(id, {
+      return await this.store.updateInstalled(id, {
         ...(enabled !== undefined ? { enabled } : {}),
         ...(trust !== undefined ? { trust } : {}),
       });
@@ -235,8 +238,8 @@ export class PluginsService {
     }
   }
 
-  delete(id: string): void {
-    if (!this.store.deleteInstalled(id)) {
+  async delete(id: string): Promise<void> {
+    if (!(await this.store.deleteInstalled(id))) {
       throw new NotFoundException('Unknown installed plugin: ' + id);
     }
   }

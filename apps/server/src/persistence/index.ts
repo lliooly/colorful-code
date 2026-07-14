@@ -13,6 +13,7 @@ export {
   type WriteDatabaseConnection,
 } from './database-clock';
 export * from './database-provider';
+export * from './database-provider.module';
 export * from './session-store';
 export * from './persistence.module';
 export {

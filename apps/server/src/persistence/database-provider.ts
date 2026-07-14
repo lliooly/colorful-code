@@ -8,6 +8,7 @@ export {
   type DatabaseClock,
   type DatabaseConnection,
   type DatabaseProvider,
+  type SynchronousTransactionResult,
   type TransactionContext,
   type TransactionOptions,
   type TransactionRetryOptions,

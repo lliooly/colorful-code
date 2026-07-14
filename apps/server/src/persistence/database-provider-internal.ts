@@ -78,7 +78,8 @@ export interface TransactionOptions {
   readonly retry?: TransactionRetryOptions;
 }
 
-type NonPromise<T> = T extends PromiseLike<unknown> ? never : T;
+export type SynchronousTransactionResult<T> =
+  T extends PromiseLike<unknown> ? never : T;
 
 export interface DatabaseProvider {
   readonly dialect: 'sqlite';
@@ -86,7 +87,9 @@ export interface DatabaseProvider {
 
   read<T>(operation: (connection: DatabaseConnection) => T): T;
   transaction<T>(
-    operation: (transaction: TransactionContext) => NonPromise<T>,
+    operation: (
+      transaction: TransactionContext,
+    ) => SynchronousTransactionResult<T>,
     options?: TransactionOptions,
   ): Promise<T>;
   close(): Promise<void>;
@@ -140,7 +143,7 @@ class SqliteDatabaseProvider implements DatabaseProvider {
   readonly #random: DatabaseProviderDependencies['random'];
   #state: ProviderState = 'open';
   #closePromise?: Promise<void>;
-  #transactionActive = false;
+  #transactionCallbackActive = false;
 
   constructor(
     connection: Database,
@@ -173,20 +176,21 @@ class SqliteDatabaseProvider implements DatabaseProvider {
   }
 
   transaction<T>(
-    operation: (transaction: TransactionContext) => NonPromise<T>,
+    operation: (
+      transaction: TransactionContext,
+    ) => SynchronousTransactionResult<T>,
     options: TransactionOptions = {},
   ): Promise<T> {
     this.#assertOpen();
-    if (this.#transactionActive) throw new NestedTransactionError();
+    if (this.#transactionCallbackActive) throw new NestedTransactionError();
     const retry = validateRetryOptions(options.retry);
-    this.#transactionActive = true;
-    return this.#runTransactionWithRetry(operation, retry).finally(() => {
-      this.#transactionActive = false;
-    });
+    return this.#runTransactionWithRetry(operation, retry);
   }
 
   async #runTransactionWithRetry<T>(
-    operation: (transaction: TransactionContext) => NonPromise<T>,
+    operation: (
+      transaction: TransactionContext,
+    ) => SynchronousTransactionResult<T>,
     retry: TransactionRetryOptions | undefined,
   ): Promise<T> {
     const maximumAttempts = (retry?.maxRetries ?? 0) + 1;
@@ -208,7 +212,9 @@ class SqliteDatabaseProvider implements DatabaseProvider {
   }
 
   #runTransactionAttempt<T>(
-    operation: (transaction: TransactionContext) => NonPromise<T>,
+    operation: (
+      transaction: TransactionContext,
+    ) => SynchronousTransactionResult<T>,
   ): T {
     const database = createDatabaseConnectionFacade(this.#connection, 'write');
     let transactionStarted = false;
@@ -216,9 +222,13 @@ class SqliteDatabaseProvider implements DatabaseProvider {
       this.#executeTransactionControl(this.#connection, 'BEGIN IMMEDIATE');
       transactionStarted = true;
       const now = this.clock.now(database);
-      const result = operation(
-        Object.freeze({ database, clock: this.clock, now }),
-      );
+      this.#transactionCallbackActive = true;
+      let result: SynchronousTransactionResult<T>;
+      try {
+        result = operation(Object.freeze({ database, clock: this.clock, now }));
+      } finally {
+        this.#transactionCallbackActive = false;
+      }
       if (isThenable(result)) throw new AsyncTransactionCallbackError();
       this.#executeTransactionControl(this.#connection, 'COMMIT');
       transactionStarted = false;

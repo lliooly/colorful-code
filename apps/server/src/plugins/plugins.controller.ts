@@ -66,16 +66,16 @@ export class PluginsController {
   }
 
   @Patch('installed/:id')
-  updateInstalled(
+  async updateInstalled(
     @Param('id') id: string,
     @Body() body: Record<string, unknown>,
   ) {
-    return this.service.update(id, body);
+    return await this.service.update(id, body);
   }
 
   @Delete('installed/:id')
   @HttpCode(204)
-  deleteInstalled(@Param('id') id: string): void {
-    this.service.delete(id);
+  async deleteInstalled(@Param('id') id: string): Promise<void> {
+    await this.service.delete(id);
   }
 }

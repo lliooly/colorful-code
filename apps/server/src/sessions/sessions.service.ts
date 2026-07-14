@@ -159,6 +159,7 @@ type SessionEntry = {
   // into the append-only audit table when a run reaches a terminal status (and
   // on dispose) so the table never holds duplicates of an already-flushed entry.
   pendingAudit: PermissionAuditEntry[];
+  persistenceQueue?: Promise<void>;
   // True when the session was created without a valid model config (e.g.
   // missing API key). The session holds a placeholder model that can be
   // swapped for a real one once the user provides credentials.
@@ -317,6 +318,7 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
   >();
   private sessionOrdinal = 0;
   private checkpointOrdinal = 0;
+  private readonly advisoryWrites = new Set<Promise<void>>();
 
   constructor(
     @Inject(MODEL_CLIENT_FACTORY)
@@ -633,8 +635,12 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
         event.type === 'run_status' &&
         TERMINAL_RUN_STATUSES.has(event.status)
       ) {
-        this.persist(session, pendingAudit);
-        this.saveRunCheckpoint(entry, event);
+        void this.enqueuePersistence(entry, async () => {
+          const persistence = this.persist(session, pendingAudit);
+          const checkpoint = this.saveRunCheckpoint(entry, event);
+          await persistence;
+          await checkpoint;
+        });
       }
     });
 
@@ -752,9 +758,9 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
         ? { projectId: scopedOptions.projectId }
         : {}),
       pinned: false,
-      updatedAt: Date.now(),
+      updatedAt: this.store.now(),
     });
-    this.safeUpsertSessionMetadata({
+    await this.safeUpsertSessionMetadata({
       sessionId: id,
       projectId: scopedOptions.projectId ?? null,
     });
@@ -879,8 +885,8 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
     const registered = this.registerPreparedSession(prepared, {
       currentCheckpointId: checkpoint.id,
     });
-    this.store.saveSnapshot(prepared.session.snapshot());
-    this.inheritSessionMetadata(id, id);
+    await this.store.saveSnapshot(prepared.session.snapshot());
+    await this.inheritSessionMetadata(id, id);
     return {
       id,
       checkpointId,
@@ -915,14 +921,14 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
     const registered = this.registerPreparedSession(prepared, {
       currentCheckpointId: checkpoint.id,
     });
-    this.store.saveSnapshot(prepared.session.snapshot());
-    this.inheritSessionMetadata(id, forkId);
+    await this.store.saveSnapshot(prepared.session.snapshot());
+    await this.inheritSessionMetadata(id, forkId);
     const forkCheckpoint = this.buildCheckpoint(snapshot, {
       parentCheckpointId: checkpoint.id,
       label: 'Fork created',
       summary: checkpoint.summary ?? this.summarizeSnapshot(snapshot),
     });
-    this.store.saveCheckpoint(forkCheckpoint);
+    await this.store.saveCheckpoint(forkCheckpoint);
     const entry = this.entries.get(forkId);
     if (entry) {
       entry.currentCheckpointId = forkCheckpoint.id;
@@ -1025,17 +1031,17 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
   // crash a live run, so it is swallowed (the run already surfaced its own
   // events). The snapshot never contains a secret (the engine excludes the
   // apiKey), and the audit carries only permission metadata.
-  private persist(
+  private async persist(
     session: Session,
     pendingAudit: PermissionAuditEntry[],
-  ): void {
+  ): Promise<void> {
     if (this.store.isClosed) return;
     try {
       const snapshot: SessionSnapshot = session.snapshot();
-      this.store.saveSnapshot(snapshot);
+      await this.store.saveSnapshot(snapshot);
       const metadata = this.liveMetadata.get(session.id);
       if (metadata) {
-        this.store.upsertSessionMetadata({
+        await this.store.upsertSessionMetadata({
           sessionId: session.id,
           projectId: metadata.projectId ?? null,
           pinned: metadata.pinned,
@@ -1043,7 +1049,7 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
       }
       if (pendingAudit.length > 0) {
         const batch = pendingAudit.slice();
-        this.store.appendAudit(session.id, batch);
+        await this.store.appendAudit(session.id, batch);
         pendingAudit.splice(0, batch.length);
       }
     } catch (error) {
@@ -1052,21 +1058,38 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private saveRunCheckpoint(
+  private async saveRunCheckpoint(
     entry: SessionEntry,
     event: Extract<SessionEvent, { type: 'run_status' }>,
-  ): void {
+  ): Promise<void> {
     try {
       const checkpoint = this.buildCheckpoint(entry.session.snapshot(), {
         parentCheckpointId: entry.currentCheckpointId,
         runId: event.runId,
       });
-      this.store.saveCheckpoint(checkpoint);
+      await this.store.saveCheckpoint(checkpoint);
       entry.currentCheckpointId = checkpoint.id;
     } catch {
       // Like snapshot persistence, checkpointing is a side channel and must not
       // make a completed run appear failed.
     }
+  }
+
+  private enqueuePersistence(
+    entry: SessionEntry,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    const previous = entry.persistenceQueue;
+    const operationPromise = previous
+      ? previous.then(operation, operation)
+      : operation();
+    const tracked = operationPromise.finally(() => {
+      if (entry.persistenceQueue === tracked) {
+        entry.persistenceQueue = undefined;
+      }
+    });
+    entry.persistenceQueue = tracked;
+    return tracked;
   }
 
   private buildCheckpoint(
@@ -1085,7 +1108,7 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
       ...(options.parentCheckpointId
         ? { parentCheckpointId: options.parentCheckpointId }
         : {}),
-      createdAt: Date.now(),
+      createdAt: this.store.now(),
       ...(options.runId ? { runId: options.runId } : {}),
       label: options.label ?? this.labelForSnapshot(snapshot),
       ...(summary ? { summary } : {}),
@@ -1291,7 +1314,9 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
     this.voiceTranscription?.stop(id);
     // Persist the final state (and flush any not-yet-flushed audit) before the
     // session leaves memory.
-    this.persist(entry.session, entry.pendingAudit);
+    await this.enqueuePersistence(entry, () =>
+      this.persist(entry.session, entry.pendingAudit),
+    );
     await entry.session.close();
     entry.unsubscribe();
     entry.listeners.clear();
@@ -1358,7 +1383,7 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
       const snapshot = live.session.snapshot();
       const summary = this.toSessionSummary({
         snapshot,
-        updatedAt: this.liveMetadata.get(id)?.updatedAt ?? Date.now(),
+        updatedAt: this.liveMetadata.get(id)?.updatedAt ?? this.store.now(),
       });
       const projectId = this.resolveHistoryProjectId(
         snapshot.id,
@@ -1385,7 +1410,10 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  updateSession(id: string, patch: { pinned?: boolean }): SessionSummary {
+  async updateSession(
+    id: string,
+    patch: { pinned?: boolean },
+  ): Promise<SessionSummary> {
     if (!this.entries.has(id) && !this.safeLoadSnapshot(id)) {
       throw new NotFoundException(`Unknown session: ${id}`);
     }
@@ -1395,11 +1423,11 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
         this.liveMetadata.set(id, {
           ...live,
           pinned: patch.pinned,
-          updatedAt: Date.now(),
+          updatedAt: this.store.now(),
         });
       }
       try {
-        this.store.setSessionPinned(id, patch.pinned);
+        await this.store.setSessionPinned(id, patch.pinned);
       } catch {
         // Live sessions keep the visible pin state in memory until persistence
         // is available.
@@ -1415,7 +1443,7 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
       .find((entry) => entry.snapshot.id === id);
     return this.toSessionSummary({
       snapshot,
-      updatedAt: listed?.updatedAt ?? Date.now(),
+      updatedAt: listed?.updatedAt ?? this.store.now(),
     });
   }
 
@@ -1427,7 +1455,7 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
       this.liveMetadata.has(id);
     await this.unregister(id, { persist: false });
     this.liveMetadata.delete(id);
-    const deleted = this.safeDeleteSession(id);
+    const deleted = await this.safeDeleteSession(id);
     return existed || deleted;
   }
 
@@ -1454,7 +1482,7 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
             ];
 
     await Promise.all(ids.map((id) => this.unregister(id, { persist: false })));
-    this.store.deleteSessions(ids);
+    await this.store.deleteSessions(ids);
   }
 
   async deleteProject(projectId: string): Promise<boolean> {
@@ -1467,8 +1495,8 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
         ?.chats.map((chat) => chat.id) ?? [];
 
     await Promise.all(ids.map((id) => this.unregister(id, { persist: false })));
-    this.store.deleteSessions(ids);
-    return this.store.deleteProject(projectId);
+    await this.store.deleteSessions(ids);
+    return await this.store.deleteProject(projectId);
   }
 
   listCheckpoints(id: string): {
@@ -1495,7 +1523,11 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
     entry.session.send({ type: 'cancel' });
     this.voiceTranscription?.stop(id);
     if (options.persist) {
-      this.persist(entry.session, entry.pendingAudit);
+      await this.enqueuePersistence(entry, () =>
+        this.persist(entry.session, entry.pendingAudit),
+      );
+    } else {
+      await entry.persistenceQueue;
     }
     await entry.session.close();
     entry.unsubscribe();
@@ -1543,7 +1575,7 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
     }
     const project = cwd ? projectByPath.get(cwd) : undefined;
     if (project) {
-      this.safeUpsertSessionMetadata({
+      void this.safeUpsertSessionMetadata({
         sessionId,
         projectId: project.id,
       });
@@ -1563,7 +1595,10 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private inheritSessionMetadata(sourceId: string, targetId: string): void {
+  private async inheritSessionMetadata(
+    sourceId: string,
+    targetId: string,
+  ): Promise<void> {
     const source = this.safeLoadSessionMetadata(sourceId);
     const liveSource = this.liveMetadata.get(sourceId);
     this.liveMetadata.set(targetId, {
@@ -1571,9 +1606,9 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
         ? { projectId: liveSource?.projectId ?? source?.projectId }
         : {}),
       pinned: false,
-      updatedAt: Date.now(),
+      updatedAt: this.store.now(),
     });
-    this.safeUpsertSessionMetadata({
+    await this.safeUpsertSessionMetadata({
       sessionId: targetId,
       projectId: liveSource?.projectId ?? source?.projectId ?? null,
       pinned: false,
@@ -1584,13 +1619,18 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
     sessionId: string;
     projectId?: string | null;
     pinned?: boolean;
-  }): void {
-    try {
-      this.store.upsertSessionMetadata(input);
-    } catch {
-      // Some focused service tests provide a minimal SessionStore mock. Metadata
-      // persistence is advisory until a real store is present.
-    }
+  }): Promise<void> {
+    const write = (async () => {
+      try {
+        await this.store.upsertSessionMetadata(input);
+      } catch {
+        // Some focused service tests provide a minimal SessionStore mock.
+        // Metadata persistence is advisory until a real store is present.
+      }
+    })();
+    this.advisoryWrites.add(write);
+    void write.finally(() => this.advisoryWrites.delete(write));
+    return write;
   }
 
   private safeLoadSnapshot(id: string): SessionSnapshot | undefined {
@@ -1611,9 +1651,9 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private safeDeleteSession(id: string): boolean {
+  private async safeDeleteSession(id: string): Promise<boolean> {
     try {
-      return this.store.deleteSession(id);
+      return await this.store.deleteSession(id);
     } catch {
       return false;
     }
@@ -1622,6 +1662,7 @@ export class SessionsService implements OnModuleInit, OnModuleDestroy {
   // Disposes every session so tests (and shutdown) do not leak runs/timers.
   async onModuleDestroy(): Promise<void> {
     await Promise.all([...this.entries.keys()].map((id) => this.dispose(id)));
+    await Promise.all(this.advisoryWrites);
   }
 }
 

@@ -21,6 +21,10 @@ import {
   type ModelClientFactory,
 } from '../src/sessions/model-factory';
 import { SessionStore } from '../src/persistence/session-store';
+import {
+  closeTestSessionStores,
+  createTestSessionStore,
+} from './support/test-session-store';
 
 const factoryCalls = new Map<string, number>();
 
@@ -39,7 +43,7 @@ const scriptedFactory: ModelClientFactory = ({ sessionId }): ModelClient => {
   providers: [
     SessionsService,
     { provide: MODEL_CLIENT_FACTORY, useValue: scriptedFactory },
-    { provide: SessionStore, useValue: SessionStore.openAt(':memory:') },
+    { provide: SessionStore, useFactory: createTestSessionStore },
   ],
 })
 class TestAppModule {}
@@ -89,7 +93,7 @@ async function* countingCompletion(
   providers: [
     SessionsService,
     { provide: MODEL_CLIENT_FACTORY, useValue: countingFactory },
-    { provide: SessionStore, useValue: SessionStore.openAt(':memory:') },
+    { provide: SessionStore, useFactory: createTestSessionStore },
   ],
 })
 class CheckpointTestAppModule {}
@@ -99,7 +103,7 @@ class CheckpointTestAppModule {}
   providers: [
     SessionsService,
     { provide: MODEL_CLIENT_FACTORY, useValue: atomicRestoreFactory },
-    { provide: SessionStore, useValue: SessionStore.openAt(':memory:') },
+    { provide: SessionStore, useFactory: createTestSessionStore },
   ],
 })
 class AtomicRestoreTestAppModule {}
@@ -111,6 +115,7 @@ afterEach(async () => {
     await app.close();
     app = undefined;
   }
+  await closeTestSessionStores();
   factoryCalls.clear();
 });
 
@@ -146,9 +151,8 @@ async function bootAtomicRestoreApp(): Promise<NestFastifyApplication> {
 
 function userMessageCount(service: SessionsService, id: string): number {
   return (
-    service
-      .loadSnapshot(id)
-      ?.history.filter((entry) => entry.role === 'user').length ?? 0
+    service.loadSnapshot(id)?.history.filter((entry) => entry.role === 'user')
+      .length ?? 0
   );
 }
 
@@ -289,12 +293,20 @@ test('checkpoint API can restore over a live session and fork an independent ses
     method: 'GET',
     url: `/sessions/${id}/checkpoints`,
   });
-  assert.equal(checkpointsRes.statusCode, 200);
+  assert.equal(checkpointsRes.statusCode, 200, checkpointsRes.body);
   const listed = checkpointsRes.json() as {
-    checkpoints: Array<{ id: string; runId: string; parentCheckpointId?: string }>;
+    checkpoints: Array<{
+      id: string;
+      runId: string;
+      parentCheckpointId?: string;
+    }>;
     currentCheckpointId?: string;
   };
-  assert.equal(listed.checkpoints.length, 2, 'one checkpoint per completed run');
+  assert.equal(
+    listed.checkpoints.length,
+    2,
+    'one checkpoint per completed run',
+  );
   assert.equal(listed.checkpoints[0]?.runId, `${id}-run-1`);
   assert.equal(
     listed.checkpoints[1]?.parentCheckpointId,
@@ -329,12 +341,7 @@ test('checkpoint API can restore over a live session and fork an independent ses
     'restoring a checkpoint immediately updates the persisted live snapshot',
   );
 
-  await submitAndWaitForMessage(
-    service,
-    id,
-    'after restore',
-    `${id} users=2`,
-  );
+  await submitAndWaitForMessage(service, id, 'after restore', `${id} users=2`);
 
   const forkRes = await fastify.inject({
     method: 'POST',
