@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  chmodSync,
   closeSync,
   fstatSync,
+  fsyncSync,
   linkSync,
   lstatSync,
   mkdirSync,
@@ -13,12 +15,14 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import type { Stats } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { Database } from 'bun:sqlite';
+import { configureSqliteSnapshotConnection } from './sqlite-configuration';
 
 export interface MigrationBackupManifest {
   readonly formatVersion: 1;
-  readonly sourceDatabasePath: string;
+  readonly sourceDatabaseFile: string;
   readonly sourceSchemaVersion: number;
   readonly targetSchemaVersion: number;
   readonly createdAt: string;
@@ -51,8 +55,6 @@ export type MigrationBackupRecoveryErrorCode =
 
 export class MigrationBackupRecoveryError extends Error {
   readonly code: MigrationBackupRecoveryErrorCode;
-  readonly backupPath?: string;
-  readonly targetPath?: string;
 
   constructor(
     code: MigrationBackupRecoveryErrorCode,
@@ -62,14 +64,10 @@ export class MigrationBackupRecoveryError extends Error {
     super(message, { cause: options?.cause });
     this.name = 'MigrationBackupRecoveryError';
     this.code = code;
-    this.backupPath = options?.backupPath;
-    this.targetPath = options?.targetPath;
   }
 }
 
-function sqliteString(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`;
-}
+export const MAX_AUTOMATIC_MIGRATION_SNAPSHOT_BYTES = 512 * 1024 * 1024;
 
 function compactUtcTimestamp(date: Date): string {
   return date.toISOString().replace(/[-:.]/g, '');
@@ -130,7 +128,7 @@ function resolveSourceDatabasePath(
   const claimedDatabasePath = resolve(sourceDatabasePath);
   if (actualDatabasePath !== claimedDatabasePath) {
     throw new Error(
-      `sourceDatabasePath does not match the database connection: ${claimedDatabasePath}`,
+      'sourceDatabasePath does not match the database connection',
     );
   }
   return claimedDatabasePath;
@@ -139,6 +137,18 @@ function resolveSourceDatabasePath(
 interface ReservationIdentity {
   readonly dev: number;
   readonly ino: number;
+}
+
+function assertRegularSingleLink(path: string): Stats {
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1) {
+    throw new Error('Expected an unlinked regular file');
+  }
+  return stat;
+}
+
+function sameFileIdentity(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
 }
 
 function removeOwnedReservation(
@@ -170,6 +180,24 @@ function pathEntryExists(path: string): boolean {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
+  }
+}
+
+function ensurePrivateDirectory(path: string): void {
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(path);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error('Migration recovery directory must be a real directory');
+  }
+  if ((stat.mode & 0o077) !== 0) chmodSync(path, 0o700);
+}
+
+function syncPath(path: string): void {
+  const descriptor = openSync(path, 'r');
+  try {
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
   }
 }
 
@@ -218,15 +246,99 @@ function checksumFile(path: string): { sizeBytes: number; sha256: string } {
   return { sizeBytes, sha256: hash.digest('hex') };
 }
 
-/** @internal Test-only access to narrow file-integrity helpers. */
-export const __migrationBackupRecoveryTesting = Object.freeze({
-  checksumFile,
-  removeOwnedReservation,
-});
+function assertSnapshotLimit(value: number): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new TypeError('maxSnapshotBytes must be a positive safe integer');
+  }
+}
+
+function serializeBoundedSnapshot(
+  database: Database,
+  maxSnapshotBytes: number,
+): Buffer {
+  assertSnapshotLimit(maxSnapshotBytes);
+  const pageCount = database
+    .query<{ page_count: number }, []>('PRAGMA page_count')
+    .get()?.page_count;
+  const pageSize = database
+    .query<{ page_size: number }, []>('PRAGMA page_size')
+    .get()?.page_size;
+  if (
+    !Number.isSafeInteger(pageCount) ||
+    !Number.isSafeInteger(pageSize) ||
+    pageCount === undefined ||
+    pageSize === undefined ||
+    pageCount < 0 ||
+    pageSize <= 0 ||
+    pageCount > Math.floor(maxSnapshotBytes / pageSize)
+  ) {
+    throw new MigrationBackupRecoveryError(
+      'backup_invalid',
+      'Database exceeds the automatic migration snapshot limit',
+    );
+  }
+  // Bun allocates an independent Buffer for serialize(). Retaining it avoids
+  // a second database-sized copy while the explicit byte limit still bounds
+  // the snapshot owned by this recovery operation.
+  const snapshot = database.serialize();
+  if (snapshot.byteLength > maxSnapshotBytes) {
+    throw new MigrationBackupRecoveryError(
+      'backup_invalid',
+      'Database exceeds the automatic migration snapshot limit',
+    );
+  }
+  const sqliteHeader = Buffer.from('SQLite format 3\0', 'ascii');
+  if (snapshot.byteLength === 0) return snapshot;
+  if (
+    snapshot.byteLength < 100 ||
+    !snapshot.subarray(0, sqliteHeader.byteLength).equals(sqliteHeader)
+  ) {
+    throw new MigrationBackupRecoveryError(
+      'backup_invalid',
+      'SQLite connection returned an invalid serialized snapshot',
+    );
+  }
+  // sqlite3_serialize includes WAL-visible pages but preserves bytes 18/19 as
+  // WAL read/write versions. A standalone database file has no sidecar, so
+  // publish it in rollback-file format before integrity verification.
+  snapshot[18] = 1;
+  snapshot[19] = 1;
+  return snapshot;
+}
+
+function serializeDatabaseFileSnapshot(
+  databasePath: string,
+  maxSnapshotBytes: number,
+): Buffer {
+  const identityBeforeOpen = assertRegularSingleLink(databasePath);
+  const snapshotConnection = new Database(databasePath, {
+    readonly: true,
+    create: false,
+  });
+  try {
+    const identityAfterOpen = assertRegularSingleLink(databasePath);
+    if (!sameFileIdentity(identityBeforeOpen, identityAfterOpen)) {
+      throw new Error('Database identity changed while snapshot opened');
+    }
+    configureSqliteSnapshotConnection(snapshotConnection);
+    const snapshot = serializeBoundedSnapshot(
+      snapshotConnection,
+      maxSnapshotBytes,
+    );
+    const identityAfterSnapshot = assertRegularSingleLink(databasePath);
+    if (!sameFileIdentity(identityBeforeOpen, identityAfterSnapshot)) {
+      throw new Error('Database identity changed while snapshot serialized');
+    }
+    return snapshot;
+  } finally {
+    snapshotConnection.close(true);
+  }
+}
 
 export function verifyDatabase(databasePath: string): void {
   const database = new Database(databasePath, { readonly: true });
   try {
+    configureSqliteSnapshotConnection(database);
     const integrityResults = database
       .query<{ integrity_check: string }, []>('PRAGMA integrity_check')
       .all();
@@ -259,7 +371,11 @@ export function quarantineDatabase(options: {
     );
   }
   const sourceStat = lstatSync(sourcePath);
-  if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) {
+  if (
+    !sourceStat.isFile() ||
+    sourceStat.isSymbolicLink() ||
+    sourceStat.nlink !== 1
+  ) {
     throw new MigrationBackupRecoveryError(
       'quarantine_failed',
       'Quarantine source must be a regular database file',
@@ -275,11 +391,11 @@ export function quarantineDatabase(options: {
   const quarantineRoot = join(dirname(sourcePath), 'migration-quarantine');
   const directoryPath = join(quarantineRoot, id);
   const reservationPath = join(quarantineRoot, `.${id}.reserve`);
-  mkdirSync(quarantineRoot, { recursive: true });
+  ensurePrivateDirectory(quarantineRoot);
 
   let reservation: number;
   try {
-    reservation = openSync(reservationPath, 'wx');
+    reservation = openSync(reservationPath, 'wx', 0o600);
   } catch (cause) {
     throw new MigrationBackupRecoveryError(
       'quarantine_failed',
@@ -297,7 +413,7 @@ export function quarantineDatabase(options: {
     if (pathEntryExists(directoryPath)) {
       throw new Error('Quarantine destination already exists');
     }
-    mkdirSync(directoryPath);
+    mkdirSync(directoryPath, { mode: 0o700 });
     const fileName = basename(sourcePath);
     const result: {
       directoryPath: string;
@@ -315,9 +431,16 @@ export function quarantineDatabase(options: {
         if (pathEntryExists(destination))
           throw new Error('Refusing to overwrite');
         renameSync(source, destination);
+        const destinationStat = lstatSync(destination);
+        if (destinationStat.isFile() && !destinationStat.isSymbolicLink()) {
+          chmodSync(destination, 0o600);
+        }
         result[property] = destination;
       }
     }
+    syncPath(dirname(sourcePath));
+    syncPath(directoryPath);
+    syncPath(quarantineRoot);
     return result;
   } catch (cause) {
     throw new MigrationBackupRecoveryError(
@@ -366,7 +489,11 @@ function readVerifiedManifest(
   backup: MigrationBackup,
   targetPath: string,
   verify: typeof verifyDatabase,
-): { manifest: MigrationBackupManifest; databasePath: string } {
+): {
+  manifest: MigrationBackupManifest;
+  databasePath: string;
+  databaseIdentity: Stats;
+} {
   const directoryPath = resolve(backup.directoryPath);
   const manifestPath = resolve(backup.manifestPath);
   if (
@@ -383,7 +510,8 @@ function readVerifiedManifest(
       !directoryStat.isDirectory() ||
       directoryStat.isSymbolicLink() ||
       !manifestStat.isFile() ||
-      manifestStat.isSymbolicLink()
+      manifestStat.isSymbolicLink() ||
+      manifestStat.nlink !== 1
     ) {
       throw new Error('unsafe backup paths');
     }
@@ -399,7 +527,7 @@ function readVerifiedManifest(
       'integrityCheck',
       'sha256',
       'sizeBytes',
-      'sourceDatabasePath',
+      'sourceDatabaseFile',
       'sourceSchemaVersion',
       'targetSchemaVersion',
     ];
@@ -409,9 +537,7 @@ function readVerifiedManifest(
       JSON.stringify(Object.keys(manifest).sort()) !==
         JSON.stringify(expectedKeys) ||
       manifest.formatVersion !== 1 ||
-      typeof manifest.sourceDatabasePath !== 'string' ||
-      !isAbsolute(manifest.sourceDatabasePath) ||
-      manifest.sourceDatabasePath !== targetPath ||
+      manifest.sourceDatabaseFile !== basename(targetPath) ||
       !Number.isSafeInteger(manifest.sourceSchemaVersion) ||
       (manifest.sourceSchemaVersion as number) < 0 ||
       !Number.isSafeInteger(manifest.targetSchemaVersion) ||
@@ -435,7 +561,8 @@ function readVerifiedManifest(
       resolve(backup.databasePath) !== databasePath ||
       resolve(dirname(backup.databasePath)) !== directoryPath ||
       !databaseStat.isFile() ||
-      databaseStat.isSymbolicLink()
+      databaseStat.isSymbolicLink() ||
+      databaseStat.nlink !== 1
     ) {
       throw new Error('inconsistent backup paths');
     }
@@ -447,9 +574,14 @@ function readVerifiedManifest(
       throw new Error('backup checksum mismatch');
     }
     verify(databasePath);
+    const databaseStatAfterVerify = assertRegularSingleLink(databasePath);
+    if (!sameFileIdentity(databaseStat, databaseStatAfterVerify)) {
+      throw new Error('Backup identity changed during verification');
+    }
     return {
       manifest: manifest as unknown as MigrationBackupManifest,
       databasePath,
+      databaseIdentity: databaseStatAfterVerify,
     };
   } catch (cause) {
     if (cause instanceof MigrationBackupRecoveryError) throw cause;
@@ -470,15 +602,22 @@ function quarantinePublishedFailure(
   const failurePath = join(quarantine.directoryPath, `restore-failure-${id}`);
   if (pathEntryExists(failurePath))
     throw new Error('Failure quarantine exists');
-  mkdirSync(failurePath);
+  mkdirSync(failurePath, { mode: 0o700 });
   const fileName = basename(targetPath);
   for (const [source, name] of [
     [targetPath, fileName],
     [`${targetPath}-wal`, `${fileName}-wal`],
     [`${targetPath}-shm`, `${fileName}-shm`],
   ]) {
-    if (pathEntryExists(source)) rename(source, join(failurePath, name));
+    if (pathEntryExists(source)) {
+      const destination = join(failurePath, name);
+      rename(source, destination);
+      chmodSync(destination, 0o600);
+    }
   }
+  syncPath(dirname(targetPath));
+  syncPath(failurePath);
+  syncPath(quarantine.directoryPath);
 }
 
 export function restoreMigrationBackup(
@@ -498,7 +637,7 @@ export function restoreMigrationBackup(
   assertVacantRecoveryTarget();
 
   const verify = options.operations?.verify ?? verifyDatabase;
-  const { databasePath } = readVerifiedManifest(
+  const { databasePath, databaseIdentity } = readVerifiedManifest(
     options.backup,
     targetPath,
     verify,
@@ -516,7 +655,7 @@ export function restoreMigrationBackup(
 
   let reservation: number;
   try {
-    reservation = openSync(reservationPath, 'wx');
+    reservation = openSync(reservationPath, 'wx', 0o600);
   } catch (cause) {
     throw new MigrationBackupRecoveryError(
       'recovery_failed',
@@ -531,15 +670,30 @@ export function restoreMigrationBackup(
     reservationIdentity = fileIdentity(reservationPath);
     if (pathEntryExists(temporaryDirectoryPath))
       throw new Error('Restore temp already exists');
-    mkdirSync(temporaryDirectoryPath);
+    mkdirSync(temporaryDirectoryPath, { mode: 0o700 });
     temporaryDirectoryIdentity = fileIdentity(temporaryDirectoryPath);
     const source = new OpenDatabase(databasePath, { readonly: true });
     try {
-      source.exec(`VACUUM INTO ${sqliteString(temporaryPath)}`);
+      const identityAfterOpen = assertRegularSingleLink(databasePath);
+      if (!sameFileIdentity(databaseIdentity, identityAfterOpen)) {
+        throw new Error('Backup identity changed before recovery open');
+      }
+      configureSqliteSnapshotConnection(source);
+      const snapshot = serializeBoundedSnapshot(
+        source,
+        MAX_AUTOMATIC_MIGRATION_SNAPSHOT_BYTES,
+      );
+      const identityAfterSnapshot = assertRegularSingleLink(databasePath);
+      if (!sameFileIdentity(databaseIdentity, identityAfterSnapshot)) {
+        throw new Error('Backup identity changed during recovery snapshot');
+      }
+      writeFileSync(temporaryPath, snapshot, { flag: 'wx', mode: 0o600 });
     } finally {
       source.close();
     }
     verify(temporaryPath);
+    syncPath(temporaryPath);
+    syncPath(temporaryDirectoryPath);
     options.operations?.beforePublish?.();
     assertVacantRecoveryTarget();
     try {
@@ -555,6 +709,7 @@ export function restoreMigrationBackup(
       throw cause;
     }
     published = true;
+    syncPath(dirname(targetPath));
     if (
       pathEntryExists(`${targetPath}-wal`) ||
       pathEntryExists(`${targetPath}-shm`)
@@ -562,6 +717,7 @@ export function restoreMigrationBackup(
       throw new Error('SQLite sidecar appeared during recovery publication');
     }
     unlinkSync(temporaryPath);
+    syncPath(temporaryDirectoryPath);
     removeOwnedDirectory(temporaryDirectoryPath, temporaryDirectoryIdentity);
     temporaryDirectoryIdentity = undefined;
     verify(targetPath);
@@ -662,6 +818,7 @@ export function createMigrationBackup(options: {
   targetSchemaVersion: number;
   now?: () => Date;
   randomId?: () => string;
+  maxSnapshotBytes?: number;
 }): MigrationBackup {
   assertSchemaVersion('sourceSchemaVersion', options.sourceSchemaVersion);
   assertSchemaVersion('targetSchemaVersion', options.targetSchemaVersion);
@@ -682,13 +839,13 @@ export function createMigrationBackup(options: {
   const temporaryDatabasePath = join(temporaryDirectoryPath, databaseFile);
   const temporaryManifestPath = join(temporaryDirectoryPath, 'manifest.json');
 
-  mkdirSync(backupsPath, { recursive: true });
+  ensurePrivateDirectory(backupsPath);
   // Cooperative no-replace protocol: every migration-backup writer runs under
   // the Instance Lock and must reserve this ID through this function. Hostile or
   // non-cooperating filesystem mutation is outside this trust boundary.
   let reservation: number;
   try {
-    reservation = openSync(reservationPath, 'wx');
+    reservation = openSync(reservationPath, 'wx', 0o600);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
       throw new Error(`Backup reservation already exists: ${reservationPath}`);
@@ -710,18 +867,23 @@ export function createMigrationBackup(options: {
       throw new Error(`Refusing to overwrite backup ${directoryPath}`);
     }
 
-    mkdirSync(temporaryDirectoryPath);
+    mkdirSync(temporaryDirectoryPath, { mode: 0o700 });
     temporaryDirectoryIdentity = fileIdentity(temporaryDirectoryPath);
     try {
-      options.database.exec(
-        `VACUUM INTO ${sqliteString(temporaryDatabasePath)}`,
+      const snapshot = serializeDatabaseFileSnapshot(
+        sourceDatabasePath,
+        options.maxSnapshotBytes ?? MAX_AUTOMATIC_MIGRATION_SNAPSHOT_BYTES,
       );
+      writeFileSync(temporaryDatabasePath, snapshot, {
+        flag: 'wx',
+        mode: 0o600,
+      });
       verifyDatabase(temporaryDatabasePath);
 
       const checksum = checksumFile(temporaryDatabasePath);
       const manifest: MigrationBackupManifest = {
         formatVersion: 1,
-        sourceDatabasePath,
+        sourceDatabaseFile: basename(sourceDatabasePath),
         sourceSchemaVersion: options.sourceSchemaVersion,
         targetSchemaVersion: options.targetSchemaVersion,
         createdAt: createdAt.toISOString(),
@@ -737,9 +899,14 @@ export function createMigrationBackup(options: {
         {
           encoding: 'utf8',
           flag: 'wx',
+          mode: 0o600,
         },
       );
+      syncPath(temporaryDatabasePath);
+      syncPath(temporaryManifestPath);
+      syncPath(temporaryDirectoryPath);
       renameSync(temporaryDirectoryPath, directoryPath);
+      syncPath(backupsPath);
 
       return {
         directoryPath,

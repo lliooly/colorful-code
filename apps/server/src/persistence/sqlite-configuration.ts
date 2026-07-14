@@ -3,7 +3,13 @@ import type { Database } from 'bun:sqlite';
 export type SqliteConnectionRole =
   | 'business-read-write'
   | 'business-read-only'
-  | 'migration-bootstrap';
+  | 'migration-bootstrap'
+  | 'migration-snapshot-read-only';
+
+export type SqliteConfiguredConnectionRole = Exclude<
+  SqliteConnectionRole,
+  'migration-snapshot-read-only'
+>;
 
 export type SqliteConfigurationErrorCode =
   | 'pragma_failed'
@@ -12,7 +18,7 @@ export type SqliteConfigurationErrorCode =
   | 'unsupported_runtime';
 
 export type SqliteConnectionConfiguration = Readonly<{
-  role: SqliteConnectionRole;
+  role: SqliteConfiguredConnectionRole;
   busyTimeoutMs: 250 | 1_000;
   journalMode: 'wal';
   foreignKeys: true;
@@ -23,6 +29,17 @@ export type SqliteConnectionConfiguration = Readonly<{
 }>;
 
 export type SqliteConfigurationConnection = Pick<Database, 'query'>;
+
+export type SqliteSnapshotConnectionConfiguration = Readonly<{
+  role: 'migration-snapshot-read-only';
+  busyTimeoutMs: 1_000;
+  journalMode: 'wal' | 'delete';
+  foreignKeys: true;
+  synchronous: 'full';
+  tempStore: 'memory';
+  trustedSchema: false;
+  queryOnly: true;
+}>;
 
 type SafeErrorValue = string | number | boolean | null;
 
@@ -236,5 +253,46 @@ export function configureSqliteConnection(
     tempStore: 'memory',
     trustedSchema: false,
     queryOnly,
+  });
+}
+
+export function configureSqliteSnapshotConnection(
+  database: SqliteConfigurationConnection,
+): SqliteSnapshotConnectionConfiguration {
+  const role = 'migration-snapshot-read-only' as const;
+  setAndVerify(database, role, 'busy_timeout', 1_000, 1_000);
+  setAndVerify(database, role, 'foreign_keys', 'ON', 1);
+  const journalMode = readSingleValue(
+    database,
+    role,
+    'journal_mode',
+    'PRAGMA journal_mode',
+  );
+  if (
+    typeof journalMode !== 'string' ||
+    (journalMode.toLowerCase() !== 'wal' &&
+      journalMode.toLowerCase() !== 'delete')
+  ) {
+    throw new SqliteConfigurationError({
+      code: 'wal_unavailable',
+      role,
+      pragma: 'journal_mode',
+      expected: 'wal',
+      actual: journalMode,
+    });
+  }
+  setAndVerify(database, role, 'synchronous', 'FULL', 2);
+  setAndVerify(database, role, 'temp_store', 'MEMORY', 2);
+  setAndVerify(database, role, 'trusted_schema', 'OFF', 0);
+  setAndVerify(database, role, 'query_only', 'ON', 1);
+  return Object.freeze({
+    role,
+    busyTimeoutMs: 1_000,
+    journalMode: journalMode.toLowerCase() as 'wal' | 'delete',
+    foreignKeys: true,
+    synchronous: 'full',
+    tempStore: 'memory',
+    trustedSchema: false,
+    queryOnly: true,
   });
 }

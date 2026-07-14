@@ -12,7 +12,7 @@ import {
 } from './support/test-session-store';
 
 test('submit emits a model-config error correlated to the session when no run starts', async () => {
-  const store = createTestSessionStore();
+  const store = await createTestSessionStore();
   const service = new SessionsService(() => {
     throw new ModelSelectionError('No API key configured for test model.');
   }, store);
@@ -41,7 +41,7 @@ test('submit emits a model-config error correlated to the session when no run st
 });
 
 test('configureModel replaces the client used by an already configured session', async () => {
-  const store = createTestSessionStore();
+  const store = await createTestSessionStore();
   const service = new SessionsService(
     ({ selection }) =>
       createScriptedModelClient([
@@ -79,7 +79,7 @@ test('configureModel replaces the client used by an already configured session',
 });
 
 test('dispose skips final persistence after the store has already closed', async () => {
-  const store = createTestSessionStore();
+  const store = await createTestSessionStore();
   const service = new SessionsService(
     () => createScriptedModelClient([[{ type: 'text', text: 'ok' }]]),
     store,
@@ -99,7 +99,7 @@ test('dispose skips final persistence after the store has already closed', async
 });
 
 test('failed audit append remains pending and succeeds exactly once on retry', async () => {
-  const store = createTestSessionStore();
+  const store = await createTestSessionStore();
   const service = new SessionsService(
     () => createScriptedModelClient([[{ type: 'text', text: 'ok' }]]),
     store,

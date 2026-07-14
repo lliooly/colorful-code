@@ -1,11 +1,16 @@
 import { strict as assert } from 'node:assert';
 import {
+  chmod,
+  link,
+  mkdir,
   mkdtemp,
   readFile,
   readdir,
   realpath,
+  rename,
   rm,
   stat,
+  symlink,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,6 +19,7 @@ import { Database } from 'bun:sqlite';
 import {
   DataDirectoryInstanceLock,
   DataDirectoryLockConflictError,
+  LOCK_APPLICATION_ID,
   LOCK_FILE_NAME,
 } from '../src/runtime/data-directory-instance-lock';
 
@@ -28,16 +34,16 @@ test('a second lock for the same data directory reports a clear conflict', async
   const first = await DataDirectoryInstanceLock.acquire(directory);
 
   try {
-    const canonicalDirectory = await realpath(directory);
     await assert.rejects(
       DataDirectoryInstanceLock.acquire(directory),
       (error: unknown) => {
         assert.ok(error instanceof DataDirectoryLockConflictError);
-        assert.equal(error.dataDirectory, canonicalDirectory);
+        assert.equal(error.code, 'data_directory_in_use');
         assert.equal(
           error.message,
-          `Another Colorful Code daemon is already using data directory: ${canonicalDirectory}`,
+          'Another Colorful Code daemon is already using this data directory',
         );
+        assert.doesNotMatch(JSON.stringify(error), new RegExp(directory));
         return true;
       },
     );
@@ -85,6 +91,194 @@ test('different data directories can be locked at the same time', async () => {
   } finally {
     await Promise.all([first.release(), second.release()]);
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('lock initialization uses a fixed header write without startup VACUUM', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'colorful-code-lock-init-'));
+  const lock = await DataDirectoryInstanceLock.acquire(directory);
+  await lock.release();
+  const database = new Database(join(directory, LOCK_FILE_NAME), {
+    readonly: true,
+  });
+  try {
+    assert.equal(
+      database
+        .query<{ application_id: number }, []>('PRAGMA application_id')
+        .get()?.application_id,
+      LOCK_APPLICATION_ID,
+    );
+    assert.deepEqual(
+      database.query('SELECT name FROM sqlite_master').all(),
+      [],
+    );
+  } finally {
+    database.close(true);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('rejects a pre-positioned symbolic-link lock without touching its target', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'colorful-code-lock-symlink-'));
+  const directory = join(root, 'data');
+  await DataDirectoryInstanceLock.acquire(directory).then((lock) =>
+    lock.release(),
+  );
+  const lockPath = join(directory, LOCK_FILE_NAME);
+  const targetPath = join(root, 'target.sqlite');
+  const target = new Database(targetPath, { create: true, readwrite: true });
+  target.exec('PRAGMA application_id = 73');
+  target.close(true);
+  await rm(lockPath);
+  await symlink(targetPath, lockPath);
+
+  try {
+    await assert.rejects(
+      DataDirectoryInstanceLock.acquire(directory),
+      /symbolic link/i,
+    );
+    const untouched = new Database(targetPath, { readonly: true });
+    try {
+      assert.equal(
+        untouched
+          .query<{ application_id: number }, []>('PRAGMA application_id')
+          .get()?.application_id,
+        73,
+      );
+    } finally {
+      untouched.close(true);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects non-regular and multiply-linked lock files', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'colorful-code-lock-kind-'));
+  const directory = join(root, 'data');
+  await DataDirectoryInstanceLock.acquire(directory).then((lock) =>
+    lock.release(),
+  );
+  const lockPath = join(directory, LOCK_FILE_NAME);
+
+  try {
+    await rm(lockPath);
+    await Bun.write(lockPath, 'not sqlite');
+    await link(lockPath, join(root, 'extra-link'));
+    await assert.rejects(
+      DataDirectoryInstanceLock.acquire(directory),
+      /exactly one filesystem link/i,
+    );
+
+    await rm(join(root, 'extra-link'));
+    await rm(lockPath);
+    await mkdir(lockPath);
+    await assert.rejects(
+      DataDirectoryInstanceLock.acquire(directory),
+      /regular file/i,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects a lock database owned by another application', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'colorful-code-lock-app-'));
+  const lockPath = join(directory, LOCK_FILE_NAME);
+  const foreign = new Database(lockPath, { create: true, readwrite: true });
+  foreign.exec('PRAGMA application_id = 73');
+  foreign.close(true);
+
+  try {
+    await assert.rejects(
+      DataDirectoryInstanceLock.acquire(directory),
+      /unexpected SQLite application_id 73/i,
+    );
+    const reopened = new Database(lockPath, { readonly: true });
+    try {
+      assert.equal(
+        reopened
+          .query<{ application_id: number }, []>('PRAGMA application_id')
+          .get()?.application_id,
+        73,
+      );
+    } finally {
+      reopened.close(true);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('creates private directories and lock files without chmodding a private existing directory', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'colorful-code-lock-mode-'));
+  const freshDirectory = join(root, 'fresh');
+  const fresh = await DataDirectoryInstanceLock.acquire(freshDirectory);
+  await fresh.release();
+
+  const existingDirectory = join(root, 'existing');
+  await mkdir(existingDirectory);
+  await chmod(existingDirectory, 0o700);
+  const existing = await DataDirectoryInstanceLock.acquire(existingDirectory);
+  await existing.release();
+
+  try {
+    assert.equal((await stat(freshDirectory)).mode & 0o777, 0o700);
+    assert.equal(
+      (await stat(join(freshDirectory, LOCK_FILE_NAME))).mode & 0o777,
+      0o600,
+    );
+    assert.equal((await stat(existingDirectory)).mode & 0o777, 0o700);
+    assert.equal(
+      (await stat(join(existingDirectory, LOCK_FILE_NAME))).mode & 0o777,
+      0o600,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('tightens an existing legacy data directory before acquiring its lock', async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), 'colorful-code-lock-insecure-directory-'),
+  );
+  await chmod(directory, 0o755);
+
+  let lock: DataDirectoryInstanceLock | undefined;
+  try {
+    lock = await DataDirectoryInstanceLock.acquire(directory);
+    assert.equal((await stat(directory)).mode & 0o777, 0o700);
+  } finally {
+    await lock?.release();
+    await chmod(directory, 0o700);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('detects runtime lock-path replacement and keeps a second owner out', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'colorful-code-lock-swap-'));
+  const first = await DataDirectoryInstanceLock.acquire(directory);
+  const lockPath = join(directory, LOCK_FILE_NAME);
+  const displacedPath = join(directory, 'displaced-lock');
+  await rename(lockPath, displacedPath);
+  const replacement = new Database(lockPath, { create: true, readwrite: true });
+  replacement.close(true);
+  const secondDaemon = spawnHolder(directory);
+
+  try {
+    await assert.rejects(first.assertHealthy(), /identity changed/i);
+    await assert.rejects(
+      DataDirectoryInstanceLock.acquire(directory),
+      (error: unknown) => error instanceof DataDirectoryLockConflictError,
+    );
+    const status = await readJsonLine(secondDaemon.stdout);
+    assert.equal(status.status, 'conflict');
+    assert.equal(await secondDaemon.exited, 2);
+    await assert.rejects(first.release(), /identity changed/i);
+  } finally {
+    await first.release();
+    await terminateHolder(secondDaemon);
+    await rm(directory, { recursive: true, force: true });
   }
 });
 
@@ -215,12 +409,12 @@ test('real daemon processes starting together elect one winner', async () => {
       if (status.status !== 'conflict') continue;
       assert.match(
         String(status.message),
-        /Another Colorful Code daemon is already using data directory:/,
+        /Another Colorful Code daemon is already using this data directory/,
       );
       assert.equal(await holders[index]!.exited, 2);
       assert.match(
         await new Response(holders[index]!.stderr).text(),
-        /Another Colorful Code daemon is already using data directory:/,
+        /Another Colorful Code daemon is already using this data directory/,
       );
     }
   } finally {

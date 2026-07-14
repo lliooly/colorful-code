@@ -4,6 +4,19 @@ import { join, relative } from 'node:path';
 import { test } from 'node:test';
 
 const sourceRoot = join(import.meta.dir, '../src');
+const testSupportRoot = join(import.meta.dir, 'support');
+
+function testSupportFiles(): Array<{ path: string; source: string }> {
+  return readdirSync(testSupportRoot, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.ts'))
+    .map((entry) => {
+      const path = join(entry.parentPath, entry.name);
+      return {
+        path: relative(testSupportRoot, path),
+        source: readFileSync(path, 'utf8'),
+      };
+    });
+}
 
 function sourceFiles(): Array<{ path: string; source: string }> {
   return readdirSync(sourceRoot, { recursive: true, withFileTypes: true })
@@ -34,9 +47,13 @@ test('production SQLite ownership and transaction control stay inside infrastruc
     'persistence/database.ts',
     'persistence/database-clock.ts',
     'persistence/database-provider-internal.ts',
+    'persistence/legacy-schema-baseline.ts',
     'persistence/migration-backup-recovery.ts',
     'persistence/migration-bootstrap.ts',
     'persistence/migration-framework.ts',
+    'persistence/sqlite-checkpoint.ts',
+    'persistence/sqlite-configuration.ts',
+    'persistence/sqlite-diagnostics.ts',
     'runtime/data-directory-instance-lock.ts',
   ]);
   assert.deepEqual(
@@ -71,11 +88,14 @@ test('production SQLite ownership and transaction control stay inside infrastruc
 test('Provider internals and test hooks cannot leak into production business code', () => {
   const files = sourceFiles();
   assert.deepEqual(
-    violations(
-      files,
-      /database-provider\.testing/,
-      new Set(['persistence/database-provider.testing.ts']),
-    ),
+    files
+      .filter(({ path, source }) =>
+        /(?:database-provider\.testing|TestDatabaseProviderOptions|createInternalTestDatabaseProvider|createTestDatabaseProvider)/.test(
+          `${path}\n${source}`,
+        ),
+      )
+      .map(({ path }) => path)
+      .sort(),
     [],
   );
   assert.deepEqual(
@@ -84,10 +104,45 @@ test('Provider internals and test hooks cannot leak into production business cod
       /database-provider-internal/,
       new Set([
         'persistence/database-provider-internal.ts',
-        'persistence/database-provider.testing.ts',
         'persistence/database-provider.ts',
       ]),
     ),
+    [],
+  );
+  const publicProvider = files.find(
+    ({ path }) => path === 'persistence/database-provider.ts',
+  );
+  assert.ok(publicProvider);
+  assert.doesNotMatch(
+    publicProvider.source,
+    /DatabaseProviderDependencyOverrides|createDatabaseProviderWithDependencies/,
+  );
+});
+
+test('shared test support cannot bypass the unified Test Database Factory', () => {
+  const files = testSupportFiles();
+  const factoryOnly = new Set(['test-database-factory.ts']);
+  assert.deepEqual(
+    violations(
+      files,
+      /from\s+['"]bun:sqlite['"]|\bmkdtemp\s*\(|\bbootstrapMigrations\s*\(/,
+      factoryOnly,
+    ),
+    [],
+  );
+  assert.deepEqual(
+    violations(
+      files,
+      /createTestDatabaseProvider\s*\(/,
+      new Set(['test-database-factory.ts', 'database-provider-testing.ts']),
+    ),
+    [],
+  );
+});
+
+test('daemon startup infrastructure never executes automatic VACUUM', () => {
+  assert.deepEqual(
+    violations(sourceFiles(), /['"`]\s*VACUUM\b/i, new Set()),
     [],
   );
 });

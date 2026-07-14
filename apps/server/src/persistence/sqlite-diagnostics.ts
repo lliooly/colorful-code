@@ -10,12 +10,17 @@ export type SqliteDiagnostics = Readonly<{
   connectionRole: SqliteConnectionRole;
   journalMode: 'wal';
   foreignKeys: true;
-  backupMethod: 'online-backup' | 'vacuum-into';
+  busyTimeoutMs: 250 | 1_000;
+  synchronous: 'full';
+  tempStore: 'memory';
+  trustedSchema: false;
+  queryOnly: boolean;
+  backupMethod: 'connection-serialize';
   returningSupport: boolean;
   compileOptions: readonly string[];
 }>;
 
-type DiagnosticConnection = Pick<Database, 'query'>;
+type DiagnosticConnection = Pick<Database, 'query' | 'serialize'>;
 
 const SAFE_COMPILE_OPTION = /^[A-Z][A-Z0-9_]*(?:=[A-Za-z0-9.,+_-]+)?$/;
 
@@ -48,11 +53,6 @@ function versionAtLeast(
   return true;
 }
 
-function hasOnlineBackup(database: DiagnosticConnection): boolean {
-  const candidate = database as object as Record<string, unknown>;
-  return typeof candidate.backup === 'function';
-}
-
 function readDiagnosticPragma(
   database: DiagnosticConnection,
   role: SqliteConnectionRole,
@@ -80,6 +80,31 @@ function readDiagnosticPragma(
     });
   }
   return row[pragma];
+}
+
+function readConfigurationRole(
+  configuration: SqliteConnectionConfiguration,
+): SqliteConnectionRole {
+  let role: unknown;
+  try {
+    role = (configuration as { readonly role?: unknown }).role;
+  } catch {
+    throw new SqliteConfigurationError({
+      code: 'unsupported_runtime',
+      role: 'unknown',
+    });
+  }
+  if (
+    role !== 'business-read-write' &&
+    role !== 'business-read-only' &&
+    role !== 'migration-bootstrap'
+  ) {
+    throw new SqliteConfigurationError({
+      code: 'unsupported_runtime',
+      role: 'unknown',
+    });
+  }
+  return role;
 }
 
 function verifyDiagnosticPragmas(
@@ -112,7 +137,7 @@ export function createSqliteDiagnostics(
   database: DiagnosticConnection,
   configuration: SqliteConnectionConfiguration,
 ): SqliteDiagnostics {
-  const role = configuration.role;
+  const role = readConfigurationRole(configuration);
   verifyDiagnosticPragmas(database, role);
   let versionRow: { sqliteVersion: unknown } | null;
   let compileRows: { compile_options: unknown }[];
@@ -149,12 +174,7 @@ export function createSqliteDiagnostics(
     unsupported(role, 'compile_options');
   }
 
-  let backupMethod: SqliteDiagnostics['backupMethod'];
-  if (hasOnlineBackup(database)) {
-    backupMethod = 'online-backup';
-  } else if (versionAtLeast(numericVersion, [3, 27, 0])) {
-    backupMethod = 'vacuum-into';
-  } else {
+  if (typeof (database as Database).serialize !== 'function') {
     unsupported(role);
   }
 
@@ -164,7 +184,12 @@ export function createSqliteDiagnostics(
     connectionRole: role,
     journalMode: 'wal',
     foreignKeys: true,
-    backupMethod,
+    busyTimeoutMs: configuration.busyTimeoutMs,
+    synchronous: configuration.synchronous,
+    tempStore: configuration.tempStore,
+    trustedSchema: configuration.trustedSchema,
+    queryOnly: configuration.queryOnly,
+    backupMethod: 'connection-serialize',
     returningSupport: versionAtLeast(numericVersion, [3, 35, 0]),
     compileOptions: frozenCompileOptions,
   });

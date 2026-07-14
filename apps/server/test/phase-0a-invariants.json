@@ -1,0 +1,200 @@
+[
+  {
+    "id": "P0A-LOCK-001",
+    "requirement": "Only one daemon may own a data directory while distinct directories remain independent.",
+    "evidence": [
+      {
+        "file": "data-directory-instance-lock.test.ts",
+        "test": "a second lock for the same data directory reports a clear conflict"
+      },
+      {
+        "file": "data-directory-instance-lock.test.ts",
+        "test": "different data directories can be locked at the same time"
+      }
+    ]
+  },
+  {
+    "id": "P0A-MIG-001",
+    "requirement": "Migrations run only in a fixed forward order and reject databases newer than the program.",
+    "evidence": [
+      {
+        "file": "migration-framework.test.ts",
+        "test": "empty database applies migrations in order and records complete metadata"
+      },
+      {
+        "file": "migration-framework.test.ts",
+        "test": "database newer than program is rejected before any pending migration runs"
+      }
+    ]
+  },
+  {
+    "id": "P0A-MIG-002",
+    "requirement": "Applied migration checksum drift prevents startup before pending mutations.",
+    "evidence": [
+      {
+        "file": "migration-framework.test.ts",
+        "test": "checksum drift is rejected before any pending migration runs"
+      }
+    ]
+  },
+  {
+    "id": "P0A-REC-001",
+    "requirement": "A failed migration restores a verified consistent backup and quarantines failed bytes.",
+    "evidence": [
+      {
+        "file": "migration-framework.test.ts",
+        "test": "bootstrap closes, quarantines, and restores the pre-migration backup after a later migration fails"
+      }
+    ]
+  },
+  {
+    "id": "P0A-FIX-001",
+    "requirement": "Empty, 1.x, and uncheckpointed-WAL fixtures complete backup, migration, Provider, transaction, clock, shutdown, and restart lifecycles.",
+    "evidence": [
+      {
+        "file": "phase-0a-sqlite-foundation.test.ts",
+        "test": "Phase 0A lifecycle adopts 1.x, transacts with database time, closes, and restarts"
+      },
+      {
+        "file": "migration-backup-recovery.test.ts",
+        "test": "createMigrationBackup includes uncheckpointed WAL commits and writes a verified manifest"
+      },
+      {
+        "file": "test-database-factory.test.ts",
+        "test": "empty scenario performs the full bootstrap while schema version zero stays unmanaged"
+      },
+      {
+        "file": "phase-0a-sqlite-foundation.test.ts",
+        "test": "Phase 0A empty database transacts with fixed time, closes, and restarts"
+      },
+      {
+        "file": "test-database-factory.test.ts",
+        "test": "factory preserves a real uncheckpointed WAL fixture until cleanup"
+      },
+      {
+        "file": "phase-0a-sqlite-foundation.test.ts",
+        "test": "Phase 0A factory closes the WAL migration loop and restarts under one instance lock"
+      }
+    ]
+  },
+  {
+    "id": "P0A-PROV-001",
+    "requirement": "Production business database access is owned by DatabaseProvider and test-only factories stay out of public production exports.",
+    "evidence": [
+      {
+        "file": "database-access-boundary.test.ts",
+        "test": "production SQLite ownership and transaction control stay inside infrastructure"
+      },
+      {
+        "file": "production-build-boundary.test.ts",
+        "test": "production build verifier rejects test-only Provider artifacts"
+      }
+    ]
+  },
+  {
+    "id": "P0A-TX-001",
+    "requirement": "Business writes use synchronous Transaction callbacks without externally awaitable side effects.",
+    "evidence": [
+      {
+        "file": "database-access-boundary.test.ts",
+        "test": "business writes use synchronous transaction callbacks and database time"
+      },
+      {
+        "file": "database-provider.test.ts",
+        "test": "nested transactions and Promise callbacks are rejected and rolled back"
+      }
+    ]
+  },
+  {
+    "id": "P0A-CLOCK-001",
+    "requirement": "Persisted generated timestamps come from the injected Database Clock.",
+    "evidence": [
+      {
+        "file": "session-store.test.ts",
+        "test": "generated persistence timestamps use one injected database Clock value"
+      }
+    ]
+  },
+  {
+    "id": "P0A-SQL-001",
+    "requirement": "Every Provider connection applies and verifies the role-specific SQLite policy, including WAL and foreign keys.",
+    "evidence": [
+      {
+        "file": "database-provider.test.ts",
+        "test": "uses the migrated schema and applies production SQLite policy before reads"
+      },
+      {
+        "file": "database-provider.test.ts",
+        "test": "restart exposes equivalent frozen diagnostics"
+      },
+      {
+        "file": "sqlite-configuration.test.ts",
+        "test": "snapshot policy securely accepts bounded WAL and rollback snapshots"
+      }
+    ]
+  },
+  {
+    "id": "P0A-BUSY-001",
+    "requirement": "SQLITE_BUSY retry is bounded and never replays an executed business callback.",
+    "evidence": [
+      {
+        "file": "database-provider.test.ts",
+        "test": "real BEGIN busy never calls the callback and retries once after the competing connection releases"
+      },
+      {
+        "file": "database-provider.test.ts",
+        "test": "COMMIT busy rolls back without replaying an already executed callback"
+      },
+      {
+        "file": "database-provider.test.ts",
+        "test": "retry budget accepts exactly 2000ms and rejects one millisecond more before BEGIN"
+      }
+    ]
+  },
+  {
+    "id": "P0A-CLOSE-001",
+    "requirement": "Shutdown drains operations, checkpoints, closes connections, releases Instance Lock, and removes owned test files.",
+    "evidence": [
+      {
+        "file": "database-kernel-lifecycle.test.ts",
+        "test": "application initialization failure closes Provider and releases the real lock"
+      },
+      {
+        "file": "test-database-factory.test.ts",
+        "test": "factory closes in parallel, releases locks, and removes directories"
+      },
+      {
+        "file": "test-database-factory.test.ts",
+        "test": "factory close is idempotent and returns one cleanup promise"
+      }
+    ]
+  },
+  {
+    "id": "P0A-V2-001",
+    "requirement": "With the 2.0 feature flag disabled, startup performs no 2.0 schema creation or business dual-write.",
+    "evidence": [
+      {
+        "file": "v2-boundary.test.ts",
+        "test": "feature flag off completes a database lifecycle without 2.0 schema or business writes"
+      }
+    ]
+  },
+  {
+    "id": "P0A-COMPAT-001",
+    "requirement": "Published 1.x schema and representative historical data remain readable and byte-preserving through baseline adoption.",
+    "evidence": [
+      {
+        "file": "legacy-baseline.test.ts",
+        "test": "migration bootstrap adopts an exact 1.x fixture without replaying baseline DDL"
+      },
+      {
+        "file": "session-store.test.ts",
+        "test": "current SessionStore reads the normal 1.x fixture after baseline adoption"
+      },
+      {
+        "file": "legacy-baseline.test.ts",
+        "test": "legacy fixture historical variants are deterministic and preserve known anomalies"
+      }
+    ]
+  }
+]

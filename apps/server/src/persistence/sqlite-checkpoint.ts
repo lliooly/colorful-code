@@ -59,21 +59,19 @@ export function checkpointWal(
     keys[0] !== 'busy' ||
     keys[1] !== 'checkpointed' ||
     keys[2] !== 'log' ||
-    !Number.isInteger(row.busy) ||
+    !Number.isSafeInteger(row.busy) ||
     (row.busy !== 0 && row.busy !== 1) ||
-    !Number.isInteger(row.log) ||
-    !Number.isInteger(row.checkpointed) ||
-    (row.log as number) < -1 ||
-    (row.checkpointed as number) < -1 ||
-    (row.log === -1) !== (row.checkpointed === -1) ||
+    !Number.isSafeInteger(row.log) ||
+    !Number.isSafeInteger(row.checkpointed) ||
+    (row.log as number) < 0 ||
+    (row.checkpointed as number) < 0 ||
     (row.checkpointed as number) > (row.log as number)
   ) {
     throw new WalCheckpointError('invalid_checkpoint_result');
   }
 
-  const logFrames = row.log === -1 ? 0 : (row.log as number);
-  const checkpointedFrames =
-    row.checkpointed === -1 ? 0 : (row.checkpointed as number);
+  const logFrames = row.log as number;
+  const checkpointedFrames = row.checkpointed as number;
   const completed = logFrames === checkpointedFrames;
   return Object.freeze({
     status: completed ? 'completed' : 'incomplete',

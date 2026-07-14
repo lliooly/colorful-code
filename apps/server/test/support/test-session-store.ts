@@ -1,57 +1,65 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import type { DatabaseClock } from '../../src/persistence/database-clock';
-import { createTestDatabaseProvider } from '../../src/persistence/database-provider.testing';
+import { SessionStore } from '../../src/persistence/session-store';
 import {
-  SessionStore,
-  type SessionStoreFaultHooks,
-} from '../../src/persistence/session-store';
+  createTestDatabase,
+  type TestDatabase,
+  type TestDatabaseClock,
+} from './test-database-factory';
 
 class OwnedTestSessionStore extends SessionStore {
-  readonly #directory: string;
-  readonly #closeProvider: () => Promise<void>;
+  readonly #database: TestDatabase;
   #destroyPromise?: Promise<void>;
 
-  constructor(options: {
-    clock?: DatabaseClock;
-    faultHooks?: SessionStoreFaultHooks;
-  }) {
-    const directory = mkdtempSync(join(tmpdir(), 'colorful-code-test-store-'));
-    const provider = createTestDatabaseProvider(
-      join(directory, 'database.sqlite'),
-      options.clock === undefined ? {} : { clock: options.clock },
-    );
-    super(provider, options.faultHooks);
-    this.#directory = directory;
-    this.#closeProvider = () => provider.close();
+  constructor(database: TestDatabase) {
+    super(database.provider);
+    this.#database = database;
   }
 
   destroyForTest(): Promise<void> {
     if (this.#destroyPromise) return this.#destroyPromise;
     this.close();
-    this.#destroyPromise = this.#closeProvider().finally(() => {
-      rmSync(this.#directory, { recursive: true, force: true });
-    });
+    this.#destroyPromise = this.#database.close();
     return this.#destroyPromise;
   }
 }
 
 const ownedStores = new Set<OwnedTestSessionStore>();
+const pendingStores = new Set<Promise<OwnedTestSessionStore>>();
 
 export function createTestSessionStore(
   options: {
-    clock?: DatabaseClock;
-    faultHooks?: SessionStoreFaultHooks;
+    clock?: TestDatabaseClock;
   } = {},
-): SessionStore {
-  const store = new OwnedTestSessionStore(options);
-  ownedStores.add(store);
-  return store;
+): Promise<SessionStore> {
+  const creation = createTestDatabase({
+    kind: 'migrated',
+    clock: options.clock,
+  }).then((database) => {
+    const store = new OwnedTestSessionStore(database);
+    ownedStores.add(store);
+    return store;
+  });
+  pendingStores.add(creation);
+  void creation.then(
+    () => pendingStores.delete(creation),
+    () => pendingStores.delete(creation),
+  );
+  return creation;
 }
 
 export async function closeTestSessionStores(): Promise<void> {
+  const pendingResults = await Promise.allSettled([...pendingStores]);
   const stores = [...ownedStores];
-  ownedStores.clear();
-  await Promise.all(stores.map((store) => store.destroyForTest()));
+  stores.forEach((store) => ownedStores.delete(store));
+  const cleanupResults = await Promise.allSettled(
+    stores.map((store) => store.destroyForTest()),
+  );
+  const errors = [...pendingResults, ...cleanupResults]
+    .filter(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    )
+    .map((result) => result.reason);
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(errors, 'Test SessionStore cleanup failed');
+  }
 }

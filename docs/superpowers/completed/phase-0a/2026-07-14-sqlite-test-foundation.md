@@ -1,5 +1,20 @@
 # Phase 0A SQLite Test Foundation 实现计划
 
+> **进度：任务 1–7 的实现、全仓 Gate 与最终独立安全/规格审查均已完成；尚未暂存或提交，保留给人工复核。下方步骤复选框保留最初 TDD 执行计划，不作为当前状态源；实际状态以本段和最终验证记录为准。**
+>
+> 实现期间基于审查结果完成了额外安全收紧：迁移备份从启动期 `VACUUM INTO` 改为 512 MiB 上限的独立 connection serialization，并增加私有权限、fsync 发布、hardlink/inode 校验和 post-backup data-version guard；Instance Lock 增加独立 guard、文件身份验证、固定 `application_id` 和运行期健康检查。测试数据库 helper 已统一收口到 Test Database Factory；production build 会清理旧产物并扫描测试路径、测试命名 API 和公开 Provider override 泄漏。
+
+| 工作项                         | 当前状态          | 主要证据                                                    |
+| ------------------------------ | ----------------- | ----------------------------------------------------------- |
+| SQLite Configuration           | 已实现并通过 Gate | `sqlite-configuration.test.ts`、`database-provider.test.ts` |
+| Test Database Factory          | 已实现并通过 Gate | `test-database-factory.test.ts`、Store helper 边界测试      |
+| 1.x Schema Baseline            | 已实现并通过 Gate | manifest/version-map/four fixture variants                  |
+| Backup/Lock 安全收口           | 已实现并通过 Gate | symlink/hardlink/inode/permissions/drift tests              |
+| 联合 Phase 0A lifecycle        | 已实现并通过 Gate | `phase-0a-sqlite-foundation.test.ts`、invariant manifest    |
+| lint/typecheck/build/full test | 已通过            | 2026-07-14 根目录完整命令，全部退出码为 0                   |
+
+最新验证记录：根目录 `pnpm lint`（11/11）、`pnpm typecheck`（16/16）、`pnpm build`（10/10）和 `pnpm test` 均成功；完整测试中服务端 34 个文件共 388 项、Web 45 项、CLI 5 项均为 0 失败。最后一个仅影响启动错误固定文案的防御补丁后，又完整复跑服务端 388/388，并重跑 server lint、typecheck 与根目录生产 build。最后一次沙箱外全仓复跑因工作区审批额度耗尽未获执行权限；其余 package 未被该补丁修改。完整测试中的既有 localhost 监听用例需要在允许绑定 `127.0.0.1` 的环境运行。所有本分支改动文件通过 Prettier 定向检查和 `git diff --check`；仓库级 `pnpm format` 仍报告 106 个本分支未修改的历史文件，未在本分支扩大范围自动改写。
+
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法跟踪进度。每项生产行为遵循 TDD；实现任务依次执行，避免多个代理同时修改共享数据库边界。
 
 **目标：** 统一并验证所有 SQLite 连接配置，冻结真实 1.x Schema baseline，提供隔离且可故障注入的 Test Database Factory，并完成 Phase 0A 联合 Gate。
@@ -193,13 +208,13 @@ pnpm exec prettier --check apps/server/src/persistence/sqlite-*.ts apps/server/t
 
 - [ ] **步骤 4：接入 access mode、policy、diagnostics 与 transaction ownership**
 
-Provider 新增只读 `accessMode` 和 `diagnostics`。用覆盖整个 Promise 生命周期的 `#transactionActive` 取代只覆盖 callback 的标记；在 `finally` 释放。nested 和 concurrent 都由同一状态拒绝。
+Provider 新增只读 `accessMode` 和 `diagnostics`。`#transactionActive` 覆盖真实数据库 transaction 和 pending retry/sleep；nested 和 concurrent 都由同一状态拒绝。同步 COMMIT/ROLLBACK 后立即释放，不为了已完成结果的 Promise settlement microtask 继续占用连接。
 
 测试 hooks 只允许注入 connection factory、sleep/random、checkpoint 和 close 等窄边界；生产 factory 固定使用 production policy，不能被调用方跳过安全配置。
 
 - [ ] **步骤 5：实现 checkpoint + close 聚合语义**
 
-关闭顺序：标记 closing → 等待 active operation lease 归零 → checkpoint → physical close → ownership release。callback/Clock 内调用 close 不得同步关闭当前连接，也不得等待自身造成死锁。checkpoint incomplete 是结构化结果，不是 close failure；checkpoint throw 时仍 close。只有 physical close 成功后释放 ownership。若 close 成功但 checkpoint 失败，Provider 关闭且 ownership 释放，然后抛 checkpoint error；多错误按发生顺序 Aggregate。
+读写关闭顺序：标记 closing → 等待 active operation lease 归零 → checkpoint → physical close → ownership release。只读连接在 drain 后跳过无法执行且没有必要的 checkpoint。callback/Clock 内调用 close 不得同步关闭当前连接，也不得等待自身造成死锁。checkpoint incomplete 是结构化结果，不是 close failure；checkpoint throw 时仍 close。只有 physical close 成功后释放 ownership。若 close 成功但 checkpoint 失败，Provider 关闭且 ownership 释放，然后抛 checkpoint error；多错误按发生顺序 Aggregate。路径准备、打开和 ownership 冲突错误必须 typed 且不泄漏目录或 URI。
 
 - [ ] **步骤 6：删除 Provider 隐式 Schema 初始化**
 

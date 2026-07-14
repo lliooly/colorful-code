@@ -17,6 +17,9 @@ import { DataDirectoryLockConflictError } from '../src/runtime/data-directory-in
 import type { DaemonApplication } from '../src/runtime/daemon-lifecycle';
 import type { DatabaseProvider } from '../src/persistence/database-provider';
 import { createDatabaseProvider } from '../src/persistence/database-provider';
+import { DatabasePathError } from '../src/persistence/database-path';
+import { MigrationError } from '../src/persistence/migration-framework';
+import { SqliteConfigurationError } from '../src/persistence/sqlite-configuration';
 import {
   DATABASE_PROVIDER,
   DatabaseProviderModule,
@@ -235,25 +238,79 @@ test('awaits the registered close callback through the Fastify onClose hook', as
 test('reports a lock conflict without leaking owner metadata', () => {
   const messages: unknown[][] = [];
   const processState: { exitCode?: number } = {};
-  const error = Object.assign(
-    new DataDirectoryLockConflictError('/private/data'),
-    { ownerPid: 8675309 },
-  );
+  const error = Object.assign(new DataDirectoryLockConflictError(), {
+    ownerPid: 8675309,
+  });
+  error.message = 'conflict at /private/data owned by 8675309';
 
   reportBootstrapError(error, (...args) => messages.push(args), processState);
 
-  assert.deepEqual(messages, [[error.message]]);
+  assert.deepEqual(messages, [
+    ['Another Colorful Code daemon is already using this data directory'],
+  ]);
   assert.equal(processState.exitCode, 1);
-  assert.doesNotMatch(String(messages), /8675309|ownerPid|stack/);
+  assert.doesNotMatch(
+    String(messages),
+    /8675309|ownerPid|stack|\/private\/data/,
+  );
 });
 
-test('reports unexpected startup errors and marks the process failed', () => {
+test('reports unexpected startup errors without exposing filesystem causes', () => {
   const messages: unknown[][] = [];
   const processState: { exitCode?: number } = {};
-  const error = new Error('unexpected');
+  const error = new Error('open /Users/alice/private/colorful-code.db failed', {
+    cause: Object.assign(new Error('permission denied'), {
+      path: '/Users/alice/private/colorful-code.db',
+    }),
+  });
 
   reportBootstrapError(error, (...args) => messages.push(args), processState);
 
-  assert.deepEqual(messages, [[error]]);
+  assert.deepEqual(messages, [['Colorful Code daemon failed to start']]);
   assert.equal(processState.exitCode, 1);
+  assert.doesNotMatch(
+    JSON.stringify(messages),
+    /Users|alice|colorful-code\.db/,
+  );
+});
+
+test('reports whitelisted startup codes without exposing rejected values', () => {
+  const errors = [
+    new DatabasePathError(
+      'unsupported_file_uri',
+      'SQLite file URIs are unsupported during daemon bootstrap',
+    ),
+    new MigrationError('checksum_mismatch', 'sensitive migration detail'),
+    new SqliteConfigurationError({
+      code: 'pragma_mismatch',
+      role: 'business-read-write',
+      pragma: 'journal_mode',
+      expected: 'wal',
+      actual: 'file://user:secret@localhost/private.db',
+    }),
+    Object.assign(
+      new MigrationError('checksum_mismatch', 'forged code detail'),
+      { code: 'file://user:secret@localhost/private.db' },
+    ),
+  ];
+  const messages: unknown[][] = [];
+  const processState: { exitCode?: number } = {};
+
+  for (const error of errors) {
+    reportBootstrapError(error, (...args) => messages.push(args), processState);
+  }
+
+  assert.deepEqual(messages, [
+    ['Database startup rejected [code=unsupported_file_uri]'],
+    ['Database migration rejected [code=checksum_mismatch]'],
+    [
+      'SQLite configuration rejected [code=pragma_mismatch, role=business-read-write, pragma=journal_mode]',
+    ],
+    ['Colorful Code daemon failed to start'],
+  ]);
+  assert.equal(processState.exitCode, 1);
+  assert.doesNotMatch(
+    JSON.stringify(messages),
+    /secret|private\.db|sensitive migration detail/,
+  );
 });

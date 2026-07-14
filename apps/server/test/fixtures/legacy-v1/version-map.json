@@ -1,0 +1,28 @@
+{
+  "formatVersion": 1,
+  "applicationVersionRange": "1.x",
+  "sqliteUserVersion": 0,
+  "migrationBaselineVersion": 1,
+  "migrationBaselineName": "legacy_1x_baseline",
+  "legacySchemaChecksum": "aa421a21286862a79cc929e16f148b20f9afd486d512976a32ddd5a5dceb23d7",
+  "migrationBaselineChecksum": "ddefa67f9e16f4b3f5ba28899b7955008c8dd6c4194023a67b11cf65245e5626",
+  "knownApplicationSchemaMappings": [
+    {
+      "applicationVersion": "v1.0.0 through 1.x",
+      "sqliteUserVersion": 0,
+      "migrationBaselineVersion": 1
+    }
+  ],
+  "fixtureLogicalChecksums": {
+    "normal": "0e59caaaece2edfe8aaf125e9e1848e0e26314a410cff82d867ad8e543a1f7da",
+    "missing-optional": "32cf66ea2b5f07e3c9e63e34f9c57d12999d12768af050909b861b80457e399a",
+    "orphaned": "7a0a89e28f8d53d26a76adc6dac5e4c626859e22f34cca1beba02ca8d0944b52",
+    "corrupt-record": "fac99e95519330659d4f9c82ffc5bab4016801bdb1eb2a77d1e20c9541678e19"
+  },
+  "knownWalStates": ["checkpointed", "uncheckpointed"],
+  "historicalDataNotes": [
+    "nullable reason, project_id, parent_checkpoint_id, run_id, label, summary, and file_changes are valid",
+    "unmanaged 1.x databases may contain orphaned logical records because the published schema has no foreign keys",
+    "historical JSON payload columns may contain malformed text; baseline adoption preserves bytes and does not parse payloads"
+  ]
+}

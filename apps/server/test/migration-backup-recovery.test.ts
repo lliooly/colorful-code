@@ -1,27 +1,24 @@
 import { strict as assert } from 'node:assert';
 import { createHash } from 'node:crypto';
 import {
-  closeSync,
   copyFileSync,
   existsSync,
-  fstatSync,
   lstatSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
-  openSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { Database } from 'bun:sqlite';
 import {
-  __migrationBackupRecoveryTesting,
   createMigrationBackup,
   quarantineDatabase,
   restoreMigrationBackup,
@@ -87,9 +84,32 @@ test('restoreMigrationBackup restores verified old content after quarantining ma
       restored.close();
     }
     assert.equal(existsSync(join(directory, '.restore-restore.tmp')), false);
+    assert.equal(statSync(sourceDatabasePath).mode & 0o777, 0o600);
+    assert.equal(statSync(backup.directoryPath).mode & 0o777, 0o700);
+    assert.equal(statSync(backup.databasePath).mode & 0o777, 0o600);
+    assert.equal(statSync(backup.manifestPath).mode & 0o777, 0o600);
+    assert.equal(statSync(quarantined.directoryPath).mode & 0o777, 0o700);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('quarantine durability synchronizes both source and destination directories', () => {
+  const source = readFileSync(
+    join(import.meta.dir, '../src/persistence/migration-backup-recovery.ts'),
+    'utf8',
+  );
+  const quarantineBody = source.slice(
+    source.indexOf('export function quarantineDatabase'),
+    source.indexOf('export interface RestoreMigrationBackupOptions'),
+  );
+  assert.match(quarantineBody, /syncPath\(dirname\(sourcePath\)\)/);
+
+  const failedPublishBody = source.slice(
+    source.indexOf('function quarantinePublishedFailure'),
+    source.indexOf('export function restoreMigrationBackup'),
+  );
+  assert.match(failedPublishBody, /syncPath\(dirname\(targetPath\)\)/);
 });
 
 test('restoreMigrationBackup rereads manifest and rejects tampered backup bytes', () => {
@@ -118,6 +138,51 @@ test('restoreMigrationBackup rereads manifest and rejects tampered backup bytes'
   }
 });
 
+test('restoreMigrationBackup rejects backup replacement between verification and open', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'migration-restore-open-swap-'));
+  try {
+    const { backup, sourceDatabasePath } = createRestorableBackup(directory);
+    rmSync(sourceDatabasePath);
+    const verifiedPath = `${backup.databasePath}.verified`;
+    class ReplacingDatabase {
+      constructor(
+        path: string,
+        options: ConstructorParameters<typeof Database>[1],
+      ) {
+        renameSync(path, verifiedPath);
+        const replacement = new Database(path, {
+          create: true,
+          readwrite: true,
+        });
+        replacement.exec(
+          "CREATE TABLE notes(body TEXT NOT NULL); INSERT INTO notes VALUES ('attacker content')",
+        );
+        replacement.close(true);
+        return new Database(path, options);
+      }
+    }
+
+    assert.throws(
+      () =>
+        restoreMigrationBackup({
+          backup,
+          targetDatabasePath: sourceDatabasePath,
+          randomId: () => 'open-swap',
+          operations: {
+            openDatabase: ReplacingDatabase as unknown as typeof Database,
+          },
+        }),
+      (error: unknown) =>
+        error instanceof Error &&
+        'code' in error &&
+        error.code === 'recovery_failed',
+    );
+    assert.equal(existsSync(sourceDatabasePath), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('restoreMigrationBackup rejects invalid disk manifest fields without trusting memory', () => {
   const invalidMutations: Array<{
     name: string;
@@ -134,12 +199,11 @@ test('restoreMigrationBackup rejects invalid disk manifest fields without trusti
     },
     {
       name: 'relative source path',
-      mutate: (manifest) =>
-        void (manifest.sourceDatabasePath = 'colorful.sqlite'),
+      mutate: (manifest) => void (manifest.sourceDatabaseFile = 'other.sqlite'),
     },
     {
       name: 'non-string source path',
-      mutate: (manifest) => void (manifest.sourceDatabasePath = 42),
+      mutate: (manifest) => void (manifest.sourceDatabaseFile = 42),
     },
     {
       name: 'checksum',
@@ -297,7 +361,7 @@ test('restoreMigrationBackup refuses a repeated restore without changing restore
   }
 });
 
-test('restoreMigrationBackup cleans its reservation when opening the backup fails before VACUUM INTO', () => {
+test('restoreMigrationBackup cleans its reservation when opening the backup fails before serialization', () => {
   const directory = mkdtempSync(join(tmpdir(), 'migration-restore-open-fail-'));
   try {
     const { backup, sourceDatabasePath } = createRestorableBackup(directory);
@@ -565,7 +629,7 @@ test('restoreMigrationBackup handles quoted target paths and rejects unsafe rest
   }
 });
 
-test('restoreMigrationBackup cleans a partial temporary database left by VACUUM INTO failure', () => {
+test('restoreMigrationBackup cleans temporary state after snapshot serialization failure', () => {
   const directory = mkdtempSync(join(tmpdir(), 'migration-restore-partial-'));
   try {
     const { backup, sourceDatabasePath } = createRestorableBackup(directory);
@@ -573,9 +637,14 @@ test('restoreMigrationBackup cleans a partial temporary database left by VACUUM 
     const temporaryDirectoryPath = join(directory, '.restore-partial.tmp');
     const temporaryPath = join(temporaryDirectoryPath, 'colorful-code.db');
     class PartiallyFailingDatabase {
-      exec() {
+      query() {
+        return {
+          get: () => ({ page_count: 1, page_size: 4096 }),
+        };
+      }
+      serialize() {
         writeFileSync(temporaryPath, 'partial database');
-        throw new Error('injected VACUUM INTO failure');
+        throw new Error('injected serialization failure');
       }
       close() {}
     }
@@ -617,6 +686,31 @@ test('restoreMigrationBackup rejects a backup database replaced by a symbolic li
         restoreMigrationBackup({
           backup,
           targetDatabasePath: sourceDatabasePath,
+        }),
+      (error: unknown) =>
+        error instanceof Error &&
+        'code' in error &&
+        error.code === 'backup_invalid',
+    );
+    assert.equal(existsSync(sourceDatabasePath), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('restoreMigrationBackup rejects a hard-linked backup database', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'migration-restore-hardlink-'));
+  try {
+    const { backup, sourceDatabasePath } = createRestorableBackup(directory);
+    rmSync(sourceDatabasePath);
+    linkSync(backup.databasePath, join(directory, 'backup-alias.sqlite'));
+
+    assert.throws(
+      () =>
+        restoreMigrationBackup({
+          backup,
+          targetDatabasePath: sourceDatabasePath,
+          randomId: () => 'hardlink',
         }),
       (error: unknown) =>
         error instanceof Error &&
@@ -681,7 +775,9 @@ test('quarantineDatabase moves main, WAL, and SHM files without altering bytes',
     moved.forEach((path, index) => {
       assert.ok(path);
       assert.equal(readFileSync(path, 'utf8'), contents[index]);
+      assert.equal(statSync(path).mode & 0o777, 0o600);
     });
+    assert.equal(statSync(quarantined.directoryPath).mode & 0o777, 0o700);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -749,61 +845,6 @@ test('quarantineDatabase rejects a directory in place of the main database', () 
   }
 });
 
-test('reservation cleanup deletes the path when it still names the owned file', () => {
-  const directory = mkdtempSync(join(tmpdir(), 'migration-reservation-owned-'));
-  const reservationPath = join(directory, 'reservation');
-  const descriptor = openSync(reservationPath, 'wx');
-
-  try {
-    const owned = fstatSync(descriptor);
-    __migrationBackupRecoveryTesting.removeOwnedReservation(reservationPath, {
-      dev: owned.dev,
-      ino: owned.ino,
-    });
-    assert.equal(existsSync(reservationPath), false);
-  } finally {
-    closeSync(descriptor);
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
-
-test('reservation cleanup preserves a replacement at the same path', () => {
-  const directory = mkdtempSync(
-    join(tmpdir(), 'migration-reservation-replaced-'),
-  );
-  const reservationPath = join(directory, 'reservation');
-  const descriptor = openSync(reservationPath, 'wx');
-
-  try {
-    const owned = fstatSync(descriptor);
-    rmSync(reservationPath);
-    writeFileSync(reservationPath, 'replacement');
-    __migrationBackupRecoveryTesting.removeOwnedReservation(reservationPath, {
-      dev: owned.dev,
-      ino: owned.ino,
-    });
-    assert.equal(readFileSync(reservationPath, 'utf8'), 'replacement');
-  } finally {
-    closeSync(descriptor);
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
-
-test('checksum helper hashes files incrementally with exact byte counts', () => {
-  const directory = mkdtempSync(join(tmpdir(), 'migration-checksum-'));
-  const path = join(directory, 'database.sqlite');
-  const bytes = Buffer.alloc(2 * 1024 * 1024 + 17, 0x5a);
-  try {
-    writeFileSync(path, bytes);
-    assert.deepEqual(__migrationBackupRecoveryTesting.checksumFile(path), {
-      sizeBytes: bytes.byteLength,
-      sha256: createHash('sha256').update(bytes).digest('hex'),
-    });
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
-
 test('createMigrationBackup includes uncheckpointed WAL commits and writes a verified manifest', () => {
   const directory = mkdtempSync(join(tmpdir(), 'migration-backup-'));
   const sourceDatabasePath = join(directory, 'source.sqlite');
@@ -865,7 +906,7 @@ test('createMigrationBackup includes uncheckpointed WAL commits and writes a ver
     assert.deepEqual(manifestFile, backup.manifest);
     assert.deepEqual(backup.manifest, {
       formatVersion: 1,
-      sourceDatabasePath: resolve(sourceDatabasePath),
+      sourceDatabaseFile: 'source.sqlite',
       sourceSchemaVersion: 3,
       targetSchemaVersion: 4,
       createdAt: '2026-07-14T01:02:03.004Z',
@@ -875,6 +916,10 @@ test('createMigrationBackup includes uncheckpointed WAL commits and writes a ver
       integrityCheck: 'ok',
       foreignKeyViolations: 0,
     });
+    assert.equal(statSync(join(directory, 'backups')).mode & 0o777, 0o700);
+    assert.equal(statSync(backup.directoryPath).mode & 0o777, 0o700);
+    assert.equal(statSync(backup.databasePath).mode & 0o777, 0o600);
+    assert.equal(statSync(backup.manifestPath).mode & 0o777, 0o600);
     assert.equal(
       backup.directoryPath,
       join(directory, 'backups', '20260714T010203004Z-fixed-id'),
@@ -1008,23 +1053,26 @@ test('createMigrationBackup refuses to replace a pre-existing temporary director
   }
 });
 
-test('createMigrationBackup removes its temporary directory when snapshot creation fails', () => {
+test('createMigrationBackup rejects an oversized automatic snapshot before creating artifacts', () => {
   const directory = mkdtempSync(join(tmpdir(), 'migration-backup-cleanup-'));
   const sourceDatabasePath = join(directory, 'source.sqlite');
   const source = new Database(sourceDatabasePath, { create: true });
-  const backupId = '20260714T050000000Z-vacuum-failure';
+  const backupId = '20260714T050000000Z-oversized';
 
   try {
-    source.exec('CREATE TABLE values_table (value TEXT); BEGIN');
-    assert.throws(() =>
-      createMigrationBackup({
-        database: source,
-        sourceDatabasePath,
-        sourceSchemaVersion: 1,
-        targetSchemaVersion: 2,
-        now: () => new Date('2026-07-14T05:00:00.000Z'),
-        randomId: () => 'vacuum-failure',
-      }),
+    source.exec('CREATE TABLE values_table (value TEXT)');
+    assert.throws(
+      () =>
+        createMigrationBackup({
+          database: source,
+          sourceDatabasePath,
+          sourceSchemaVersion: 1,
+          targetSchemaVersion: 2,
+          now: () => new Date('2026-07-14T05:00:00.000Z'),
+          randomId: () => 'oversized',
+          maxSnapshotBytes: 1,
+        }),
+      /snapshot limit/,
     );
     assert.equal(
       existsSync(join(directory, 'backups', `.${backupId}.tmp`)),
@@ -1036,7 +1084,6 @@ test('createMigrationBackup removes its temporary directory when snapshot creati
       false,
     );
   } finally {
-    source.exec('ROLLBACK');
     source.close();
     rmSync(directory, { recursive: true, force: true });
   }
@@ -1193,7 +1240,7 @@ test('createMigrationBackup respects an exclusive reservation for the generated 
   }
 });
 
-test('createMigrationBackup quotes single quotes in VACUUM INTO paths', () => {
+test('createMigrationBackup supports paths containing single quotes', () => {
   const directory = mkdtempSync(join(tmpdir(), "migration-backup-'quoted-"));
   const sourceDatabasePath = join(directory, 'manifest.json');
   const source = new Database(sourceDatabasePath, { create: true });

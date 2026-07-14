@@ -22,7 +22,7 @@ import {
 import { PluginStore } from '../src/plugins/plugin-store';
 import { PluginsController } from '../src/plugins/plugins.controller';
 import { PluginsService } from '../src/plugins/plugins.service';
-import { FixedDatabaseClock } from '../src/persistence/database-clock';
+import { TestDatabaseClock } from './support/test-database-factory';
 import {
   closeTestPluginStores,
   createTestPluginStore,
@@ -205,7 +205,7 @@ test('deriveMcpConfigFromRegistryServer rejects unsupported packages', () => {
 });
 
 test('PluginStore persists installed plugins and updates enabled/trust fields', async () => {
-  const store = createTestPluginStore();
+  const store = await createTestPluginStore();
   const installed = await store.installMcpPlugin({
     registryName: 'io.example/demo',
     title: 'Demo MCP',
@@ -236,7 +236,7 @@ test('PluginStore persists installed plugins and updates enabled/trust fields', 
 
 test('PluginStore uses the injected database Clock for persistent timestamps', async () => {
   const now = 1_782_777_123_456;
-  const store = createTestPluginStore(new FixedDatabaseClock(now));
+  const store = await createTestPluginStore(new TestDatabaseClock(now));
 
   const installed = await store.installMcpPlugin({
     registryName: 'io.example/clock',
@@ -250,7 +250,7 @@ test('PluginStore uses the injected database Clock for persistent timestamps', a
 });
 
 test('PluginStore keeps enabled MCP server keys unique across registry namespaces', async () => {
-  const store = createTestPluginStore();
+  const store = await createTestPluginStore();
   const config = {
     type: 'stdio',
     command: 'npx',
@@ -275,7 +275,7 @@ test('PluginStore keeps enabled MCP server keys unique across registry namespace
 });
 
 test('PluginStore keeps enabled LSP server keys unique across registry namespaces', async () => {
-  const store = createTestPluginStore();
+  const store = await createTestPluginStore();
   const config = {
     command: 'typescript-language-server',
     args: ['--stdio'],
@@ -310,7 +310,7 @@ test('curated catalogs expose skill and LSP plugin entries', () => {
 });
 
 test('PluginStore persists skill and LSP plugins separately', async () => {
-  const store = createTestPluginStore();
+  const store = await createTestPluginStore();
   const skill = await store.installCatalogPlugin({
     kind: 'skill',
     registryName: 'github:colorful-code/skills/code-review',

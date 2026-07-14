@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import { Database } from 'bun:sqlite';
 import {
   configureSqliteConnection,
+  configureSqliteSnapshotConnection,
   SqliteConfigurationError,
   type SqliteConnectionRole,
 } from '../src/persistence/sqlite-configuration';
@@ -33,7 +34,7 @@ function pragmaNumber(database: Database, name: string): number {
   > | null;
   assert.ok(row);
   const value = Object.values(row)[0];
-  assert.equal(typeof value, 'number');
+  if (typeof value !== 'number') throw new TypeError('Expected number PRAGMA');
   return value;
 }
 
@@ -44,7 +45,7 @@ function pragmaString(database: Database, name: string): string {
   > | null;
   assert.ok(row);
   const value = Object.values(row)[0];
-  assert.equal(typeof value, 'string');
+  if (typeof value !== 'string') throw new TypeError('Expected string PRAGMA');
   return value;
 }
 
@@ -142,6 +143,40 @@ test('readonly policy rejects a non-WAL database with a stable error', async () 
   });
 });
 
+test('snapshot policy securely accepts bounded WAL and rollback snapshots', async () => {
+  await withDatabasePath((databasePath) => {
+    const creator = new Database(databasePath, { create: true });
+    creator.exec('CREATE TABLE item(value TEXT)');
+    creator.close(true);
+
+    const rollbackSnapshot = new Database(databasePath, { readonly: true });
+    try {
+      assert.equal(
+        configureSqliteSnapshotConnection(rollbackSnapshot).journalMode,
+        'delete',
+      );
+      assert.equal(pragmaNumber(rollbackSnapshot, 'foreign_keys'), 1);
+      assert.equal(pragmaNumber(rollbackSnapshot, 'trusted_schema'), 0);
+      assert.equal(pragmaNumber(rollbackSnapshot, 'query_only'), 1);
+    } finally {
+      rollbackSnapshot.close(true);
+    }
+
+    const writer = new Database(databasePath, { readwrite: true });
+    writer.exec("PRAGMA journal_mode = WAL; INSERT INTO item VALUES ('wal')");
+    const walSnapshot = new Database(databasePath, { readonly: true });
+    try {
+      assert.equal(
+        configureSqliteSnapshotConnection(walSnapshot).journalMode,
+        'wal',
+      );
+    } finally {
+      walSnapshot.close(true);
+      writer.close(true);
+    }
+  });
+});
+
 type PragmaTestConnection = Parameters<typeof configureSqliteConnection>[0];
 
 function injectedConnection(
@@ -152,7 +187,7 @@ function injectedConnection(
       get: () => get(sql),
       run: () => undefined,
     }),
-  } as PragmaTestConnection;
+  } as unknown as PragmaTestConnection;
 }
 
 test('WAL setting validates both statement result and independent readback', () => {
@@ -196,7 +231,7 @@ test('configuration executes each PRAGMA exactly once in the security policy ord
         run: () => undefined,
       };
     },
-  } as Parameters<typeof configureSqliteConnection>[0];
+  } as unknown as Parameters<typeof configureSqliteConnection>[0];
 
   configureSqliteConnection(database, 'business-read-write');
 
@@ -283,7 +318,12 @@ test('diagnostics are sorted, deeply immutable, and reflect runtime capabilities
       assert.equal(diagnostics.connectionRole, 'business-read-write');
       assert.equal(diagnostics.journalMode, 'wal');
       assert.equal(diagnostics.foreignKeys, true);
-      assert.equal(diagnostics.backupMethod, 'vacuum-into');
+      assert.equal(diagnostics.busyTimeoutMs, 250);
+      assert.equal(diagnostics.synchronous, 'full');
+      assert.equal(diagnostics.tempStore, 'memory');
+      assert.equal(diagnostics.trustedSchema, false);
+      assert.equal(diagnostics.queryOnly, false);
+      assert.equal(diagnostics.backupMethod, 'connection-serialize');
       assert.equal(diagnostics.returningSupport, true);
       assert.deepEqual(
         diagnostics.compileOptions,
@@ -312,7 +352,7 @@ test('diagnostics reject unsafe compile options without leaking sensitive rows',
     }),
   } as Parameters<typeof createSqliteDiagnostics>[0];
   const configuration = Object.freeze({
-    role: 'business-read-write' as SqliteConnectionRole,
+    role: 'business-read-write' as const,
     busyTimeoutMs: 250,
     journalMode: 'wal' as const,
     foreignKeys: true as const,
@@ -333,6 +373,119 @@ test('diagnostics reject unsafe compile options without leaking sensitive rows',
       return true;
     },
   );
+});
+
+function diagnosticAdapter(options: {
+  version: string;
+  compileOptions?: string[];
+  serialize?: () => Uint8Array;
+}): Parameters<typeof createSqliteDiagnostics>[0] {
+  return {
+    serialize: options.serialize ?? (() => new Uint8Array()),
+    query: (sql: string) => ({
+      get: () => {
+        if (sql === 'PRAGMA journal_mode') return { journal_mode: 'wal' };
+        if (sql === 'PRAGMA foreign_keys') return { foreign_keys: 1 };
+        if (sql.startsWith('SELECT')) {
+          return { sqliteVersion: options.version };
+        }
+        return null;
+      },
+      all: () =>
+        (options.compileOptions ?? ['THREADSAFE=2']).map((compile_options) => ({
+          compile_options,
+        })),
+    }),
+  } as Parameters<typeof createSqliteDiagnostics>[0];
+}
+
+const diagnosticConfiguration = Object.freeze({
+  role: 'business-read-write' as const,
+  busyTimeoutMs: 250 as const,
+  journalMode: 'wal' as const,
+  foreignKeys: true as const,
+  synchronous: 'full' as const,
+  tempStore: 'memory' as const,
+  trustedSchema: false as const,
+  queryOnly: false,
+});
+
+test('diagnostics report the connection serialization backup capability', () => {
+  const database = diagnosticAdapter({
+    version: '3.54.0',
+    serialize: () => new Uint8Array(),
+  });
+  assert.equal(
+    createSqliteDiagnostics(database, diagnosticConfiguration).backupMethod,
+    'connection-serialize',
+  );
+});
+
+test('diagnostics require connection serialization without requiring VACUUM', () => {
+  assert.equal(
+    createSqliteDiagnostics(
+      diagnosticAdapter({
+        version: '3.54.0',
+        compileOptions: ['OMIT_VACUUM'],
+      }),
+      diagnosticConfiguration,
+    ).backupMethod,
+    'connection-serialize',
+  );
+  assert.throws(
+    () =>
+      createSqliteDiagnostics(
+        {
+          ...diagnosticAdapter({ version: '3.54.0' }),
+          serialize: undefined,
+        } as unknown as Parameters<typeof createSqliteDiagnostics>[0],
+        diagnosticConfiguration,
+      ),
+    (error) =>
+      error instanceof SqliteConfigurationError &&
+      error.code === 'unsupported_runtime',
+  );
+});
+
+test('diagnostics reject forged or throwing roles without querying or leaking them', () => {
+  const secret = '/private/database.sqlite?token=secret';
+  let queries = 0;
+  const database = {
+    serialize: () => new Uint8Array(),
+    query: () => {
+      queries += 1;
+      throw new Error('must not query');
+    },
+  } as unknown as Parameters<typeof createSqliteDiagnostics>[0];
+  const configurations = [
+    { ...diagnosticConfiguration, role: secret },
+    Object.defineProperty({ ...diagnosticConfiguration }, 'role', {
+      enumerable: true,
+      get: () => {
+        throw new Error(secret);
+      },
+    }),
+  ];
+  for (const configuration of configurations) {
+    assert.throws(
+      () =>
+        createSqliteDiagnostics(
+          database,
+          configuration as typeof diagnosticConfiguration,
+        ),
+      (error) => {
+        assert.ok(error instanceof SqliteConfigurationError);
+        assert.equal(error.code, 'unsupported_runtime');
+        assert.equal(error.role, 'unknown');
+        assert.doesNotMatch(
+          `${error.message}${JSON.stringify(error)}`,
+          /private|token|secret/,
+        );
+        return true;
+      },
+    );
+  }
+  assert.equal(queries, 0);
 });
 
 for (const [pragma, actual] of [
@@ -379,6 +532,7 @@ for (const [pragma, actual] of [
 
 test('diagnostics expose compile option names but never option values', () => {
   const database = {
+    serialize: () => new Uint8Array(),
     query: (sql: string) => ({
       get: () => {
         if (sql.startsWith('SELECT')) return { sqliteVersion: '3.54.0' };
@@ -493,7 +647,7 @@ test('PASSIVE checkpoint reports incomplete with busy=0 while a reader pins WAL 
   });
 });
 
-test('checkpoint supports a narrow preflight interruption and validates SQLite rows', () => {
+test('checkpoint supports a narrow preflight interruption', () => {
   const controller = new AbortController();
   controller.abort();
   let calls = 0;
@@ -504,7 +658,7 @@ test('checkpoint supports a narrow preflight interruption and validates SQLite r
         return { busy: 0, log: 0, checkpointed: 0 };
       },
     }),
-  } as Parameters<typeof checkpointWal>[0];
+  } as unknown as Parameters<typeof checkpointWal>[0];
   assert.deepEqual(checkpointWal(database, controller.signal), {
     status: 'interrupted',
     sqliteBusy: false,
@@ -513,27 +667,94 @@ test('checkpoint supports a narrow preflight interruption and validates SQLite r
     remainingFrames: 0,
   });
   assert.equal(calls, 0);
+});
 
-  const emptyWal = {
-    query: () => ({ get: () => ({ busy: 0, log: -1, checkpointed: -1 }) }),
-  } as Parameters<typeof checkpointWal>[0];
-  assert.deepEqual(checkpointWal(emptyWal), {
-    status: 'completed',
-    sqliteBusy: false,
-    logFrames: 0,
-    checkpointedFrames: 0,
-    remainingFrames: 0,
+test('checkpoint preserves SQLite busy separately from incomplete frames', () => {
+  const database = {
+    query: () => ({
+      get: () => ({ busy: 1, log: 7, checkpointed: 3 }),
+    }),
+  } as unknown as Parameters<typeof checkpointWal>[0];
+  assert.deepEqual(checkpointWal(database), {
+    status: 'incomplete',
+    sqliteBusy: true,
+    logFrames: 7,
+    checkpointedFrames: 3,
+    remainingFrames: 4,
   });
+});
 
-  const invalid = {
-    query: () => ({ get: () => ({ busy: 2, log: -1, checkpointed: 4 }) }),
-  } as Parameters<typeof checkpointWal>[0];
-  assert.throws(
-    () => checkpointWal(invalid),
-    (error) =>
-      error instanceof WalCheckpointError &&
-      error.code === 'invalid_checkpoint_result',
-  );
+test('checkpoint completes a real empty WAL', async () => {
+  await withDatabasePath((databasePath) => {
+    const wal = new Database(databasePath, { create: true });
+    try {
+      configureSqliteConnection(wal, 'business-read-write');
+      assert.deepEqual(checkpointWal(wal), {
+        status: 'completed',
+        sqliteBusy: false,
+        logFrames: 0,
+        checkpointedFrames: 0,
+        remainingFrames: 0,
+      });
+    } finally {
+      wal.close();
+    }
+  });
+});
+
+for (const { name, row } of [
+  {
+    name: 'both frame counts at the SQLite -1 sentinel',
+    row: { busy: 0, log: -1, checkpointed: -1 },
+  },
+  {
+    name: 'only log at the SQLite -1 sentinel',
+    row: { busy: 0, log: -1, checkpointed: 0 },
+  },
+  {
+    name: 'only checkpointed at the SQLite -1 sentinel',
+    row: { busy: 0, log: 0, checkpointed: -1 },
+  },
+  {
+    name: 'unsafe busy',
+    row: { busy: Number.MAX_SAFE_INTEGER + 1, log: 0, checkpointed: 0 },
+  },
+  {
+    name: 'unsafe log',
+    row: { busy: 0, log: Number.MAX_SAFE_INTEGER + 1, checkpointed: 0 },
+  },
+  {
+    name: 'unsafe checkpointed',
+    row: { busy: 0, log: 0, checkpointed: Number.MAX_SAFE_INTEGER + 1 },
+  },
+] as const) {
+  test(`checkpoint rejects ${name}`, () => {
+    const database = {
+      query: () => ({ get: () => row }),
+    } as unknown as Parameters<typeof checkpointWal>[0];
+    assert.throws(
+      () => checkpointWal(database),
+      (error) =>
+        error instanceof WalCheckpointError &&
+        error.code === 'invalid_checkpoint_result',
+    );
+  });
+}
+
+test('checkpoint rejects a real non-WAL database', async () => {
+  await withDatabasePath((databasePath) => {
+    const database = new Database(databasePath, { create: true });
+    try {
+      assert.throws(
+        () => checkpointWal(database),
+        (error) =>
+          error instanceof WalCheckpointError &&
+          error.code === 'invalid_checkpoint_result',
+      );
+    } finally {
+      database.close();
+    }
+  });
 });
 
 test('checkpoint rejects rows with missing or extra enumerable columns', () => {
@@ -543,7 +764,7 @@ test('checkpoint rejects rows with missing or extra enumerable columns', () => {
   ]) {
     const database = {
       query: () => ({ get: () => row }),
-    } as Parameters<typeof checkpointWal>[0];
+    } as unknown as Parameters<typeof checkpointWal>[0];
     assert.throws(
       () => checkpointWal(database),
       (error) =>

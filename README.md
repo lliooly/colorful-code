@@ -213,12 +213,8 @@ pnpm --filter @colorful-code/desktop dev
 - Web 构建会固化 `NEXT_PUBLIC_API_BASE_URL`，不同环境需要分别构建。
 - `apps/server/data/` 里的 SQLite 文件属于本地开发状态，不应提交。
 
-## 设计文档
+## 工程文档
 
-更多背景可以从这些文档开始：
-
-- [Agent Monorepo Design](./docs/superpowers/specs/2026-06-27-agent-monorepo-design.md)
-- [Agent Backend Spine](./docs/superpowers/specs/2026-06-29-agent-backend-spine-design.md)
-- [Projects and Chat History](./docs/superpowers/specs/2026-07-03-projects-and-chat-history-design.md)
-- [MCP Plugin Registry](./docs/superpowers/specs/2026-07-03-mcp-plugin-registry-design.md)
-- [Unified Plugin Catalog](./docs/superpowers/specs/2026-07-03-unified-plugin-catalog-design.md)
+- [工程文档导航](./docs/superpowers/README.md)：查看当前阶段、活跃计划和长期规范。
+- [已完成工作归档](./docs/superpowers/completed/README.md)：查看已经实现的功能、历史 spec/plan 和实现证据。
+- [Colorful Code 2.0 Implementation Roadmap](./docs/superpowers/plans/2026-07-10-colorful-code-2-implementation-roadmap.md)：查看 Phase 0B 及后续路线。

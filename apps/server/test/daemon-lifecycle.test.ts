@@ -230,7 +230,7 @@ test('a lock conflict prevents app creation and startup without releasing an uno
   let migrateCalls = 0;
   const releaseCalls = 0;
   const application = new FakeApplication();
-  const conflict = new DataDirectoryLockConflictError('/occupied');
+  const conflict = new DataDirectoryLockConflictError();
 
   await assert.rejects(
     startDaemon({

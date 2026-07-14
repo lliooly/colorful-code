@@ -1,4 +1,4 @@
-import { mkdirSync, realpathSync } from 'node:fs';
+import { lstatSync, mkdirSync, realpathSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { Database } from 'bun:sqlite';
 import {
@@ -10,10 +10,16 @@ import {
   type DatabaseConnection,
   type WriteDatabaseConnection,
 } from './database-clock';
+import { checkpointWal, type WalCheckpointResult } from './sqlite-checkpoint';
 import {
-  configureDatabaseConnection,
-  initializeLegacySchema,
-} from './database';
+  configureSqliteConnection,
+  type SqliteConnectionConfiguration,
+  type SqliteConnectionRole,
+} from './sqlite-configuration';
+import {
+  createSqliteDiagnostics,
+  type SqliteDiagnostics,
+} from './sqlite-diagnostics';
 
 export { DatabaseFacadeRevokedError };
 export type { DatabaseClock, DatabaseConnection };
@@ -25,13 +31,38 @@ export class DatabaseProviderClosedError extends Error {
   }
 }
 
+export class DatabaseReadOnlyError extends Error {
+  constructor() {
+    super('The database provider is read-only');
+    this.name = 'DatabaseReadOnlyError';
+  }
+}
+
 export class DatabaseProviderOwnershipError extends Error {
-  readonly dataDirectory: string;
+  readonly code = 'ownership_conflict' as const;
 
   constructor(dataDirectory: string) {
-    super(`A database provider already owns data directory: ${dataDirectory}`);
+    super('A database provider already owns the data directory');
     this.name = 'DatabaseProviderOwnershipError';
-    this.dataDirectory = dataDirectory;
+    void dataDirectory;
+  }
+}
+
+export type DatabaseProviderPathErrorCode =
+  | 'directory_unavailable'
+  | 'database_open_failed';
+
+export class DatabaseProviderPathError extends Error {
+  readonly code: DatabaseProviderPathErrorCode;
+
+  constructor(code: DatabaseProviderPathErrorCode) {
+    super(
+      code === 'directory_unavailable'
+        ? 'Database directory is unavailable'
+        : 'Database could not be opened',
+    );
+    this.name = 'DatabaseProviderPathError';
+    this.code = code;
   }
 }
 
@@ -83,7 +114,10 @@ export type SynchronousTransactionResult<T> =
 
 export interface DatabaseProvider {
   readonly dialect: 'sqlite';
+  readonly accessMode: DatabaseAccessMode;
+  readonly diagnostics: SqliteDiagnostics;
   readonly clock: DatabaseClock;
+  readonly lastCheckpointResult: WalCheckpointResult | undefined;
 
   read<T>(operation: (connection: DatabaseConnection) => T): T;
   transaction<T>(
@@ -92,18 +126,42 @@ export interface DatabaseProvider {
     ) => SynchronousTransactionResult<T>,
     options?: TransactionOptions,
   ): Promise<T>;
-  close(): Promise<void>;
+  close(options?: DatabaseProviderCloseOptions): Promise<void>;
+}
+
+export interface DatabaseProviderCloseOptions {
+  readonly checkpointSignal?: AbortSignal;
+}
+
+export type DatabaseAccessMode = 'read-write' | 'read-only';
+
+export interface DatabaseProviderOptions {
+  readonly accessMode?: DatabaseAccessMode;
 }
 
 type ProviderState = 'open' | 'closing' | 'closed';
 
 interface DatabaseProviderDependencies {
   readonly clock?: DatabaseClock;
-  readonly connectionFactory: (databasePath: string) => Database;
-  readonly configureConnection: (connection: Database) => void;
-  readonly initializeSchema: (connection: Database) => void;
+  readonly connectionFactory: (
+    databasePath: string,
+    accessMode: DatabaseAccessMode,
+  ) => Database;
+  readonly configureConnection: (
+    connection: Database,
+    role: SqliteConnectionRole,
+  ) => SqliteConnectionConfiguration;
+  readonly createDiagnostics: (
+    connection: Database,
+    configuration: SqliteConnectionConfiguration,
+  ) => SqliteDiagnostics;
   readonly createClock: () => DatabaseClock;
   readonly closeConnection: (connection: Database) => void;
+  readonly checkpointWal: (
+    connection: Database,
+    signal?: AbortSignal,
+  ) => WalCheckpointResult;
+  readonly releaseOwnership: (dataDirectory: string, owner: symbol) => void;
   readonly executeTransactionControl: (
     connection: Database,
     statement: TransactionControlStatement,
@@ -114,13 +172,34 @@ interface DatabaseProviderDependencies {
 
 type TransactionControlStatement = 'BEGIN IMMEDIATE' | 'COMMIT' | 'ROLLBACK';
 
-export interface TestDatabaseProviderOptions {
+class BeginTransactionBusyError extends Error {
+  constructor(readonly sqliteError: unknown) {
+    super('Database transaction could not begin because SQLite is busy');
+    this.name = 'BeginTransactionBusyError';
+  }
+}
+
+export interface DatabaseProviderDependencyOverrides {
   readonly clock?: DatabaseClock;
-  readonly connectionFactory?: (databasePath: string) => Database;
-  readonly configureConnection?: (connection: Database) => void;
-  readonly initializeSchema?: (connection: Database) => void;
+  readonly connectionFactory?: (
+    databasePath: string,
+    accessMode: DatabaseAccessMode,
+  ) => Database;
+  readonly configureConnection?: (
+    connection: Database,
+    role: SqliteConnectionRole,
+  ) => SqliteConnectionConfiguration;
+  readonly createDiagnostics?: (
+    connection: Database,
+    configuration: SqliteConnectionConfiguration,
+  ) => SqliteDiagnostics;
   readonly createClock?: () => DatabaseClock;
   readonly closeConnection?: (connection: Database) => void;
+  readonly checkpointWal?: (
+    connection: Database,
+    signal?: AbortSignal,
+  ) => WalCheckpointResult;
+  readonly releaseOwnership?: (dataDirectory: string, owner: symbol) => void;
   readonly executeTransactionControl?: (
     connection: Database,
     statement: TransactionControlStatement,
@@ -133,9 +212,16 @@ const dataDirectoryOwners = new Map<string, symbol>();
 
 class SqliteDatabaseProvider implements DatabaseProvider {
   readonly dialect = 'sqlite' as const;
+  readonly accessMode: DatabaseAccessMode;
+  readonly diagnostics: SqliteDiagnostics;
   readonly clock: DatabaseClock;
   readonly #connection: Database;
   readonly #closeConnection: (connection: Database) => void;
+  readonly #checkpointWal: (
+    connection: Database,
+    signal?: AbortSignal,
+  ) => WalCheckpointResult;
+  readonly #releaseOwnership: (dataDirectory: string, owner: symbol) => void;
   readonly #dataDirectory: string;
   readonly #owner: symbol;
   readonly #executeTransactionControl: DatabaseProviderDependencies['executeTransactionControl'];
@@ -143,12 +229,20 @@ class SqliteDatabaseProvider implements DatabaseProvider {
   readonly #random: DatabaseProviderDependencies['random'];
   #state: ProviderState = 'open';
   #closePromise?: Promise<void>;
-  #transactionCallbackActive = false;
+  #checkpointSignal?: AbortSignal;
+  #transactionActive = false;
+  #activeOperations = 0;
+  #resolveOperationsDrained?: () => void;
+  #lastCheckpointResult: WalCheckpointResult | undefined;
 
   constructor(
     connection: Database,
+    accessMode: DatabaseAccessMode,
+    diagnostics: SqliteDiagnostics,
     clock: DatabaseClock,
     closeConnection: (connection: Database) => void,
+    checkpoint: (connection: Database) => WalCheckpointResult,
+    releaseProviderOwnership: (dataDirectory: string, owner: symbol) => void,
     dataDirectory: string,
     owner: symbol,
     executeTransactionControl: DatabaseProviderDependencies['executeTransactionControl'],
@@ -156,8 +250,12 @@ class SqliteDatabaseProvider implements DatabaseProvider {
     random: DatabaseProviderDependencies['random'],
   ) {
     this.#connection = connection;
+    this.accessMode = accessMode;
+    this.diagnostics = diagnostics;
     this.clock = clock;
     this.#closeConnection = closeConnection;
+    this.#checkpointWal = checkpoint;
+    this.#releaseOwnership = releaseProviderOwnership;
     this.#dataDirectory = dataDirectory;
     this.#owner = owner;
     this.#executeTransactionControl = executeTransactionControl;
@@ -165,13 +263,19 @@ class SqliteDatabaseProvider implements DatabaseProvider {
     this.#random = random;
   }
 
+  get lastCheckpointResult(): WalCheckpointResult | undefined {
+    return this.#lastCheckpointResult;
+  }
+
   read<T>(operation: (connection: DatabaseConnection) => T): T {
-    this.#assertOpen();
-    const facade = createDatabaseConnectionFacade(this.#connection);
+    this.#acquireOperation();
+    let facade: DatabaseConnection | undefined;
     try {
+      facade = createDatabaseConnectionFacade(this.#connection);
       return operation(facade);
     } finally {
-      revokeDatabaseConnectionFacade(facade);
+      if (facade !== undefined) revokeDatabaseConnectionFacade(facade);
+      this.#releaseOperation();
     }
   }
 
@@ -182,33 +286,81 @@ class SqliteDatabaseProvider implements DatabaseProvider {
     options: TransactionOptions = {},
   ): Promise<T> {
     this.#assertOpen();
-    if (this.#transactionCallbackActive) throw new NestedTransactionError();
+    if (this.accessMode === 'read-only') throw new DatabaseReadOnlyError();
+    if (this.#transactionActive) throw new NestedTransactionError();
     const retry = validateRetryOptions(options.retry);
-    return this.#runTransactionWithRetry(operation, retry);
+    this.#acquireOperation();
+    this.#transactionActive = true;
+    try {
+      const started = this.#startTransaction(operation, retry);
+      if (started.kind === 'retrying') {
+        return started.promise.finally(() => this.#finishTransaction());
+      }
+      this.#finishTransaction();
+      return Promise.resolve(started.value);
+    } catch (error) {
+      this.#finishTransaction();
+      return Promise.reject(error);
+    }
   }
 
-  async #runTransactionWithRetry<T>(
+  #startTransaction<T>(
     operation: (
       transaction: TransactionContext,
     ) => SynchronousTransactionResult<T>,
     retry: TransactionRetryOptions | undefined,
+  ):
+    | { readonly kind: 'completed'; readonly value: T }
+    | { readonly kind: 'retrying'; readonly promise: Promise<T> } {
+    try {
+      return {
+        kind: 'completed',
+        value: this.#runTransactionAttempt(operation),
+      };
+    } catch (error) {
+      if (!(error instanceof BeginTransactionBusyError)) throw error;
+      if (!retry) throw error.sqliteError;
+      const maximumAttempts = retry.maxRetries + 1;
+      if (maximumAttempts === 1) {
+        throw new DatabaseBusyRetryExhaustedError(1, error.sqliteError);
+      }
+      return {
+        kind: 'retrying',
+        promise: this.#continueTransactionWithRetry(
+          operation,
+          retry,
+          maximumAttempts,
+        ),
+      };
+    }
+  }
+
+  async #continueTransactionWithRetry<T>(
+    operation: (
+      transaction: TransactionContext,
+    ) => SynchronousTransactionResult<T>,
+    retry: TransactionRetryOptions,
+    maximumAttempts: number,
   ): Promise<T> {
-    const maximumAttempts = (retry?.maxRetries ?? 0) + 1;
-    for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+    for (let attempt = 2; attempt <= maximumAttempts; attempt += 1) {
+      this.#assertOpen();
+      await this.#sleep(computeRetryDelay(retry, attempt - 1, this.#random));
       this.#assertOpen();
       try {
         return this.#runTransactionAttempt(operation);
       } catch (error) {
-        if (!retry || !isBusyError(error)) throw error;
+        if (!(error instanceof BeginTransactionBusyError)) throw error;
         if (attempt === maximumAttempts) {
-          throw new DatabaseBusyRetryExhaustedError(attempt, error);
+          throw new DatabaseBusyRetryExhaustedError(attempt, error.sqliteError);
         }
-        this.#assertOpen();
-        await this.#sleep(computeRetryDelay(retry, attempt, this.#random));
-        this.#assertOpen();
       }
     }
     throw new Error('Unreachable database transaction retry state');
+  }
+
+  #finishTransaction(): void {
+    this.#transactionActive = false;
+    this.#releaseOperation();
   }
 
   #runTransactionAttempt<T>(
@@ -219,16 +371,17 @@ class SqliteDatabaseProvider implements DatabaseProvider {
     const database = createDatabaseConnectionFacade(this.#connection, 'write');
     let transactionStarted = false;
     try {
-      this.#executeTransactionControl(this.#connection, 'BEGIN IMMEDIATE');
+      try {
+        this.#executeTransactionControl(this.#connection, 'BEGIN IMMEDIATE');
+      } catch (error) {
+        if (isBusyError(error)) throw new BeginTransactionBusyError(error);
+        throw error;
+      }
       transactionStarted = true;
       const now = this.clock.now(database);
-      this.#transactionCallbackActive = true;
-      let result: SynchronousTransactionResult<T>;
-      try {
-        result = operation(Object.freeze({ database, clock: this.clock, now }));
-      } finally {
-        this.#transactionCallbackActive = false;
-      }
+      const result = operation(
+        Object.freeze({ database, clock: this.clock, now }),
+      );
       if (isThenable(result)) throw new AsyncTransactionCallbackError();
       this.#executeTransactionControl(this.#connection, 'COMMIT');
       transactionStarted = false;
@@ -250,18 +403,69 @@ class SqliteDatabaseProvider implements DatabaseProvider {
     }
   }
 
-  close(): Promise<void> {
+  close(options: DatabaseProviderCloseOptions = {}): Promise<void> {
     if (this.#closePromise) return this.#closePromise;
+    this.#checkpointSignal = options.checkpointSignal;
     this.#state = 'closing';
-    this.#closePromise = (async () => {
-      try {
-        this.#closeConnection(this.#connection);
-        releaseOwnership(this.#dataDirectory, this.#owner);
-      } finally {
-        this.#state = 'closed';
-      }
-    })();
+    this.#closePromise = Promise.resolve().then(() => this.#finishClose());
     return this.#closePromise;
+  }
+
+  async #finishClose(): Promise<void> {
+    await this.#waitForOperationsToDrain();
+    const errors: unknown[] = [];
+    if (this.accessMode === 'read-write') {
+      try {
+        this.#lastCheckpointResult = this.#checkpointWal(
+          this.#connection,
+          this.#checkpointSignal,
+        );
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+
+    let connectionClosed = false;
+    try {
+      this.#closeConnection(this.#connection);
+      connectionClosed = true;
+    } catch (error) {
+      errors.push(error);
+    }
+
+    if (connectionClosed) {
+      try {
+        this.#releaseOwnership(this.#dataDirectory, this.#owner);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    this.#state = 'closed';
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) {
+      throw new AggregateError(errors, 'Database provider close failed');
+    }
+  }
+
+  #acquireOperation(): void {
+    this.#assertOpen();
+    this.#activeOperations += 1;
+  }
+
+  #releaseOperation(): void {
+    this.#activeOperations -= 1;
+    if (this.#activeOperations === 0) {
+      const resolveDrained = this.#resolveOperationsDrained;
+      this.#resolveOperationsDrained = undefined;
+      resolveDrained?.();
+    }
+  }
+
+  #waitForOperationsToDrain(): Promise<void> {
+    if (this.#activeOperations === 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.#resolveOperationsDrained = resolve;
+    });
   }
 
   #assertOpen(): void {
@@ -270,11 +474,16 @@ class SqliteDatabaseProvider implements DatabaseProvider {
 }
 
 const defaultDependencies: DatabaseProviderDependencies = {
-  connectionFactory: (databasePath) => new Database(databasePath),
-  configureConnection: configureDatabaseConnection,
-  initializeSchema: initializeLegacySchema,
+  connectionFactory: (databasePath, accessMode) =>
+    accessMode === 'read-only'
+      ? new Database(databasePath, { readonly: true, create: false })
+      : new Database(databasePath, { create: true }),
+  configureConnection: configureSqliteConnection,
+  createDiagnostics: createSqliteDiagnostics,
   createClock: () => new SqliteDatabaseClock(),
   closeConnection: (connection) => connection.close(),
+  checkpointWal,
+  releaseOwnership,
   executeTransactionControl: (connection, statement) =>
     connection.exec(statement),
   sleep: (delayMs) =>
@@ -323,7 +532,41 @@ function validateRetryOptions(
   ) {
     throw new RangeError('jitterRatio must be between 0 and 1');
   }
+  validateRetryBudget(retry);
   return Object.freeze({ ...retry });
+}
+
+const SQLITE_BUSY_TIMEOUT_MS = 250;
+const MAX_TRANSACTION_RETRY_BUDGET_MS = 2_000;
+const MAX_TRANSACTION_RETRIES =
+  MAX_TRANSACTION_RETRY_BUDGET_MS / SQLITE_BUSY_TIMEOUT_MS - 1;
+
+function validateRetryBudget(retry: TransactionRetryOptions): void {
+  if (retry.maxRetries > MAX_TRANSACTION_RETRIES) {
+    throw new RangeError('Database transaction retry budget exceeds 2000ms');
+  }
+  let remainingBudget =
+    MAX_TRANSACTION_RETRY_BUDGET_MS -
+    (retry.maxRetries + 1) * SQLITE_BUSY_TIMEOUT_MS;
+
+  for (let retryNumber = 1; retryNumber <= retry.maxRetries; retryNumber += 1) {
+    const factor = 2 ** (retryNumber - 1);
+    const exponential =
+      retry.baseDelayMs > Math.floor(retry.maxDelayMs / factor)
+        ? retry.maxDelayMs
+        : retry.baseDelayMs * factor;
+    if (exponential > remainingBudget) {
+      throw new RangeError('Database transaction retry budget exceeds 2000ms');
+    }
+    const maximumDelay = Math.min(
+      retry.maxDelayMs,
+      Math.round(exponential * (1 + retry.jitterRatio)),
+    );
+    if (maximumDelay > remainingBudget) {
+      throw new RangeError('Database transaction retry budget exceeds 2000ms');
+    }
+    remainingBudget -= maximumDelay;
+  }
 }
 
 function computeRetryDelay(
@@ -352,15 +595,50 @@ function releaseOwnership(dataDirectory: string, owner: symbol): void {
   }
 }
 
+type DatabaseFileIdentity = Readonly<{ dev: number; ino: number }>;
+
+function inspectDatabaseFileIdentity(
+  databasePath: string,
+): DatabaseFileIdentity | undefined {
+  let stat: ReturnType<typeof lstatSync>;
+  try {
+    stat = lstatSync(databasePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw new DatabaseProviderPathError('database_open_failed');
+  }
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1) {
+    throw new DatabaseProviderPathError('database_open_failed');
+  }
+  try {
+    if (realpathSync.native(databasePath) !== databasePath) {
+      throw new DatabaseProviderPathError('database_open_failed');
+    }
+  } catch (error) {
+    if (error instanceof DatabaseProviderPathError) throw error;
+    throw new DatabaseProviderPathError('database_open_failed');
+  }
+  return Object.freeze({ dev: stat.dev, ino: stat.ino });
+}
+
 function createProvider(
   databasePath: string,
-  overrides: TestDatabaseProviderOptions = {},
+  accessMode: DatabaseAccessMode,
+  overrides: DatabaseProviderDependencyOverrides = {},
 ): DatabaseProvider {
   const normalizedPath = resolve(databasePath);
   const requestedDataDirectory = dirname(normalizedPath);
-  mkdirSync(requestedDataDirectory, { recursive: true });
-  const dataDirectory = realpathSync.native(requestedDataDirectory);
+  let dataDirectory: string;
+  try {
+    if (accessMode === 'read-write') {
+      mkdirSync(requestedDataDirectory, { recursive: true });
+    }
+    dataDirectory = realpathSync.native(requestedDataDirectory);
+  } catch {
+    throw new DatabaseProviderPathError('directory_unavailable');
+  }
   const canonicalDatabasePath = join(dataDirectory, basename(normalizedPath));
+  const identityBeforeOpen = inspectDatabaseFileIdentity(canonicalDatabasePath);
   const owner = Symbol(dataDirectory);
   if (dataDirectoryOwners.has(dataDirectory)) {
     throw new DatabaseProviderOwnershipError(dataDirectory);
@@ -373,14 +651,41 @@ function createProvider(
   };
   let connection: Database | undefined;
   try {
-    connection = dependencies.connectionFactory(canonicalDatabasePath);
-    dependencies.configureConnection(connection);
-    dependencies.initializeSchema(connection);
+    try {
+      connection = dependencies.connectionFactory(
+        canonicalDatabasePath,
+        accessMode,
+      );
+      const identityAfterOpen = inspectDatabaseFileIdentity(
+        canonicalDatabasePath,
+      );
+      if (
+        identityAfterOpen !== undefined &&
+        identityBeforeOpen !== undefined &&
+        (identityAfterOpen.dev !== identityBeforeOpen.dev ||
+          identityAfterOpen.ino !== identityBeforeOpen.ino)
+      ) {
+        throw new DatabaseProviderPathError('database_open_failed');
+      }
+    } catch {
+      throw new DatabaseProviderPathError('database_open_failed');
+    }
+    const role =
+      accessMode === 'read-only' ? 'business-read-only' : 'business-read-write';
+    const configuration = dependencies.configureConnection(connection, role);
+    const diagnostics = dependencies.createDiagnostics(
+      connection,
+      configuration,
+    );
     const clock = dependencies.clock ?? dependencies.createClock();
     return new SqliteDatabaseProvider(
       connection,
+      accessMode,
+      diagnostics,
       clock,
       dependencies.closeConnection,
+      dependencies.checkpointWal,
+      dependencies.releaseOwnership,
       dataDirectory,
       owner,
       dependencies.executeTransactionControl,
@@ -411,13 +716,30 @@ function createProvider(
 
 export function createInternalDatabaseProvider(
   databasePath: string,
+  options: DatabaseProviderOptions = {},
 ): DatabaseProvider {
-  return createProvider(databasePath);
+  const accessMode = validateAccessMode(options.accessMode);
+  return createProvider(databasePath, accessMode);
 }
 
-export function createInternalTestDatabaseProvider(
+export function createDatabaseProviderWithDependencies(
   databasePath: string,
-  options: TestDatabaseProviderOptions = {},
+  options: DatabaseProviderOptions,
+  overrides: DatabaseProviderDependencyOverrides,
 ): DatabaseProvider {
-  return createProvider(databasePath, options);
+  return createProvider(
+    databasePath,
+    validateAccessMode(options.accessMode),
+    overrides,
+  );
+}
+
+function validateAccessMode(
+  accessMode: DatabaseAccessMode | undefined,
+): DatabaseAccessMode {
+  if (accessMode === undefined) return 'read-write';
+  if (accessMode === 'read-write' || accessMode === 'read-only') {
+    return accessMode;
+  }
+  throw new TypeError('Invalid database access mode');
 }

@@ -1,4 +1,4 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { basename, resolve } from 'node:path';
 import { and, asc, desc, eq, inArray } from 'drizzle-orm';
@@ -50,10 +50,6 @@ export type UpsertSessionMetadataInput = {
   pinned?: boolean;
 };
 
-export type SessionStoreFaultHooks = {
-  afterDeleteAudit?: () => void;
-};
-
 function normalizeProjectPath(path: string): string {
   return resolve(path.trim());
 }
@@ -75,7 +71,6 @@ function projectIdForPath(path: string): string {
 // stringified columns.
 @Injectable()
 export class SessionStore {
-  private faultHooks: SessionStoreFaultHooks = {};
   private closed = false;
 
   get isClosed(): boolean {
@@ -84,11 +79,7 @@ export class SessionStore {
 
   constructor(
     @Inject(DATABASE_PROVIDER) private readonly provider: DatabaseProvider,
-    @Optional()
-    faultHooks: SessionStoreFaultHooks = {},
-  ) {
-    this.faultHooks = faultHooks;
-  }
+  ) {}
 
   private read<T>(operation: (database: DatabaseConnection['db']) => T): T {
     this.assertOpen();
@@ -482,7 +473,6 @@ export class SessionStore {
           .limit(1)
           .all().length > 0;
       database.delete(audit).where(eq(audit.sessionId, sessionId)).run();
-      this.faultHooks.afterDeleteAudit?.();
       database
         .delete(checkpoints)
         .where(eq(checkpoints.sessionId, sessionId))
@@ -502,7 +492,6 @@ export class SessionStore {
     }
     return this.write((database) => {
       database.delete(audit).where(inArray(audit.sessionId, sessionIds)).run();
-      this.faultHooks.afterDeleteAudit?.();
       database
         .delete(checkpoints)
         .where(inArray(checkpoints.sessionId, sessionIds))

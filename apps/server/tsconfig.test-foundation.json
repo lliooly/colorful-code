@@ -1,0 +1,32 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "outDir": "./dist-test"
+  },
+  "include": [
+    "scripts/build-production.ts",
+    "scripts/create-legacy-fixture.ts",
+    "scripts/generate-legacy-schema-manifest.ts",
+    "scripts/verify-production-build.ts",
+    "test/data-directory-instance-lock.test.ts",
+    "test/database-access-boundary.test.ts",
+    "test/database-provider.test.ts",
+    "test/legacy-baseline.test.ts",
+    "test/migration-backup-recovery.test.ts",
+    "test/migration-framework.test.ts",
+    "test/phase-0a-invariants.test.ts",
+    "test/phase-0a-sqlite-foundation.test.ts",
+    "test/production-build-boundary.test.ts",
+    "test/session-store.test.ts",
+    "test/sqlite-configuration.test.ts",
+    "test/test-database-factory.test.ts",
+    "test/v2-boundary.test.ts",
+    "test/support/database-provider-testing.ts",
+    "test/support/test-database-factory.ts",
+    "test/support/test-plugin-store.ts",
+    "test/support/test-session-store.ts"
+  ]
+}

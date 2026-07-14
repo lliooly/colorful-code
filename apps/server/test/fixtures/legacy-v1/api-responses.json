@@ -2,20 +2,14 @@
   "restore": {
     "id": "legacy-session-1",
     "needsModelConfig": false,
-    "history": [
-      { "role": "user", "content": "Inspect the baseline." },
-      { "role": "assistant", "content": "Baseline captured." }
-    ],
+    "history": [],
     "permissionMode": "default"
   },
   "checkpointRestore": {
     "id": "legacy-session-1",
     "checkpointId": "legacy-checkpoint-1",
     "needsModelConfig": false,
-    "history": [
-      { "role": "user", "content": "Inspect the baseline." },
-      { "role": "assistant", "content": "Baseline captured." }
-    ],
+    "history": [],
     "permissionMode": "default"
   }
 }

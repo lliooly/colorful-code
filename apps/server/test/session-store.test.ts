@@ -1,19 +1,18 @@
 import { strict as assert } from 'node:assert';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { existsSync } from 'node:fs';
 import { test } from 'node:test';
 import type {
   Checkpoint,
   PermissionAuditEntry,
   SessionSnapshot,
 } from '@colorful-code/tool-runtime';
-import { FixedDatabaseClock } from '../src/persistence/database-clock';
-import {
-  createTestDatabaseProvider,
-  type TestDatabaseProviderOptions,
-} from '../src/persistence/database-provider.testing';
+import { createTestDatabaseProvider } from './support/database-provider-testing';
 import { SessionStore } from '../src/persistence/session-store';
+import {
+  createTestDatabase,
+  TestDatabaseClock,
+  withRawTestConnection,
+} from './support/test-database-factory';
 
 // ---------------------------------------------------------------------------
 // Persistence round-trips against a REAL temp-file SQLite DB (not just
@@ -27,21 +26,31 @@ import { SessionStore } from '../src/persistence/session-store';
 // guaranteeing the connection is closed and the temp dir removed afterward.
 async function withTempStore(
   body: (store: SessionStore, dbPath: string) => void | Promise<void>,
-  options: TestDatabaseProviderOptions & {
-    faultHooks?: ConstructorParameters<typeof SessionStore>[1];
+  options: {
+    clock?: TestDatabaseClock;
+    failCheckpointDelete?: string;
   } = {},
 ): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), 'colorful-code-store-'));
-  // Nested under a not-yet-existing `data/` dir to exercise mkdir-recursive.
-  const dbPath = join(dir, 'data', 'colorful-code.db');
-  const provider = createTestDatabaseProvider(dbPath, options);
-  const store = new SessionStore(provider, options.faultHooks);
+  const database = await createTestDatabase({
+    kind: 'migrated',
+    clock: options.clock,
+  });
+  if (options.failCheckpointDelete !== undefined) {
+    const message = options.failCheckpointDelete.replaceAll("'", "''");
+    withRawTestConnection(database, 'lock-holder', (raw) => {
+      raw.exec(`CREATE TRIGGER test_fail_checkpoint_delete
+        BEFORE DELETE ON checkpoints
+        BEGIN
+          SELECT RAISE(ABORT, '${message}');
+        END`);
+    });
+  }
+  const store = new SessionStore(database.provider);
   try {
-    await body(store, dbPath);
+    await body(store, database.databasePath);
   } finally {
     store.close();
-    await provider.close();
-    rmSync(dir, { recursive: true, force: true });
+    await database.close();
   }
 }
 
@@ -85,6 +94,46 @@ test('saveSnapshot + loadSnapshot round-trip through a real file DB', async () =
   });
 });
 
+test('current SessionStore reads the normal 1.x fixture after baseline adoption', async () => {
+  const database = await createTestDatabase({ kind: 'legacy-1x' });
+  const store = new SessionStore(database.provider);
+  try {
+    const snapshot = store.loadSnapshot('legacy-session-1') as
+      | (SessionSnapshot & {
+          modelConfig?: Record<string, string>;
+        })
+      | undefined;
+    assert.equal(snapshot?.id, 'legacy-session-1');
+    assert.deepEqual(snapshot?.history, []);
+    assert.deepEqual(snapshot?.modelConfig, {
+      presetId: 'fixture-openai-compatible',
+      protocol: 'openai',
+      model: 'fixture-model',
+    });
+    assert.deepEqual(
+      store
+        .listCheckpoints('legacy-session-1')
+        .map(({ id, parentCheckpointId }) => ({ id, parentCheckpointId })),
+      [
+        { id: 'legacy-checkpoint-1', parentCheckpointId: undefined },
+        {
+          id: 'legacy-checkpoint-2',
+          parentCheckpointId: 'legacy-checkpoint-1',
+        },
+      ],
+    );
+    assert.deepEqual(
+      store.listAudit('legacy-session-1').map(({ toolUseId }) => toolUseId),
+      ['legacy-tool-use-1', 'legacy-tool-use-2'],
+    );
+    assert.equal(store.loadSessionMetadata('legacy-session-1')?.pinned, true);
+    assert.equal(store.listProjects()[0]?.path, 'fixture-workspace');
+  } finally {
+    store.close();
+    await database.close();
+  }
+});
+
 test('deleteSession rolls back every table when a delete step fails', async () => {
   await withTempStore(
     async (store) => {
@@ -118,11 +167,7 @@ test('deleteSession rolls back every table when a delete step fails', async () =
       assert.ok(store.loadSessionMetadata(snapshot.id));
     },
     {
-      faultHooks: {
-        afterDeleteAudit: () => {
-          throw new Error('injected delete failure');
-        },
-      },
+      failCheckpointDelete: 'injected delete failure',
     },
   );
 });
@@ -300,20 +345,19 @@ test('listAudit is filtered by sessionId and preserves per-session order', async
 });
 
 test('a reopened file DB still sees previously persisted data', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'colorful-code-store-reopen-'));
-  const dbPath = join(dir, 'data', 'colorful-code.db');
+  const database = await createTestDatabase({ kind: 'migrated' });
+  const dbPath = database.databasePath;
   try {
-    const firstProvider = createTestDatabaseProvider(dbPath);
-    const first = new SessionStore(firstProvider);
+    const first = new SessionStore(database.provider);
     await first.saveSnapshot(sampleSnapshot({ id: 'persisted' }));
     await first.appendAudit('persisted', [
       { toolUseId: 'c-1', toolName: 'TaskList', behavior: 'allow', at: 99 },
     ]);
     first.close();
-    await firstProvider.close();
+    await database.provider.close();
 
     // A brand-new store over the SAME file must observe the prior writes — the
-    // idempotent DDL must not wipe existing tables on reopen.
+    // the Provider must not mutate the migrated schema on reopen.
     const secondProvider = createTestDatabaseProvider(dbPath);
     const second = new SessionStore(secondProvider);
     try {
@@ -324,7 +368,7 @@ test('a reopened file DB still sees previously persisted data', async () => {
       await secondProvider.close();
     }
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    await database.close();
   }
 });
 
@@ -357,7 +401,7 @@ test('generated persistence timestamps use one injected database Clock value', a
       assert.equal(project.updatedAt, now);
       assert.equal(listed?.updatedAt, now);
     },
-    { clock: new FixedDatabaseClock(now) },
+    { clock: new TestDatabaseClock(now) },
   );
 });
 

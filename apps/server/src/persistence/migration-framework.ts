@@ -6,15 +6,17 @@ export interface MigrationDatabase {
 }
 
 export interface Migration {
-  readonly version: number;
-  readonly name: string;
-  readonly source: string;
-  readonly up: (database: MigrationDatabase) => unknown;
+  version: number;
+  name: string;
+  source: string;
+  up: (database: MigrationDatabase) => unknown;
 }
 
 export type MigrationErrorCode =
   | 'invalid_registry'
   | 'database_newer_than_program'
+  | 'unsupported_unmanaged_schema'
+  | 'database_changed_during_backup'
   | 'unknown_applied_migration'
   | 'checksum_mismatch'
   | 'migration_metadata_invalid'
@@ -161,6 +163,13 @@ export function validateMigrationRegistry(
 export interface RunMigrationsOptions {
   now?: () => number;
   monotonicNow?: () => number;
+}
+
+export interface AdoptMigrationOptions {
+  readonly now?: () => number;
+  readonly validateUnmanagedSchema: (database: Database) => void;
+  readonly allowExistingEmptyMetadata?: boolean;
+  readonly onBeforeMutation?: () => void;
 }
 
 type AppliedMigration = {
@@ -318,6 +327,82 @@ function metadataInvalid(message: string, cause?: unknown): MigrationError {
   return new MigrationError('migration_metadata_invalid', message, {
     ...(cause === undefined ? {} : { cause }),
   });
+}
+
+export function adoptUnmanagedMigration(
+  database: Database,
+  migration: Migration,
+  options: AdoptMigrationOptions,
+): void {
+  const descriptor = snapshotRegistry([migration])[0]!;
+  const now = options.now ?? Date.now;
+  try {
+    database
+      .transaction(() => {
+        const metadataStatement = database.prepare<{ count: number }, []>(
+          "SELECT count(*) AS count FROM sqlite_schema WHERE type = 'table' AND name = 'schema_migrations'",
+        );
+        let metadataCount: number | undefined;
+        try {
+          metadataCount = metadataStatement.get()?.count;
+        } finally {
+          metadataStatement.finalize();
+        }
+        if (metadataCount === 1 && options.allowExistingEmptyMetadata) {
+          validateMetadataSchema(database);
+          const rowCountStatement = database.prepare<{ count: number }, []>(
+            'SELECT count(*) AS count FROM schema_migrations',
+          );
+          let rowCount: number | undefined;
+          try {
+            rowCount = rowCountStatement.get()?.count;
+          } finally {
+            rowCountStatement.finalize();
+          }
+          if (rowCount !== 0) {
+            throw metadataInvalid(
+              'Cannot adopt a migration after migration history exists',
+            );
+          }
+        } else if (metadataCount !== 0) {
+          throw metadataInvalid(
+            'Cannot adopt a migration after migration metadata exists',
+          );
+        }
+        options.validateUnmanagedSchema(database);
+        options.onBeforeMutation?.();
+        if (metadataCount === 0) database.exec(CREATE_SCHEMA_MIGRATIONS);
+        validateMetadataSchema(database);
+        const appliedAt = requireNonNegativeSafeInteger(
+          Math.floor(requireFiniteTime(now(), 'now')),
+          'applied_at',
+        );
+        database
+          .query(
+            `INSERT INTO schema_migrations
+               (version, name, checksum, applied_at, duration_ms)
+             VALUES (?, ?, ?, ?, 0)`,
+          )
+          .run(
+            descriptor.version,
+            descriptor.name,
+            descriptor.checksum,
+            appliedAt,
+          );
+      })
+      .immediate();
+  } catch (cause) {
+    if (cause instanceof MigrationError) throw cause;
+    throw new MigrationError(
+      'migration_failed',
+      `Migration ${descriptor.version}/${descriptor.name} adoption failed`,
+      {
+        version: descriptor.version,
+        migrationName: descriptor.name,
+        cause,
+      },
+    );
+  }
 }
 
 function validateMetadataSchema(database: Database): void {

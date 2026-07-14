@@ -8,17 +8,11 @@ export type DatabasePathErrorCode =
 
 export class DatabasePathError extends Error {
   readonly code: DatabasePathErrorCode;
-  readonly databasePath: string;
 
-  constructor(
-    code: DatabasePathErrorCode,
-    databasePath: string,
-    message: string,
-  ) {
+  constructor(code: DatabasePathErrorCode, message: string) {
     super(message);
     this.name = 'DatabasePathError';
     this.code = code;
-    this.databasePath = databasePath;
   }
 }
 
@@ -40,7 +34,6 @@ export async function resolveDatabasePath(
   ) {
     throw new DatabasePathError(
       'in_memory_database_unsupported',
-      databasePath,
       'In-memory SQLite databases are unsupported during daemon bootstrap: the short-lived migration connection cannot hand the database off to the business application. Use a persistent file database until a DatabaseProvider or Test Database Factory provides connection handoff.',
     );
   }
@@ -48,8 +41,7 @@ export async function resolveDatabasePath(
   if (/^file:/iu.test(databasePath)) {
     throw new DatabasePathError(
       'unsupported_file_uri',
-      databasePath,
-      `Unsupported SQLite file URI: ${databasePath}`,
+      'SQLite file URIs are unsupported during daemon bootstrap',
     );
   }
 
@@ -59,8 +51,7 @@ export async function resolveDatabasePath(
     if (metadata.isSymbolicLink()) {
       throw new DatabasePathError(
         'symbolic_link_database',
-        databasePath,
-        `SQLite database path must not be a symbolic link: ${databasePath}`,
+        'SQLite database path must not be a symbolic link',
       );
     }
   } catch (error) {

@@ -14,8 +14,8 @@ model adapters, a minimal debug UI, persistence, and an end-to-end regression te
 also records two architectural decisions that must be confronted early (cross-package
 consumption, and a multi-round turn loop).
 
-Design references: [tool-runtime spec](../specs/2026-06-29-tool-runtime-clean-room-design.md),
-[backend-spine spec](../specs/2026-06-29-agent-backend-spine-design.md).
+Design references: [tool-runtime spec](./2026-06-29-tool-runtime-clean-room-design.md),
+[backend-spine spec](./2026-06-29-agent-backend-spine-design.md).
 
 ## Clean-room & security posture (unchanged)
 

@@ -17,6 +17,7 @@ import {
   MIGRATIONS,
   MigrationRecoveryError,
 } from '../src/persistence/migration-bootstrap';
+import { createMigrationBackup } from '../src/persistence/migration-backup-recovery';
 import {
   MigrationError,
   migrationChecksum,
@@ -49,9 +50,12 @@ function noPendingMigration(version = 0) {
   };
 }
 
-test('production migration registry is frozen and initially empty', () => {
+test('production migration registry freezes the published 1.x baseline', () => {
   assert.equal(Object.isFrozen(MIGRATIONS), true);
-  assert.deepEqual(MIGRATIONS, []);
+  assert.equal(MIGRATIONS.length, 1);
+  assert.equal(MIGRATIONS[0]?.version, 1);
+  assert.equal(MIGRATIONS[0]?.name, 'legacy_1x_baseline');
+  assert.equal(Object.isFrozen(MIGRATIONS[0]), true);
 });
 
 test('bootstrap creates migration metadata in an empty file database and closes it', async () => {
@@ -72,6 +76,15 @@ test('bootstrap creates migration metadata in an empty file database and closes 
           .get()!.count,
         1,
       );
+      assert.deepEqual(
+        reopened
+          .query<
+            { version: number; name: string },
+            []
+          >('SELECT version, name FROM schema_migrations')
+          .all(),
+        [{ version: 1, name: 'legacy_1x_baseline' }],
+      );
       assert.equal(
         reopened
           .query<
@@ -79,7 +92,79 @@ test('bootstrap creates migration metadata in an empty file database and closes 
             []
           >("SELECT count(*) AS count FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
           .get()!.count,
-        1,
+        7,
+      );
+    } finally {
+      reopened.close(true);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('managed database drift during backup is rejected before migration without restoring over the new write', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'managed-backup-drift-'));
+  const databasePath = join(directory, 'database.sqlite');
+  const first: Migration = {
+    version: 1,
+    name: 'create_notes',
+    source: 'CREATE TABLE notes(body TEXT NOT NULL);',
+    up(database) {
+      database.exec('CREATE TABLE notes(body TEXT NOT NULL)');
+    },
+  };
+  const second: Migration = {
+    version: 2,
+    name: 'add_note_kind',
+    source: 'ALTER TABLE notes ADD COLUMN kind TEXT;',
+    up(database) {
+      database.exec('ALTER TABLE notes ADD COLUMN kind TEXT');
+    },
+  };
+
+  try {
+    const initial = new Database(databasePath, { create: true });
+    try {
+      runMigrations(initial, [first]);
+    } finally {
+      initial.close(true);
+    }
+
+    await assert.rejects(
+      bootstrapMigrations(databasePath, {
+        migrations: [first, second],
+        createBackup(options) {
+          const backup = createMigrationBackup({
+            ...options,
+            database: options.database as Database,
+          });
+          const concurrent = new Database(databasePath, { readwrite: true });
+          try {
+            concurrent.query('INSERT INTO notes(body) VALUES (?)').run('new');
+          } finally {
+            concurrent.close(true);
+          }
+          return backup;
+        },
+      }),
+      (error: unknown) =>
+        error instanceof MigrationError &&
+        error.code === 'database_changed_during_backup',
+    );
+
+    const reopened = new Database(databasePath, { readonly: true });
+    try {
+      assert.deepEqual(reopened.query('SELECT body FROM notes').all(), [
+        { body: 'new' },
+      ]);
+      assert.deepEqual(
+        reopened
+          .query<{ name: string }, [string]>(
+            'SELECT name FROM pragma_table_info(?)',
+          )
+          .all('notes')
+          .map(({ name }) => name),
+        ['body'],
       );
     } finally {
       reopened.close(true);
@@ -322,7 +407,7 @@ test('bootstrap closes without quarantining when pre-migration backup creation f
   assert.deepEqual(events, ['backup', 'close']);
 });
 
-test('bootstrap attempts quarantine and restore only after close even when close fails', async () => {
+test('bootstrap fails closed without quarantine or restore when close fails', async () => {
   const migrationError = new Error('migration failed');
   const closeError = new Error('close failed');
   const events: string[] = [];
@@ -332,7 +417,7 @@ test('bootstrap attempts quarantine and restore only after close even when close
     manifestPath: '/data/backups/backup/manifest.json',
     manifest: {
       formatVersion: 1 as const,
-      sourceDatabasePath: '/data/bootstrap.db',
+      sourceDatabaseFile: 'bootstrap.db',
       sourceSchemaVersion: 0,
       targetSchemaVersion: 1,
       createdAt: '2026-07-14T00:00:00.000Z',
@@ -373,19 +458,13 @@ test('bootstrap attempts quarantine and restore only after close even when close
     }),
     (error: unknown) => {
       assert.ok(error instanceof MigrationRecoveryError);
-      assert.equal(error.code, 'migration_failed_recovered');
+      assert.equal(error.code, 'migration_failed_recovery_failed');
       assert.ok(error.cause instanceof AggregateError);
       assert.deepEqual(error.cause.errors, [migrationError, closeError]);
       return true;
     },
   );
-  assert.deepEqual(events, [
-    'backup',
-    'migrate',
-    'close',
-    'quarantine',
-    'restore',
-  ]);
+  assert.deepEqual(events, ['backup', 'migrate', 'close']);
 });
 
 test('bootstrap restores when post-migration foreign key verification fails', async () => {
@@ -434,7 +513,9 @@ test('bootstrap closes its controlled connection exactly once after success', as
   const closeArguments: unknown[] = [];
   const registry = [migration(1, 'controlled', 'SELECT 1')];
   const database = {
-    close: (force?: boolean) => closeArguments.push(force),
+    close(force?: boolean): void {
+      closeArguments.push(force);
+    },
   };
   let receivedDatabase: unknown;
   let receivedMigrations: readonly Migration[] | undefined;
@@ -470,7 +551,9 @@ test('bootstrap preserves migration failure and closes exactly once', async () =
       ...noPendingMigration(),
       mkdir: async () => undefined,
       openDatabase: () => ({
-        close: (force?: boolean) => closeArguments.push(force),
+        close(force?: boolean): void {
+          closeArguments.push(force);
+        },
       }),
       runMigrations: () => {
         throw migrationError;
@@ -619,6 +702,7 @@ for (const databasePath of [
   'file::memory:evil',
   'file:/tmp/alias.db',
   'FILE:/tmp/alias.db',
+  'file://user:secret@localhost/private.db',
 ]) {
   test(`bootstrap rejects unsupported database URI ${databasePath} before I/O`, async () => {
     let mkdirCalls = 0;
@@ -638,8 +722,15 @@ for (const databasePath of [
           migrationCalls += 1;
         },
       }),
-      (error: unknown) =>
-        error instanceof Error && error.name === 'DatabasePathError',
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.name, 'DatabasePathError');
+        assert.doesNotMatch(
+          JSON.stringify(error, Object.getOwnPropertyNames(error)),
+          /user|secret|private\.db/,
+        );
+        return true;
+      },
     );
 
     assert.equal(mkdirCalls, 0);
@@ -1300,7 +1391,7 @@ test('metadata schema inspection errors are wrapped as metadata invalid', async 
 });
 
 test('invalid applied migration records fail before pending migrations', async () => {
-  const invalidRows: unknown[][] = [
+  const invalidRows: Array<[number, string, string, number, number]> = [
     [0, 'first', 'a'.repeat(64), 0, 0],
     [Number.MAX_SAFE_INTEGER + 1, 'first', 'a'.repeat(64), 0, 0],
     [1, '', 'a'.repeat(64), 0, 0],
@@ -1592,8 +1683,9 @@ test('migration exec finalizes its prepared statement after execution', async ()
       delete (database as unknown as { prepare?: unknown }).prepare;
     }
 
-    assert(captured);
-    assert.throws(() => captured.run(), /Statement has finalized/);
+    if (captured === undefined) throw new Error('Statement was not captured');
+    const finalized = captured;
+    assert.throws(() => finalized.run(), /Statement has finalized/);
   });
 });
 

@@ -1,12 +1,14 @@
 {
   "id": "legacy-session-1",
-  "cwd": "/fixture/workspace",
-  "history": [
-    { "role": "user", "content": "Inspect the baseline." },
-    { "role": "assistant", "content": "Baseline captured." }
-  ],
+  "cwd": "fixture-workspace",
+  "history": [],
   "permissionMode": "default",
-  "workspaceRoots": ["/fixture/workspace"],
+  "workspaceRoots": ["fixture-workspace"],
   "todos": [{ "content": "Preserve compatibility", "status": "completed" }],
-  "lastInputTokens": 128
+  "lastInputTokens": 128,
+  "modelConfig": {
+    "presetId": "fixture-openai-compatible",
+    "protocol": "openai",
+    "model": "fixture-model"
+  }
 }

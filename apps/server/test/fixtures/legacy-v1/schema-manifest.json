@@ -1,0 +1,666 @@
+{
+  "formatVersion": 1,
+  "sqliteInternals": {
+    "sequenceTable": true
+  },
+  "tables": [
+    {
+      "columns": [
+        {
+          "cid": 0,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "id",
+          "notNull": false,
+          "primaryKeyPosition": 1,
+          "type": "INTEGER"
+        },
+        {
+          "cid": 1,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "session_id",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        },
+        {
+          "cid": 2,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "tool_use_id",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        },
+        {
+          "cid": 3,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "tool_name",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        },
+        {
+          "cid": 4,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "behavior",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        },
+        {
+          "cid": 5,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "reason",
+          "notNull": false,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        },
+        {
+          "cid": 6,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "at",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "INTEGER"
+        }
+      ],
+      "foreignKeys": [],
+      "indexes": [
+        {
+          "columns": [
+            {
+              "cid": 1,
+              "collation": "BINARY",
+              "descending": false,
+              "key": true,
+              "name": "session_id",
+              "sequence": 0
+            },
+            {
+              "cid": -1,
+              "collation": "BINARY",
+              "descending": false,
+              "key": false,
+              "name": null,
+              "sequence": 1
+            }
+          ],
+          "name": "audit_session_id_idx",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX audit_session_id_idx ON audit ( session_id ) ;",
+          "unique": false
+        }
+      ],
+      "name": "audit",
+      "sql": "CREATE TABLE audit ( id INTEGER PRIMARY KEY AUTOINCREMENT , session_id TEXT NOT NULL , tool_use_id TEXT NOT NULL , tool_name TEXT NOT NULL , behavior TEXT NOT NULL , reason TEXT , at INTEGER NOT NULL ) ;"
+    },
+    {
+      "columns": [
+        {
+          "cid": 0,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "id",
+          "notNull": false,
+          "primaryKeyPosition": 1,
+          "type": "TEXT"
+        },
+        {
+          "cid": 1,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "session_id",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        },
+        {
+          "cid": 2,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "parent_checkpoint_id",
+          "notNull": false,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        },
+        {
+          "cid": 3,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "created_at",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "INTEGER"
+        },
+        {
+          "cid": 4,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "run_id",
+          "notNull": false,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        },
+        {
+          "cid": 5,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "label",
+          "notNull": false,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        },
+        {
+          "cid": 6,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "summary",
+          "notNull": false,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        },
+        {
+          "cid": 7,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "snapshot",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        },
+        {
+          "cid": 8,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "file_changes",
+          "notNull": false,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        }
+      ],
+      "foreignKeys": [],
+      "indexes": [
+        {
+          "columns": [
+            {
+              "cid": 2,
+              "collation": "BINARY",
+              "descending": false,
+              "key": true,
+              "name": "parent_checkpoint_id",
+              "sequence": 0
+            },
+            {
+              "cid": -1,
+              "collation": "BINARY",
+              "descending": false,
+              "key": false,
+              "name": null,
+              "sequence": 1
+            }
+          ],
+          "name": "checkpoints_parent_checkpoint_id_idx",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX checkpoints_parent_checkpoint_id_idx ON checkpoints ( parent_checkpoint_id ) ;",
+          "unique": false
+        },
+        {
+          "columns": [
+            {
+              "cid": 1,
+              "collation": "BINARY",
+              "descending": false,
+              "key": true,
+              "name": "session_id",
+              "sequence": 0
+            },
+            {
+              "cid": -1,
+              "collation": "BINARY",
+              "descending": false,
+              "key": false,
+              "name": null,
+              "sequence": 1
+            }
+          ],
+          "name": "checkpoints_session_id_idx",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX checkpoints_session_id_idx ON checkpoints ( session_id ) ;",
+          "unique": false
+        },
+        {
+          "columns": [
+            {
+              "cid": 0,
+              "collation": "BINARY",
+              "descending": false,
+              "key": true,
+              "name": "id",
+              "sequence": 0
+            },
+            {
+              "cid": -1,
+              "collation": "BINARY",
+              "descending": false,
+              "key": false,
+              "name": null,
+              "sequence": 1
+            }
+          ],
+          "name": "sqlite_autoindex_checkpoints_1",
+          "origin": "pk",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        }
+      ],
+      "name": "checkpoints",
+      "sql": "CREATE TABLE checkpoints ( id TEXT PRIMARY KEY , session_id TEXT NOT NULL , parent_checkpoint_id TEXT , created_at INTEGER NOT NULL , run_id TEXT , label TEXT , summary TEXT , snapshot TEXT NOT NULL , file_changes TEXT ) ;"
+    },
+    {
+      "columns": [
+        {
+          "cid": 0,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "id",
+          "notNull": false,
+          "primaryKeyPosition": 1,
+          "type": "TEXT"
+        },
+        {
+          "cid": 1,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "kind",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        },
+        {
+          "cid": 2,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "registry_name",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        },
+        {
+          "cid": 3,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "title",
+          "notNull": false,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        },
+        {
+          "cid": 4,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "description",
+          "notNull": false,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        },
+        {
+          "cid": 5,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "version",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        },
+        {
+          "cid": 6,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "enabled",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "INTEGER"
+        },
+        {
+          "cid": 7,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "config",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        },
+        {
+          "cid": 8,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "installed_at",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "INTEGER"
+        },
+        {
+          "cid": 9,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "updated_at",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "INTEGER"
+        }
+      ],
+      "foreignKeys": [],
+      "indexes": [
+        {
+          "columns": [
+            {
+              "cid": 0,
+              "collation": "BINARY",
+              "descending": false,
+              "key": true,
+              "name": "id",
+              "sequence": 0
+            },
+            {
+              "cid": -1,
+              "collation": "BINARY",
+              "descending": false,
+              "key": false,
+              "name": null,
+              "sequence": 1
+            }
+          ],
+          "name": "sqlite_autoindex_installed_plugins_1",
+          "origin": "pk",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        }
+      ],
+      "name": "installed_plugins",
+      "sql": "CREATE TABLE installed_plugins ( id TEXT PRIMARY KEY , kind TEXT NOT NULL , registry_name TEXT NOT NULL , title TEXT , description TEXT , version TEXT NOT NULL , enabled INTEGER NOT NULL , config TEXT NOT NULL , installed_at INTEGER NOT NULL , updated_at INTEGER NOT NULL ) ;"
+    },
+    {
+      "columns": [
+        {
+          "cid": 0,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "id",
+          "notNull": false,
+          "primaryKeyPosition": 1,
+          "type": "TEXT"
+        },
+        {
+          "cid": 1,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "name",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        },
+        {
+          "cid": 2,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "path",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        },
+        {
+          "cid": 3,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "created_at",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "INTEGER"
+        },
+        {
+          "cid": 4,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "updated_at",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "INTEGER"
+        }
+      ],
+      "foreignKeys": [],
+      "indexes": [
+        {
+          "columns": [
+            {
+              "cid": 2,
+              "collation": "BINARY",
+              "descending": false,
+              "key": true,
+              "name": "path",
+              "sequence": 0
+            },
+            {
+              "cid": -1,
+              "collation": "BINARY",
+              "descending": false,
+              "key": false,
+              "name": null,
+              "sequence": 1
+            }
+          ],
+          "name": "projects_path_idx",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE UNIQUE INDEX projects_path_idx ON projects ( path ) ;",
+          "unique": true
+        },
+        {
+          "columns": [
+            {
+              "cid": 0,
+              "collation": "BINARY",
+              "descending": false,
+              "key": true,
+              "name": "id",
+              "sequence": 0
+            },
+            {
+              "cid": -1,
+              "collation": "BINARY",
+              "descending": false,
+              "key": false,
+              "name": null,
+              "sequence": 1
+            }
+          ],
+          "name": "sqlite_autoindex_projects_1",
+          "origin": "pk",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        }
+      ],
+      "name": "projects",
+      "sql": "CREATE TABLE projects ( id TEXT PRIMARY KEY , name TEXT NOT NULL , path TEXT NOT NULL , created_at INTEGER NOT NULL , updated_at INTEGER NOT NULL ) ;"
+    },
+    {
+      "columns": [
+        {
+          "cid": 0,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "session_id",
+          "notNull": false,
+          "primaryKeyPosition": 1,
+          "type": "TEXT"
+        },
+        {
+          "cid": 1,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "project_id",
+          "notNull": false,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        },
+        {
+          "cid": 2,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "pinned",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "INTEGER"
+        },
+        {
+          "cid": 3,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "created_at",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "INTEGER"
+        },
+        {
+          "cid": 4,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "updated_at",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "INTEGER"
+        }
+      ],
+      "foreignKeys": [],
+      "indexes": [
+        {
+          "columns": [
+            {
+              "cid": 1,
+              "collation": "BINARY",
+              "descending": false,
+              "key": true,
+              "name": "project_id",
+              "sequence": 0
+            },
+            {
+              "cid": -1,
+              "collation": "BINARY",
+              "descending": false,
+              "key": false,
+              "name": null,
+              "sequence": 1
+            }
+          ],
+          "name": "session_metadata_project_id_idx",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX session_metadata_project_id_idx ON session_metadata ( project_id ) ;",
+          "unique": false
+        },
+        {
+          "columns": [
+            {
+              "cid": 0,
+              "collation": "BINARY",
+              "descending": false,
+              "key": true,
+              "name": "session_id",
+              "sequence": 0
+            },
+            {
+              "cid": -1,
+              "collation": "BINARY",
+              "descending": false,
+              "key": false,
+              "name": null,
+              "sequence": 1
+            }
+          ],
+          "name": "sqlite_autoindex_session_metadata_1",
+          "origin": "pk",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        }
+      ],
+      "name": "session_metadata",
+      "sql": "CREATE TABLE session_metadata ( session_id TEXT PRIMARY KEY , project_id TEXT , pinned INTEGER NOT NULL , created_at INTEGER NOT NULL , updated_at INTEGER NOT NULL ) ;"
+    },
+    {
+      "columns": [
+        {
+          "cid": 0,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "id",
+          "notNull": false,
+          "primaryKeyPosition": 1,
+          "type": "TEXT"
+        },
+        {
+          "cid": 1,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "snapshot",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "TEXT"
+        },
+        {
+          "cid": 2,
+          "defaultValue": null,
+          "hidden": 0,
+          "name": "updated_at",
+          "notNull": true,
+          "primaryKeyPosition": 0,
+          "type": "INTEGER"
+        }
+      ],
+      "foreignKeys": [],
+      "indexes": [
+        {
+          "columns": [
+            {
+              "cid": 0,
+              "collation": "BINARY",
+              "descending": false,
+              "key": true,
+              "name": "id",
+              "sequence": 0
+            },
+            {
+              "cid": -1,
+              "collation": "BINARY",
+              "descending": false,
+              "key": false,
+              "name": null,
+              "sequence": 1
+            }
+          ],
+          "name": "sqlite_autoindex_sessions_1",
+          "origin": "pk",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        }
+      ],
+      "name": "sessions",
+      "sql": "CREATE TABLE sessions ( id TEXT PRIMARY KEY , snapshot TEXT NOT NULL , updated_at INTEGER NOT NULL ) ;"
+    }
+  ],
+  "triggers": [],
+  "userVersion": 0,
+  "views": []
+}
