@@ -8,14 +8,16 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 BIN_DIR="$TMP_DIR/bin"
 EMPTY_BIN_DIR="$TMP_DIR/empty-bin"
-WORKSPACE_DIR="$TMP_DIR/workspace"
+WORKSPACE_DIR="$TMP_DIR/workspace with spaces"
 PNPM_LOG="$TMP_DIR/pnpm.log"
+PWD_LOG="$TMP_DIR/pwd.log"
 mkdir -p "$BIN_DIR" "$EMPTY_BIN_DIR" "$WORKSPACE_DIR"
 
 cat >"$BIN_DIR/pnpm" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$@" >"$PNPM_LOG"
+printf '%s\n' "$PWD" >"$PWD_LOG"
 exit "${PNPM_EXIT:-0}"
 MOCK
 chmod +x "$BIN_DIR/pnpm"
@@ -56,6 +58,8 @@ run_adapter() {
   set +e
   BUILD_WORKSPACE_DIRECTORY="$WORKSPACE_DIR" \
     PNPM_LOG="$PNPM_LOG" \
+    PWD_LOG="$PWD_LOG" \
+    PNPM_EXIT=0 \
     PATH="$BIN_DIR:/usr/bin:/bin" \
     /bin/bash "$RUN_TASK" "$@" >"$stdout_file" 2>"$stderr_file"
   RUN_STATUS=$?
@@ -67,10 +71,12 @@ assert_mapping() {
   local task="$1"
   local expected="$2"
   : >"$PNPM_LOG"
+  : >"$PWD_LOG"
   run_adapter "$task"
   assert_status 0 "$RUN_STATUS" "$task mapping"
   assert_stderr_equals "" "$RUN_STDERR" "$task mapping"
   assert_file_equals "$expected" "$PNPM_LOG" "$task mapping"
+  assert_file_equals "$WORKSPACE_DIR" "$PWD_LOG" "$task working directory"
   pass_count=$((pass_count + 1))
   printf 'ok - %s mapping\n' "$task"
 }
@@ -84,8 +90,11 @@ assert_mapping desktop-check $'--filter\n@colorful-code/desktop\nlint'
 assert_mapping desktop-test $'--filter\n@colorful-code/desktop\ntest'
 
 set +e
-PNPM_LOG="$PNPM_LOG" PATH="$BIN_DIR:/usr/bin:/bin" \
-  /bin/bash "$RUN_TASK" build >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr"
+(
+  unset BUILD_WORKSPACE_DIRECTORY PNPM_EXIT
+  PNPM_LOG="$PNPM_LOG" PWD_LOG="$PWD_LOG" PATH="$BIN_DIR:/usr/bin:/bin" \
+    /bin/bash "$RUN_TASK" build >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr"
+)
 status=$?
 set -e
 assert_status 64 "$status" "missing workspace"
@@ -94,7 +103,7 @@ pass_count=$((pass_count + 1))
 printf 'ok - missing workspace rejected\n'
 
 set +e
-BUILD_WORKSPACE_DIRECTORY="$WORKSPACE_DIR" PATH="$EMPTY_BIN_DIR" \
+BUILD_WORKSPACE_DIRECTORY="$WORKSPACE_DIR" PNPM_LOG="$PNPM_LOG" PWD_LOG="$PWD_LOG" PNPM_EXIT=0 PATH="$EMPTY_BIN_DIR" \
   /bin/bash "$RUN_TASK" build >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr"
 status=$?
 set -e
@@ -118,6 +127,7 @@ printf 'ok - extra argument rejected\n'
 set +e
 BUILD_WORKSPACE_DIRECTORY="$WORKSPACE_DIR" \
   PNPM_LOG="$PNPM_LOG" \
+  PWD_LOG="$PWD_LOG" \
   PNPM_EXIT=23 \
   PATH="$BIN_DIR:/usr/bin:/bin" \
   /bin/bash "$RUN_TASK" test >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr"
