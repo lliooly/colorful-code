@@ -84,9 +84,12 @@ for (const [role, timeout] of [
 test('readonly policy observes WAL, enables query_only, and remains physically readonly', async () => {
   await withDatabasePath((databasePath) => {
     const creator = new Database(databasePath, { create: true });
-    configureSqliteConnection(creator, 'business-read-write');
-    creator.exec('CREATE TABLE item (value TEXT NOT NULL)');
-    creator.close();
+    try {
+      configureSqliteConnection(creator, 'business-read-write');
+      creator.exec('CREATE TABLE item (value TEXT NOT NULL)');
+    } finally {
+      creator.close();
+    }
 
     const database = new Database(databasePath, {
       readonly: true,
@@ -116,8 +119,11 @@ test('readonly policy observes WAL, enables query_only, and remains physically r
 test('readonly policy rejects a non-WAL database with a stable error', async () => {
   await withDatabasePath((databasePath) => {
     const creator = new Database(databasePath, { create: true });
-    creator.exec('CREATE TABLE item (value TEXT)');
-    creator.close();
+    try {
+      creator.exec('CREATE TABLE item (value TEXT)');
+    } finally {
+      creator.close();
+    }
     const database = new Database(databasePath, {
       readonly: true,
       create: false,
@@ -168,6 +174,48 @@ test('WAL setting validates both statement result and independent readback', () 
       error.code === 'wal_unavailable' &&
       error.actual === 'delete',
   );
+});
+
+test('configuration executes each PRAGMA exactly once in the security policy order', () => {
+  const calls: string[] = [];
+  const rows = new Map<string, Record<string, unknown>>([
+    ['PRAGMA busy_timeout', { timeout: 250 }],
+    ['PRAGMA foreign_keys', { foreign_keys: 1 }],
+    ['PRAGMA journal_mode = WAL', { journal_mode: 'wal' }],
+    ['PRAGMA journal_mode', { journal_mode: 'wal' }],
+    ['PRAGMA synchronous', { synchronous: 2 }],
+    ['PRAGMA temp_store', { temp_store: 2 }],
+    ['PRAGMA trusted_schema', { trusted_schema: 0 }],
+    ['PRAGMA query_only', { query_only: 0 }],
+  ]);
+  const database = {
+    query: (sql: string) => {
+      calls.push(sql);
+      return {
+        get: () => rows.get(sql) ?? null,
+        run: () => undefined,
+      };
+    },
+  } as Parameters<typeof configureSqliteConnection>[0];
+
+  configureSqliteConnection(database, 'business-read-write');
+
+  assert.deepEqual(calls, [
+    'PRAGMA busy_timeout = 250',
+    'PRAGMA busy_timeout',
+    'PRAGMA foreign_keys = ON',
+    'PRAGMA foreign_keys',
+    'PRAGMA journal_mode = WAL',
+    'PRAGMA journal_mode',
+    'PRAGMA synchronous = FULL',
+    'PRAGMA synchronous',
+    'PRAGMA temp_store = MEMORY',
+    'PRAGMA temp_store',
+    'PRAGMA trusted_schema = OFF',
+    'PRAGMA trusted_schema',
+    'PRAGMA query_only = OFF',
+    'PRAGMA query_only',
+  ]);
 });
 
 test('missing PRAGMA rows fail closed and sensitive actual values are redacted', () => {
@@ -254,6 +302,8 @@ test('diagnostics reject unsafe compile options without leaking sensitive rows',
   const rows = new Map<string, Record<string, unknown>[]>([
     ['SELECT sqlite_version() AS sqliteVersion', [{ sqliteVersion: '3.54.0' }]],
     ['PRAGMA compile_options', [{ compile_options: 'OMIT_TRIGGER' }]],
+    ['PRAGMA journal_mode', [{ journal_mode: 'wal' }]],
+    ['PRAGMA foreign_keys', [{ foreign_keys: 1 }]],
   ]);
   const database = {
     query: (sql: string) => ({
@@ -285,11 +335,57 @@ test('diagnostics reject unsafe compile options without leaking sensitive rows',
   );
 });
 
+for (const [pragma, actual] of [
+  ['journal_mode', 'delete'],
+  ['foreign_keys', 0],
+] as const) {
+  test(`diagnostics independently reject mismatched ${pragma}`, () => {
+    const database = {
+      query: (sql: string) => ({
+        get: () => {
+          if (sql.startsWith('SELECT')) return { sqliteVersion: '3.54.0' };
+          if (sql === 'PRAGMA journal_mode') {
+            return { journal_mode: pragma === 'journal_mode' ? actual : 'wal' };
+          }
+          if (sql === 'PRAGMA foreign_keys') {
+            return { foreign_keys: pragma === 'foreign_keys' ? actual : 1 };
+          }
+          return null;
+        },
+        all: () => [{ compile_options: 'THREADSAFE=2' }],
+      }),
+    } as Parameters<typeof createSqliteDiagnostics>[0];
+    const configuration = Object.freeze({
+      role: 'business-read-write' as const,
+      busyTimeoutMs: 250 as const,
+      journalMode: 'wal' as const,
+      foreignKeys: true as const,
+      synchronous: 'full' as const,
+      tempStore: 'memory' as const,
+      trustedSchema: false as const,
+      queryOnly: false,
+    });
+    assert.throws(
+      () => createSqliteDiagnostics(database, configuration),
+      (error) => {
+        assert.ok(error instanceof SqliteConfigurationError);
+        assert.equal(error.code, 'pragma_mismatch');
+        assert.equal(error.pragma, pragma);
+        return true;
+      },
+    );
+  });
+}
+
 test('diagnostics expose compile option names but never option values', () => {
   const database = {
     query: (sql: string) => ({
-      get: () =>
-        sql.startsWith('SELECT') ? { sqliteVersion: '3.54.0' } : null,
+      get: () => {
+        if (sql.startsWith('SELECT')) return { sqliteVersion: '3.54.0' };
+        if (sql === 'PRAGMA journal_mode') return { journal_mode: 'wal' };
+        if (sql === 'PRAGMA foreign_keys') return { foreign_keys: 1 };
+        return null;
+      },
       all: () => [{ compile_options: 'SECRET_TOKEN=top-secret' }],
     }),
   } as Parameters<typeof createSqliteDiagnostics>[0];
@@ -311,10 +407,14 @@ test('diagnostics expose compile option names but never option values', () => {
 test('diagnostics reject a version row with trailing sensitive text', () => {
   const database = {
     query: (sql: string) => ({
-      get: () =>
-        sql.startsWith('SELECT')
-          ? { sqliteVersion: '3.54.0/private/database.sqlite' }
-          : null,
+      get: () => {
+        if (sql.startsWith('SELECT')) {
+          return { sqliteVersion: '3.54.0/private/database.sqlite' };
+        }
+        if (sql === 'PRAGMA journal_mode') return { journal_mode: 'wal' };
+        if (sql === 'PRAGMA foreign_keys') return { foreign_keys: 1 };
+        return null;
+      },
       all: () => [{ compile_options: 'THREADSAFE=2' }],
     }),
   } as Parameters<typeof createSqliteDiagnostics>[0];
@@ -343,8 +443,8 @@ test('diagnostics reject a version row with trailing sensitive text', () => {
 
 test('PASSIVE checkpoint reports incomplete with busy=0 while a reader pins WAL frames', async () => {
   await withDatabasePath((databasePath) => {
-    const writer = new Database(databasePath, { create: true });
     let reader: Database | undefined;
+    const writer = new Database(databasePath, { create: true });
     try {
       configureSqliteConnection(writer, 'business-read-write');
       writer.exec(
@@ -434,6 +534,23 @@ test('checkpoint supports a narrow preflight interruption and validates SQLite r
       error instanceof WalCheckpointError &&
       error.code === 'invalid_checkpoint_result',
   );
+});
+
+test('checkpoint rejects rows with missing or extra enumerable columns', () => {
+  for (const row of [
+    { busy: 0, log: 1 },
+    { busy: 0, log: 1, checkpointed: 1, database: '/private/secret.db' },
+  ]) {
+    const database = {
+      query: () => ({ get: () => row }),
+    } as Parameters<typeof checkpointWal>[0];
+    assert.throws(
+      () => checkpointWal(database),
+      (error) =>
+        error instanceof WalCheckpointError &&
+        error.code === 'invalid_checkpoint_result',
+    );
+  }
 });
 
 test('checkpoint invokes PASSIVE exactly once and sanitizes SQLite failures', () => {

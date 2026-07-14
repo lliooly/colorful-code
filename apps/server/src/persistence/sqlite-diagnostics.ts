@@ -53,11 +53,67 @@ function hasOnlineBackup(database: DiagnosticConnection): boolean {
   return typeof candidate.backup === 'function';
 }
 
+function readDiagnosticPragma(
+  database: DiagnosticConnection,
+  role: SqliteConnectionRole,
+  pragma: 'journal_mode' | 'foreign_keys',
+): unknown {
+  let row: Record<string, unknown> | null;
+  try {
+    row = database.query<Record<string, unknown>, []>(`PRAGMA ${pragma}`).get();
+  } catch {
+    throw new SqliteConfigurationError({
+      code: 'pragma_failed',
+      role,
+      pragma,
+    });
+  }
+  if (
+    row === null ||
+    Object.keys(row).length !== 1 ||
+    !Object.prototype.propertyIsEnumerable.call(row, pragma)
+  ) {
+    throw new SqliteConfigurationError({
+      code: 'pragma_failed',
+      role,
+      pragma,
+    });
+  }
+  return row[pragma];
+}
+
+function verifyDiagnosticPragmas(
+  database: DiagnosticConnection,
+  role: SqliteConnectionRole,
+): void {
+  const journalMode = readDiagnosticPragma(database, role, 'journal_mode');
+  if (typeof journalMode !== 'string' || journalMode.toLowerCase() !== 'wal') {
+    throw new SqliteConfigurationError({
+      code: 'pragma_mismatch',
+      role,
+      pragma: 'journal_mode',
+      expected: 'wal',
+      actual: journalMode,
+    });
+  }
+  const foreignKeys = readDiagnosticPragma(database, role, 'foreign_keys');
+  if (foreignKeys !== 1) {
+    throw new SqliteConfigurationError({
+      code: 'pragma_mismatch',
+      role,
+      pragma: 'foreign_keys',
+      expected: 1,
+      actual: foreignKeys,
+    });
+  }
+}
+
 export function createSqliteDiagnostics(
   database: DiagnosticConnection,
   configuration: SqliteConnectionConfiguration,
 ): SqliteDiagnostics {
   const role = configuration.role;
+  verifyDiagnosticPragmas(database, role);
   let versionRow: { sqliteVersion: unknown } | null;
   let compileRows: { compile_options: unknown }[];
   try {
@@ -106,8 +162,8 @@ export function createSqliteDiagnostics(
   return Object.freeze({
     sqliteVersion,
     connectionRole: role,
-    journalMode: configuration.journalMode,
-    foreignKeys: configuration.foreignKeys,
+    journalMode: 'wal',
+    foreignKeys: true,
     backupMethod,
     returningSupport: versionAtLeast(numericVersion, [3, 35, 0]),
     compileOptions: frozenCompileOptions,

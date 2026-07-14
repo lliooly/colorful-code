@@ -52,8 +52,13 @@ export function checkpointWal(
     throw new WalCheckpointError('checkpoint_failed');
   }
 
+  const keys = row === null ? [] : Object.keys(row).sort();
   if (
     row === null ||
+    keys.length !== 3 ||
+    keys[0] !== 'busy' ||
+    keys[1] !== 'checkpointed' ||
+    keys[2] !== 'log' ||
     !Number.isInteger(row.busy) ||
     (row.busy !== 0 && row.busy !== 1) ||
     !Number.isInteger(row.log) ||
