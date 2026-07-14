@@ -3,6 +3,14 @@
 // append-only table (queryable per session). No secrets are stored.
 export * from './schema';
 export * from './database';
+export {
+  FixedDatabaseClock,
+  SqliteDatabaseClock,
+  type DatabaseClock,
+  type DatabaseConnection,
+  type ReadDatabase,
+} from './database-clock';
+export * from './database-provider';
 export * from './session-store';
 export * from './persistence.module';
 export {
