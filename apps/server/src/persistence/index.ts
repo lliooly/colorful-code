@@ -9,6 +9,8 @@ export {
   type DatabaseClock,
   type DatabaseConnection,
   type ReadDatabase,
+  type WriteDatabase,
+  type WriteDatabaseConnection,
 } from './database-clock';
 export * from './database-provider';
 export * from './session-store';

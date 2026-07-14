@@ -8,6 +8,7 @@ import {
   revokeDatabaseConnectionFacade,
   type DatabaseClock,
   type DatabaseConnection,
+  type WriteDatabaseConnection,
 } from './database-clock';
 import {
   configureDatabaseConnection,
@@ -34,11 +35,60 @@ export class DatabaseProviderOwnershipError extends Error {
   }
 }
 
+export class NestedTransactionError extends Error {
+  constructor() {
+    super('Nested or concurrent database transactions are not supported');
+    this.name = 'NestedTransactionError';
+  }
+}
+
+export class AsyncTransactionCallbackError extends TypeError {
+  constructor() {
+    super('Database transaction callbacks must not return a Promise');
+    this.name = 'AsyncTransactionCallbackError';
+  }
+}
+
+export class DatabaseBusyRetryExhaustedError extends Error {
+  readonly attempts: number;
+
+  constructor(attempts: number, cause: unknown) {
+    super(`Database remained busy after ${String(attempts)} attempts`, {
+      cause,
+    });
+    this.name = 'DatabaseBusyRetryExhaustedError';
+    this.attempts = attempts;
+  }
+}
+
+export interface TransactionContext {
+  readonly database: WriteDatabaseConnection;
+  readonly clock: DatabaseClock;
+  readonly now: number;
+}
+
+export interface TransactionRetryOptions {
+  readonly maxRetries: number;
+  readonly baseDelayMs: number;
+  readonly maxDelayMs: number;
+  readonly jitterRatio: number;
+}
+
+export interface TransactionOptions {
+  readonly retry?: TransactionRetryOptions;
+}
+
+type NonPromise<T> = T extends PromiseLike<unknown> ? never : T;
+
 export interface DatabaseProvider {
   readonly dialect: 'sqlite';
   readonly clock: DatabaseClock;
 
   read<T>(operation: (connection: DatabaseConnection) => T): T;
+  transaction<T>(
+    operation: (transaction: TransactionContext) => NonPromise<T>,
+    options?: TransactionOptions,
+  ): Promise<T>;
   close(): Promise<void>;
 }
 
@@ -51,7 +101,15 @@ interface DatabaseProviderDependencies {
   readonly initializeSchema: (connection: Database) => void;
   readonly createClock: () => DatabaseClock;
   readonly closeConnection: (connection: Database) => void;
+  readonly executeTransactionControl: (
+    connection: Database,
+    statement: TransactionControlStatement,
+  ) => void;
+  readonly sleep: (delayMs: number) => Promise<void>;
+  readonly random: () => number;
 }
+
+type TransactionControlStatement = 'BEGIN IMMEDIATE' | 'COMMIT' | 'ROLLBACK';
 
 export interface TestDatabaseProviderOptions {
   readonly clock?: DatabaseClock;
@@ -60,6 +118,12 @@ export interface TestDatabaseProviderOptions {
   readonly initializeSchema?: (connection: Database) => void;
   readonly createClock?: () => DatabaseClock;
   readonly closeConnection?: (connection: Database) => void;
+  readonly executeTransactionControl?: (
+    connection: Database,
+    statement: TransactionControlStatement,
+  ) => void;
+  readonly sleep?: (delayMs: number) => Promise<void>;
+  readonly random?: () => number;
 }
 
 const dataDirectoryOwners = new Map<string, symbol>();
@@ -71,8 +135,12 @@ class SqliteDatabaseProvider implements DatabaseProvider {
   readonly #closeConnection: (connection: Database) => void;
   readonly #dataDirectory: string;
   readonly #owner: symbol;
+  readonly #executeTransactionControl: DatabaseProviderDependencies['executeTransactionControl'];
+  readonly #sleep: DatabaseProviderDependencies['sleep'];
+  readonly #random: DatabaseProviderDependencies['random'];
   #state: ProviderState = 'open';
   #closePromise?: Promise<void>;
+  #transactionActive = false;
 
   constructor(
     connection: Database,
@@ -80,12 +148,18 @@ class SqliteDatabaseProvider implements DatabaseProvider {
     closeConnection: (connection: Database) => void,
     dataDirectory: string,
     owner: symbol,
+    executeTransactionControl: DatabaseProviderDependencies['executeTransactionControl'],
+    sleep: DatabaseProviderDependencies['sleep'],
+    random: DatabaseProviderDependencies['random'],
   ) {
     this.#connection = connection;
     this.clock = clock;
     this.#closeConnection = closeConnection;
     this.#dataDirectory = dataDirectory;
     this.#owner = owner;
+    this.#executeTransactionControl = executeTransactionControl;
+    this.#sleep = sleep;
+    this.#random = random;
   }
 
   read<T>(operation: (connection: DatabaseConnection) => T): T {
@@ -95,6 +169,74 @@ class SqliteDatabaseProvider implements DatabaseProvider {
       return operation(facade);
     } finally {
       revokeDatabaseConnectionFacade(facade);
+    }
+  }
+
+  transaction<T>(
+    operation: (transaction: TransactionContext) => NonPromise<T>,
+    options: TransactionOptions = {},
+  ): Promise<T> {
+    this.#assertOpen();
+    if (this.#transactionActive) throw new NestedTransactionError();
+    const retry = validateRetryOptions(options.retry);
+    this.#transactionActive = true;
+    return this.#runTransactionWithRetry(operation, retry).finally(() => {
+      this.#transactionActive = false;
+    });
+  }
+
+  async #runTransactionWithRetry<T>(
+    operation: (transaction: TransactionContext) => NonPromise<T>,
+    retry: TransactionRetryOptions | undefined,
+  ): Promise<T> {
+    const maximumAttempts = (retry?.maxRetries ?? 0) + 1;
+    for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+      this.#assertOpen();
+      try {
+        return this.#runTransactionAttempt(operation);
+      } catch (error) {
+        if (!retry || !isBusyError(error)) throw error;
+        if (attempt === maximumAttempts) {
+          throw new DatabaseBusyRetryExhaustedError(attempt, error);
+        }
+        this.#assertOpen();
+        await this.#sleep(computeRetryDelay(retry, attempt, this.#random));
+        this.#assertOpen();
+      }
+    }
+    throw new Error('Unreachable database transaction retry state');
+  }
+
+  #runTransactionAttempt<T>(
+    operation: (transaction: TransactionContext) => NonPromise<T>,
+  ): T {
+    const database = createDatabaseConnectionFacade(this.#connection, 'write');
+    let transactionStarted = false;
+    try {
+      this.#executeTransactionControl(this.#connection, 'BEGIN IMMEDIATE');
+      transactionStarted = true;
+      const now = this.clock.now(database);
+      const result = operation(
+        Object.freeze({ database, clock: this.clock, now }),
+      );
+      if (isThenable(result)) throw new AsyncTransactionCallbackError();
+      this.#executeTransactionControl(this.#connection, 'COMMIT');
+      transactionStarted = false;
+      return result as T;
+    } catch (originalError) {
+      if (transactionStarted) {
+        try {
+          this.#executeTransactionControl(this.#connection, 'ROLLBACK');
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [originalError, rollbackError],
+            'Database transaction and rollback failed',
+          );
+        }
+      }
+      throw originalError;
+    } finally {
+      revokeDatabaseConnectionFacade(database);
     }
   }
 
@@ -123,7 +265,76 @@ const defaultDependencies: DatabaseProviderDependencies = {
   initializeSchema: initializeLegacySchema,
   createClock: () => new SqliteDatabaseClock(),
   closeConnection: (connection) => connection.close(),
+  executeTransactionControl: (connection, statement) =>
+    connection.exec(statement),
+  sleep: (delayMs) =>
+    new Promise((resolveSleep) => setTimeout(resolveSleep, delayMs)),
+  random: Math.random,
 };
+
+function isThenable(value: unknown): boolean {
+  if (
+    (typeof value !== 'object' || value === null) &&
+    typeof value !== 'function'
+  ) {
+    return false;
+  }
+  return typeof (value as { then?: unknown }).then === 'function';
+}
+
+function isBusyError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const code = (error as { code?: unknown }).code;
+  return code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED';
+}
+
+function validateRetryOptions(
+  retry: TransactionRetryOptions | undefined,
+): TransactionRetryOptions | undefined {
+  if (retry === undefined) return undefined;
+  if (!Number.isSafeInteger(retry.maxRetries) || retry.maxRetries < 0) {
+    throw new RangeError('maxRetries must be a non-negative safe integer');
+  }
+  for (const [name, value] of [
+    ['baseDelayMs', retry.baseDelayMs],
+    ['maxDelayMs', retry.maxDelayMs],
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new RangeError(`${name} must be a non-negative safe integer`);
+    }
+  }
+  if (retry.maxDelayMs < retry.baseDelayMs) {
+    throw new RangeError('maxDelayMs must be at least baseDelayMs');
+  }
+  if (
+    !Number.isFinite(retry.jitterRatio) ||
+    retry.jitterRatio < 0 ||
+    retry.jitterRatio > 1
+  ) {
+    throw new RangeError('jitterRatio must be between 0 and 1');
+  }
+  return Object.freeze({ ...retry });
+}
+
+function computeRetryDelay(
+  retry: TransactionRetryOptions,
+  retryNumber: number,
+  random: () => number,
+): number {
+  const exponential = Math.min(
+    retry.maxDelayMs,
+    retry.baseDelayMs * 2 ** (retryNumber - 1),
+  );
+  const randomValue = random();
+  if (!Number.isFinite(randomValue) || randomValue < 0 || randomValue > 1) {
+    throw new RangeError('Database retry random source must return [0, 1]');
+  }
+  const jitter = exponential * retry.jitterRatio * (randomValue * 2 - 1);
+  return Math.max(
+    0,
+    Math.min(retry.maxDelayMs, Math.round(exponential + jitter)),
+  );
+}
 
 function releaseOwnership(dataDirectory: string, owner: symbol): void {
   if (dataDirectoryOwners.get(dataDirectory) === owner) {
@@ -162,6 +373,9 @@ function createProvider(
       dependencies.closeConnection,
       dataDirectory,
       owner,
+      dependencies.executeTransactionControl,
+      dependencies.sleep,
+      dependencies.random,
     );
   } catch (initializationError) {
     let closeError: unknown;

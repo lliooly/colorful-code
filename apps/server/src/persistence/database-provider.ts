@@ -1,10 +1,16 @@
 export {
+  AsyncTransactionCallbackError,
+  DatabaseBusyRetryExhaustedError,
   DatabaseFacadeRevokedError,
   DatabaseProviderClosedError,
   DatabaseProviderOwnershipError,
+  NestedTransactionError,
   type DatabaseClock,
   type DatabaseConnection,
   type DatabaseProvider,
+  type TransactionContext,
+  type TransactionOptions,
+  type TransactionRetryOptions,
 } from './database-provider-internal';
 import {
   createInternalDatabaseProvider,

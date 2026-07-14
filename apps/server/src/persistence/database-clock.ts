@@ -13,6 +13,12 @@ const READ_DATABASE_PROPERTIES = new Set<PropertyKey>([
   'select',
   'selectDistinct',
 ]);
+const WRITE_DATABASE_PROPERTIES = new Set<PropertyKey>([
+  ...READ_DATABASE_PROPERTIES,
+  'delete',
+  'insert',
+  'update',
+]);
 const HIDDEN_SCOPED_PROPERTIES = new Set<PropertyKey>([
   '$client',
   'client',
@@ -39,9 +45,17 @@ export type ReadDatabase = Pick<
   PersistenceDrizzleDatabase,
   'select' | 'selectDistinct'
 >;
+export type WriteDatabase = Pick<
+  PersistenceDrizzleDatabase,
+  'delete' | 'insert' | 'select' | 'selectDistinct' | 'update'
+>;
 
 export interface DatabaseConnection {
   readonly db: ReadDatabase;
+}
+
+export interface WriteDatabaseConnection extends DatabaseConnection {
+  readonly db: WriteDatabase;
 }
 
 export interface DatabaseClock {
@@ -65,10 +79,21 @@ function assertActive(state: ConnectionState | undefined): ConnectionState {
 /** @internal Creates the capability passed only for the duration of an operation. */
 export function createDatabaseConnectionFacade(
   raw: Database,
-): DatabaseConnection {
+  access: 'write',
+): WriteDatabaseConnection;
+export function createDatabaseConnectionFacade(
+  raw: Database,
+  access?: 'read',
+): DatabaseConnection;
+export function createDatabaseConnectionFacade(
+  raw: Database,
+  access: 'read' | 'write' = 'read',
+): DatabaseConnection | WriteDatabaseConnection {
   const state = {} as ConnectionState;
   const drizzleDatabase = createDrizzleDatabase(raw);
   const scopedValues = new WeakMap<object, object>();
+  const databaseProperties =
+    access === 'write' ? WRITE_DATABASE_PROPERTIES : READ_DATABASE_PROPERTIES;
 
   const scopeValue = <T>(value: T, terminal = false): T => {
     if (
@@ -140,7 +165,7 @@ export function createDatabaseConnectionFacade(
   const database = new Proxy(drizzleDatabase, {
     get(target, property) {
       assertActive(state);
-      if (!READ_DATABASE_PROPERTIES.has(property)) return undefined;
+      if (!databaseProperties.has(property)) return undefined;
       const value = Reflect.get(target, property, target);
       if (typeof value !== 'function') return scopeValue(value);
       return (...arguments_: unknown[]) => {
@@ -150,7 +175,7 @@ export function createDatabaseConnectionFacade(
     },
     getOwnPropertyDescriptor(target, property) {
       assertActive(state);
-      if (!READ_DATABASE_PROPERTIES.has(property)) return undefined;
+      if (!databaseProperties.has(property)) return undefined;
       return Reflect.getOwnPropertyDescriptor(target, property);
     },
     getPrototypeOf() {
@@ -175,14 +200,12 @@ export function createDatabaseConnectionFacade(
     },
     has(target, property) {
       assertActive(state);
-      return (
-        READ_DATABASE_PROPERTIES.has(property) && Reflect.has(target, property)
-      );
+      return databaseProperties.has(property) && Reflect.has(target, property);
     },
     ownKeys(target) {
       assertActive(state);
       return Reflect.ownKeys(target).filter((property) =>
-        READ_DATABASE_PROPERTIES.has(property),
+        databaseProperties.has(property),
       );
     },
   }) as ReadDatabase;

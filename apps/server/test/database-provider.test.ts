@@ -11,9 +11,12 @@ import {
   type DatabaseClock,
 } from '../src/persistence/database-clock';
 import {
+  AsyncTransactionCallbackError,
+  DatabaseBusyRetryExhaustedError,
   DatabaseFacadeRevokedError,
   DatabaseProviderClosedError,
   DatabaseProviderOwnershipError,
+  NestedTransactionError,
   createDatabaseProvider,
 } from '../src/persistence/database-provider';
 import { createTestDatabaseProvider } from '../src/persistence/database-provider.testing';
@@ -460,5 +463,358 @@ test('clock rejects a captured connection after the read callback ends', async (
     } finally {
       await provider.close();
     }
+  });
+});
+
+test('transaction commits writes and revokes its database facade', async () => {
+  await withTempDirectory(async (directory) => {
+    const provider = createDatabaseProvider(join(directory, 'database.sqlite'));
+    let capturedDatabase:
+      | Parameters<Parameters<typeof provider.transaction>[0]>[0]['database']
+      | undefined;
+    try {
+      const result = await provider.transaction((transaction) => {
+        capturedDatabase = transaction.database;
+        transaction.database.db
+          .insert(sessions)
+          .values({
+            id: 'committed',
+            snapshot: '{}',
+            updatedAt: transaction.now,
+          })
+          .run();
+        return 'committed';
+      });
+
+      assert.equal(result, 'committed');
+      assert.equal(
+        provider.read((connection) =>
+          connection.db.select().from(sessions).all(),
+        ).length,
+        1,
+      );
+      assert.ok(capturedDatabase);
+      assert.throws(() => capturedDatabase.db, DatabaseFacadeRevokedError);
+    } finally {
+      await provider.close();
+    }
+  });
+});
+
+test('callback and constraint failures roll back the complete transaction', async () => {
+  await withTempDirectory(async (directory) => {
+    const provider = createDatabaseProvider(join(directory, 'database.sqlite'));
+    const callbackError = new Error('callback failed');
+    try {
+      await assert.rejects(
+        provider.transaction((transaction) => {
+          transaction.database.db
+            .insert(sessions)
+            .values({
+              id: 'callback',
+              snapshot: '{}',
+              updatedAt: transaction.now,
+            })
+            .run();
+          throw callbackError;
+        }),
+        (error) => error === callbackError,
+      );
+      await assert.rejects(
+        provider.transaction((transaction) => {
+          transaction.database.db
+            .insert(sessions)
+            .values({
+              id: 'constraint',
+              snapshot: '{}',
+              updatedAt: transaction.now,
+            })
+            .run();
+          transaction.database.db
+            .insert(sessions)
+            .values({
+              id: 'constraint',
+              snapshot: '{}',
+              updatedAt: transaction.now,
+            })
+            .run();
+        }),
+        /UNIQUE constraint failed/,
+      );
+
+      assert.deepEqual(
+        provider.read((connection) =>
+          connection.db.select().from(sessions).all(),
+        ),
+        [],
+      );
+    } finally {
+      await provider.close();
+    }
+  });
+});
+
+test('commit failures roll back and never report success', async () => {
+  await withTempDirectory(async (directory) => {
+    const commitError = new Error('commit failed');
+    const provider = createTestDatabaseProvider(
+      join(directory, 'database.sqlite'),
+      {
+        executeTransactionControl: (connection, statement) => {
+          if (statement === 'COMMIT') throw commitError;
+          connection.exec(statement);
+        },
+      },
+    );
+    try {
+      await assert.rejects(
+        provider.transaction((transaction) => {
+          transaction.database.db
+            .insert(sessions)
+            .values({
+              id: 'commit',
+              snapshot: '{}',
+              updatedAt: transaction.now,
+            })
+            .run();
+          return 'must-not-return';
+        }),
+        (error) => error === commitError,
+      );
+      assert.deepEqual(
+        provider.read((connection) =>
+          connection.db.select().from(sessions).all(),
+        ),
+        [],
+      );
+    } finally {
+      await provider.close();
+    }
+  });
+});
+
+test('rollback failures preserve the original error first', async () => {
+  await withTempDirectory(async (directory) => {
+    const callbackError = new Error('callback failed');
+    const rollbackError = new Error('rollback failed');
+    const provider = createTestDatabaseProvider(
+      join(directory, 'database.sqlite'),
+      {
+        executeTransactionControl: (connection, statement) => {
+          if (statement === 'ROLLBACK') {
+            connection.exec(statement);
+            throw rollbackError;
+          }
+          connection.exec(statement);
+        },
+      },
+    );
+    try {
+      await assert.rejects(
+        provider.transaction(() => {
+          throw callbackError;
+        }),
+        (error) => {
+          assert.ok(error instanceof AggregateError);
+          assert.deepEqual(error.errors, [callbackError, rollbackError]);
+          return true;
+        },
+      );
+    } finally {
+      await provider.close();
+    }
+  });
+});
+
+test('nested transactions and Promise callbacks are rejected and rolled back', async () => {
+  await withTempDirectory(async (directory) => {
+    const provider = createDatabaseProvider(join(directory, 'database.sqlite'));
+    try {
+      await assert.rejects(
+        provider.transaction(() => provider.transaction(() => undefined)),
+        NestedTransactionError,
+      );
+      await assert.rejects(
+        provider.transaction((() => Promise.resolve('async')) as never),
+        AsyncTransactionCallbackError,
+      );
+      assert.deepEqual(
+        provider.read((connection) =>
+          connection.db.select().from(sessions).all(),
+        ),
+        [],
+      );
+    } finally {
+      await provider.close();
+    }
+  });
+});
+
+test('a transaction reads the clock once and different transactions read again', async () => {
+  await withTempDirectory(async (directory) => {
+    const values = [200, 100];
+    let calls = 0;
+    const provider = createTestDatabaseProvider(
+      join(directory, 'database.sqlite'),
+      {
+        clock: {
+          now: () => {
+            calls += 1;
+            const value = values.shift();
+            assert.notEqual(value, undefined);
+            return value;
+          },
+        },
+      },
+    );
+    try {
+      const first = await provider.transaction((transaction) => [
+        transaction.now,
+        transaction.now,
+      ]);
+      const second = await provider.transaction(
+        (transaction) => transaction.now,
+      );
+      assert.deepEqual(first, [200, 200]);
+      assert.equal(second, 100);
+      assert.equal(calls, 2);
+    } finally {
+      await provider.close();
+    }
+  });
+});
+
+test('busy retry restarts the complete transaction with deterministic backoff', async () => {
+  await withTempDirectory(async (directory) => {
+    let commitCalls = 0;
+    let callbackCalls = 0;
+    let preparationCalls = 0;
+    const delays: number[] = [];
+    const prepared = (() => {
+      preparationCalls += 1;
+      return { id: 'retried' };
+    })();
+    const provider = createTestDatabaseProvider(
+      join(directory, 'database.sqlite'),
+      {
+        executeTransactionControl: (connection, statement) => {
+          if (statement === 'COMMIT' && commitCalls++ < 2) {
+            throw Object.assign(new Error('database busy'), {
+              code: 'SQLITE_BUSY',
+            });
+          }
+          connection.exec(statement);
+        },
+        sleep: async (delayMs) => {
+          delays.push(delayMs);
+        },
+        random: () => 0.5,
+      },
+    );
+    try {
+      await provider.transaction(
+        (transaction) => {
+          callbackCalls += 1;
+          transaction.database.db
+            .insert(sessions)
+            .values({
+              id: prepared.id,
+              snapshot: '{}',
+              updatedAt: transaction.now,
+            })
+            .onConflictDoNothing()
+            .run();
+        },
+        {
+          retry: {
+            maxRetries: 2,
+            baseDelayMs: 10,
+            maxDelayMs: 100,
+            jitterRatio: 0,
+          },
+        },
+      );
+
+      assert.equal(preparationCalls, 1);
+      assert.equal(callbackCalls, 3);
+      assert.deepEqual(delays, [10, 20]);
+      assert.equal(
+        provider.read((connection) =>
+          connection.db.select().from(sessions).all(),
+        ).length,
+        1,
+      );
+    } finally {
+      await provider.close();
+    }
+  });
+});
+
+test('busy retry exhaustion reports attempts and the final SQLite error', async () => {
+  await withTempDirectory(async (directory) => {
+    const busy = Object.assign(new Error('locked'), { code: 'SQLITE_LOCKED' });
+    const provider = createTestDatabaseProvider(
+      join(directory, 'database.sqlite'),
+      {
+        executeTransactionControl: (_connection, statement) => {
+          if (statement === 'BEGIN IMMEDIATE') throw busy;
+        },
+        sleep: async () => undefined,
+      },
+    );
+    try {
+      await assert.rejects(
+        provider.transaction(() => undefined, {
+          retry: {
+            maxRetries: 2,
+            baseDelayMs: 0,
+            maxDelayMs: 0,
+            jitterRatio: 0,
+          },
+        }),
+        (error) => {
+          assert.ok(error instanceof DatabaseBusyRetryExhaustedError);
+          assert.equal(error.attempts, 3);
+          assert.equal(error.cause, busy);
+          return true;
+        },
+      );
+    } finally {
+      await provider.close();
+    }
+  });
+});
+
+test('busy retry cannot start another attempt after Provider close', async () => {
+  await withTempDirectory(async (directory) => {
+    let beginCalls = 0;
+    const provider = createTestDatabaseProvider(
+      join(directory, 'database.sqlite'),
+      {
+        executeTransactionControl: (connection, statement) => {
+          if (statement === 'BEGIN IMMEDIATE') beginCalls += 1;
+          if (statement === 'COMMIT') {
+            throw Object.assign(new Error('busy'), { code: 'SQLITE_BUSY' });
+          }
+          connection.exec(statement);
+        },
+        sleep: async () => {
+          await provider.close();
+        },
+      },
+    );
+
+    await assert.rejects(
+      provider.transaction(() => undefined, {
+        retry: {
+          maxRetries: 1,
+          baseDelayMs: 0,
+          maxDelayMs: 0,
+          jitterRatio: 0,
+        },
+      }),
+      DatabaseProviderClosedError,
+    );
+    assert.equal(beginCalls, 1);
   });
 });
