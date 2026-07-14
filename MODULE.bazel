@@ -2,3 +2,5 @@ module(
     name = "colorful_code",
     version = "0.0.0",
 )
+
+bazel_dep(name = "rules_shell", version = "0.8.0")

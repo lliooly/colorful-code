@@ -1,0 +1,50 @@
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+
+sh_binary(
+    name = "build",
+    srcs = ["//bazel:run-task.sh"],
+    args = ["build"],
+    visibility = ["//visibility:public"],
+)
+
+sh_binary(
+    name = "lint",
+    srcs = ["//bazel:run-task.sh"],
+    args = ["lint"],
+    visibility = ["//visibility:public"],
+)
+
+sh_binary(
+    name = "typecheck",
+    srcs = ["//bazel:run-task.sh"],
+    args = ["typecheck"],
+    visibility = ["//visibility:public"],
+)
+
+sh_binary(
+    name = "test",
+    srcs = ["//bazel:run-task.sh"],
+    args = ["test"],
+    visibility = ["//visibility:public"],
+)
+
+sh_binary(
+    name = "desktop-sidecar",
+    srcs = ["//bazel:run-task.sh"],
+    args = ["desktop-sidecar"],
+    visibility = ["//visibility:public"],
+)
+
+sh_binary(
+    name = "desktop-check",
+    srcs = ["//bazel:run-task.sh"],
+    args = ["desktop-check"],
+    visibility = ["//visibility:public"],
+)
+
+sh_binary(
+    name = "desktop-test",
+    srcs = ["//bazel:run-task.sh"],
+    args = ["desktop-test"],
+    visibility = ["//visibility:public"],
+)
