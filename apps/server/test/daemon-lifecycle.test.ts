@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -56,28 +56,52 @@ class FakeApplication implements DaemonApplication {
   }
 }
 
-test('acquires the data-directory lock before creating or listening to the app', async () => {
+test('acquires the lock and migrates before creating or listening to the app', async () => {
   const events: string[] = [];
   let locked = false;
+  let appCreated = false;
   const application = new FakeApplication({ events });
+  const originalCwd = process.cwd();
+  const changedCwd = mkdtempSync(join(tmpdir(), 'colorful-code-cwd-'));
+  const expectedDatabasePath = resolve('./relative/data.sqlite');
+  let migratedDatabasePath: string | undefined;
 
-  await startDaemon({
-    databasePath: './relative/data.sqlite',
-    acquireLock: async (dataDirectory) => {
-      assert.equal(dataDirectory, dirname(resolve('./relative/data.sqlite')));
-      events.push('acquire-lock');
-      locked = true;
-      return { release: async () => undefined };
-    },
-    createApplication: async () => {
-      assert.equal(locked, true);
-      events.push('create-app');
-      return application;
-    },
-  });
+  try {
+    // Let Bun finish loading sibling node:test files before changing global cwd.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await startDaemon({
+      databasePath: './relative/data.sqlite',
+      acquireLock: async (dataDirectory) => {
+        assert.equal(dataDirectory, dirname(expectedDatabasePath));
+        events.push('acquire-lock');
+        locked = true;
+        return { release: async () => undefined };
+      },
+      migrateDatabase: async (databasePath) => {
+        migratedDatabasePath = databasePath;
+        assert.equal(databasePath, expectedDatabasePath);
+        assert.equal(locked, true);
+        assert.equal(appCreated, false);
+        events.push('migrate');
+        process.chdir(changedCwd);
+      },
+      createApplication: async (databasePath) => {
+        assert.equal(databasePath, migratedDatabasePath);
+        assert.equal(databasePath, expectedDatabasePath);
+        assert.equal(locked, true);
+        appCreated = true;
+        events.push('create-app');
+        return application;
+      },
+    });
+  } finally {
+    process.chdir(originalCwd);
+    rmSync(changedCwd, { recursive: true, force: true });
+  }
 
   assert.deepEqual(events, [
     'acquire-lock',
+    'migrate',
     'create-app',
     'register-close',
     'listen',
@@ -86,7 +110,8 @@ test('acquires the data-directory lock before creating or listening to the app',
 
 test('a lock conflict prevents app creation and startup without releasing an unowned lock', async () => {
   let createCalls = 0;
-  let releaseCalls = 0;
+  let migrateCalls = 0;
+  const releaseCalls = 0;
   const application = new FakeApplication();
   const conflict = new DataDirectoryLockConflictError('/occupied');
 
@@ -95,6 +120,9 @@ test('a lock conflict prevents app creation and startup without releasing an uno
       databasePath: '/occupied/data.sqlite',
       acquireLock: async () => {
         throw conflict;
+      },
+      migrateDatabase: async () => {
+        migrateCalls += 1;
       },
       createApplication: async () => {
         createCalls += 1;
@@ -105,8 +133,73 @@ test('a lock conflict prevents app creation and startup without releasing an uno
   );
 
   assert.equal(createCalls, 0);
+  assert.equal(migrateCalls, 0);
   assert.equal(application.listenCalls, 0);
   assert.equal(releaseCalls, 0);
+});
+
+for (const databasePath of [
+  'file::memory:evil',
+  'file:/tmp/alias.db',
+  'FILE:/tmp/alias.db',
+]) {
+  test(`rejects unsupported database URI ${databasePath} before lock or startup`, async () => {
+    let acquireCalls = 0;
+    let migrateCalls = 0;
+    let createCalls = 0;
+
+    await assert.rejects(
+      startDaemon({
+        databasePath,
+        acquireLock: async () => {
+          acquireCalls += 1;
+          return { release: async () => undefined };
+        },
+        migrateDatabase: async () => {
+          migrateCalls += 1;
+        },
+        createApplication: async () => {
+          createCalls += 1;
+          return new FakeApplication();
+        },
+      }),
+      (error: unknown) =>
+        error instanceof Error && error.name === 'DatabasePathError',
+    );
+
+    assert.equal(acquireCalls, 0);
+    assert.equal(migrateCalls, 0);
+    assert.equal(createCalls, 0);
+  });
+}
+
+test('rejects a symbolic-link database before acquiring its directory lock', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'colorful-code-daemon-link-'));
+  const targetPath = join(directory, 'target.db');
+  const linkPath = join(directory, 'link.db');
+  let acquireCalls = 0;
+
+  try {
+    writeFileSync(targetPath, '');
+    symlinkSync(targetPath, linkPath);
+
+    await assert.rejects(
+      startDaemon({
+        databasePath: linkPath,
+        acquireLock: async () => {
+          acquireCalls += 1;
+          return { release: async () => undefined };
+        },
+        migrateDatabase: async () => undefined,
+        createApplication: async () => new FakeApplication(),
+      }),
+      (error: unknown) =>
+        error instanceof Error && error.name === 'DatabasePathError',
+    );
+    assert.equal(acquireCalls, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('releases the lock once and preserves an application creation error', async () => {
@@ -121,6 +214,7 @@ test('releases the lock once and preserves an application creation error', async
           releaseCalls += 1;
         },
       }),
+      migrateDatabase: async () => undefined,
       createApplication: async () => {
         throw creationError;
       },
@@ -170,6 +264,7 @@ test('a listen failure closes the app before directly releasing its lock', async
           events.push('release-lock');
         },
       }),
+      migrateDatabase: async () => undefined,
       createApplication: async () => application,
     }),
     (error) => error === listenError,
@@ -180,13 +275,10 @@ test('a listen failure closes the app before directly releasing its lock', async
   assert.equal(releaseCalls, 1);
 });
 
-test('normal app close runs the registered callback and repeated release is safe', async () => {
+test('normal repeated app close physically releases the lock only once', async () => {
   let physicalReleases = 0;
-  let released = false;
   const lock = {
     release: async () => {
-      if (released) return;
-      released = true;
       physicalReleases += 1;
     },
   };
@@ -195,11 +287,188 @@ test('normal app close runs the registered callback and repeated release is safe
   await startDaemon({
     databasePath: '/data/db.sqlite',
     acquireLock: async () => lock,
+    migrateDatabase: async () => undefined,
     createApplication: async () => application,
   });
   await application.close();
   await application.close();
-  await lock.release();
+
+  assert.equal(physicalReleases, 1);
+});
+
+test('normal app close retries a failed physical release on the next close', async () => {
+  const firstReleaseError = new Error('first release failed');
+  let physicalAttempts = 0;
+  const application = new FakeApplication({ runCallbacksOnClose: true });
+
+  await startDaemon({
+    databasePath: '/data/db.sqlite',
+    acquireLock: async () => ({
+      release: async () => {
+        physicalAttempts += 1;
+        if (physicalAttempts === 1) throw firstReleaseError;
+      },
+    }),
+    migrateDatabase: async () => undefined,
+    createApplication: async () => application,
+  });
+
+  await assert.rejects(
+    application.close(),
+    (error) => error === firstReleaseError,
+  );
+  await application.close();
+  assert.equal(physicalAttempts, 2);
+});
+
+test('listen cleanup shares one physical release with the onClose callback', async () => {
+  const listenError = new Error('listen failed');
+  let physicalReleases = 0;
+  const application = new FakeApplication({
+    listenError,
+    runCallbacksOnClose: true,
+  });
+
+  await assert.rejects(
+    startDaemon({
+      databasePath: '/data/db.sqlite',
+      acquireLock: async () => ({
+        release: async () => {
+          physicalReleases += 1;
+        },
+      }),
+      migrateDatabase: async () => undefined,
+      createApplication: async () => application,
+    }),
+    (error) => error === listenError,
+  );
+
+  assert.equal(physicalReleases, 1);
+});
+
+test('listen cleanup reports a cached release failure swallowed by app close', async () => {
+  const listenError = new Error('listen failed');
+  const releaseError = new Error('release failed');
+  let closeCallback: (() => Promise<void>) | undefined;
+  let physicalReleases = 0;
+  const application: DaemonApplication = {
+    onClose(callback) {
+      closeCallback = callback;
+    },
+    async listen() {
+      throw listenError;
+    },
+    async close() {
+      try {
+        await closeCallback?.();
+      } catch {
+        // This adapter intentionally swallows callback errors.
+      }
+    },
+  };
+
+  await assert.rejects(
+    startDaemon({
+      databasePath: '/data/db.sqlite',
+      acquireLock: async () => ({
+        release: async () => {
+          physicalReleases += 1;
+          throw releaseError;
+        },
+      }),
+      migrateDatabase: async () => undefined,
+      createApplication: async () => application,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(error.errors, [listenError, releaseError]);
+      return true;
+    },
+  );
+
+  assert.equal(physicalReleases, 1);
+});
+
+test('listen cleanup reports close and callback release failures without duplicating release', async () => {
+  const listenError = new Error('listen failed');
+  const closeError = new Error('close failed');
+  const releaseError = new Error('release failed');
+  let physicalReleases = 0;
+  const application = new FakeApplication({
+    listenError,
+    closeError,
+    runCallbacksOnClose: true,
+  });
+
+  await assert.rejects(
+    startDaemon({
+      databasePath: '/data/db.sqlite',
+      acquireLock: async () => ({
+        release: async () => {
+          physicalReleases += 1;
+          throw releaseError;
+        },
+      }),
+      migrateDatabase: async () => undefined,
+      createApplication: async () => application,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.errors[0], listenError);
+      assert.ok(error.errors[1] instanceof AggregateError);
+      assert.deepEqual(error.errors[1].errors, [closeError, releaseError]);
+      assert.equal(error.errors.length, 2);
+      return true;
+    },
+  );
+
+  assert.equal(physicalReleases, 1);
+});
+
+test('listen cleanup finds a release error through cyclic causes without duplicating it', async () => {
+  const listenError = new Error('listen failed');
+  const releaseError = new Error('release failed');
+  const wrapper = new Error('wrapped release failure');
+  const nested = new AggregateError([releaseError], 'nested', {
+    cause: wrapper,
+  });
+  Object.defineProperty(wrapper, 'cause', { value: nested });
+  let closeCallback: (() => Promise<void>) | undefined;
+  let physicalReleases = 0;
+  const application: DaemonApplication = {
+    onClose(callback) {
+      closeCallback = callback;
+    },
+    async listen() {
+      throw listenError;
+    },
+    async close() {
+      try {
+        await closeCallback?.();
+      } catch {
+        throw wrapper;
+      }
+    },
+  };
+
+  await assert.rejects(
+    startDaemon({
+      databasePath: '/data/db.sqlite',
+      acquireLock: async () => ({
+        release: async () => {
+          physicalReleases += 1;
+          throw releaseError;
+        },
+      }),
+      migrateDatabase: async () => undefined,
+      createApplication: async () => application,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(error.errors, [listenError, wrapper]);
+      return true;
+    },
+  );
 
   assert.equal(physicalReleases, 1);
 });
@@ -218,6 +487,7 @@ test('aggregates a startup error with both app-close and lock-release failures',
           throw releaseError;
         },
       }),
+      migrateDatabase: async () => undefined,
       createApplication: async () => application,
     }),
     (error: unknown) => {
@@ -240,6 +510,7 @@ test('aggregates an app creation error with lock-release failure', async () => {
           throw releaseError;
         },
       }),
+      migrateDatabase: async () => undefined,
       createApplication: async () => {
         throw creationError;
       },
@@ -261,6 +532,7 @@ test('aggregates a startup error with an app-close failure when lock release suc
     startDaemon({
       databasePath: '/data/db.sqlite',
       acquireLock: async () => ({ release: async () => undefined }),
+      migrateDatabase: async () => undefined,
       createApplication: async () => application,
     }),
     (error: unknown) => {
@@ -277,21 +549,92 @@ for (const databasePath of [
   'file::memory:',
   'file::memory:?cache=shared',
 ]) {
-  test(`does not acquire a filesystem lock for in-memory path ${JSON.stringify(databasePath)}`, async () => {
+  test(`rejects unsupported in-memory path ${JSON.stringify(databasePath)} before startup`, async () => {
     let acquireCalls = 0;
+    let migrateCalls = 0;
+    let createCalls = 0;
     const application = new FakeApplication();
 
-    const result = await startDaemon({
-      databasePath,
-      acquireLock: async () => {
-        acquireCalls += 1;
-        return { release: async () => undefined };
-      },
-      createApplication: async () => application,
-    });
+    await assert.rejects(
+      startDaemon({
+        databasePath,
+        acquireLock: async () => {
+          acquireCalls += 1;
+          return { release: async () => undefined };
+        },
+        migrateDatabase: async () => {
+          migrateCalls += 1;
+        },
+        createApplication: async () => {
+          createCalls += 1;
+          return application;
+        },
+      }),
+      (error: unknown) =>
+        error instanceof Error &&
+        error.name === 'DatabasePathError' &&
+        (error as Error & { code?: unknown }).code ===
+          'in_memory_database_unsupported',
+    );
 
-    assert.equal(result, application);
     assert.equal(acquireCalls, 0);
-    assert.equal(application.listenCalls, 1);
+    assert.equal(migrateCalls, 0);
+    assert.equal(createCalls, 0);
+    assert.equal(application.listenCalls, 0);
   });
 }
+
+test('migration failure prevents app creation and releases the owned lock once', async () => {
+  const migrationError = new Error('migration failed');
+  let createCalls = 0;
+  let releaseCalls = 0;
+  const application = new FakeApplication();
+
+  await assert.rejects(
+    startDaemon({
+      databasePath: '/data/db.sqlite',
+      acquireLock: async () => ({
+        release: async () => {
+          releaseCalls += 1;
+        },
+      }),
+      migrateDatabase: async () => {
+        throw migrationError;
+      },
+      createApplication: async () => {
+        createCalls += 1;
+        return application;
+      },
+    }),
+    (error) => error === migrationError,
+  );
+
+  assert.equal(createCalls, 0);
+  assert.equal(application.listenCalls, 0);
+  assert.equal(releaseCalls, 1);
+});
+
+test('aggregates migration and lock-release failures in primary-first order', async () => {
+  const migrationError = new Error('migration failed');
+  const releaseError = new Error('release failed');
+
+  await assert.rejects(
+    startDaemon({
+      databasePath: '/data/db.sqlite',
+      acquireLock: async () => ({
+        release: async () => {
+          throw releaseError;
+        },
+      }),
+      migrateDatabase: () => {
+        throw migrationError;
+      },
+      createApplication: async () => new FakeApplication(),
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(error.errors, [migrationError, releaseError]);
+      return true;
+    },
+  );
+});
