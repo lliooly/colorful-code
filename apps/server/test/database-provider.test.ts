@@ -32,21 +32,39 @@ async function withTempDirectory<T>(
 
 test('initializes the legacy schema and production SQLite pragmas before reads', async () => {
   await withTempDirectory(async (directory) => {
-    const provider = createDatabaseProvider(join(directory, 'database.sqlite'));
+    let raw: Database | undefined;
+    const provider = createTestDatabaseProvider(
+      join(directory, 'database.sqlite'),
+      {
+        connectionFactory: (databasePath) => {
+          raw = new Database(databasePath);
+          return raw;
+        },
+      },
+    );
     try {
-      const result = provider.read((connection) => ({
-        rows: connection.db.select().from(sessions).all(),
-        journalMode: connection.db.get(sql`PRAGMA journal_mode`) as [string],
-        foreignKeys: connection.db.get(sql`PRAGMA foreign_keys`) as [number],
-        busyTimeout: connection.db.get(sql`PRAGMA busy_timeout`) as [number],
-        synchronous: connection.db.get(sql`PRAGMA synchronous`) as [number],
-      }));
+      const rows = provider.read((connection) =>
+        connection.db.select().from(sessions).all(),
+      );
+      assert.ok(raw);
+      const journalMode = raw
+        .query<{ journal_mode: string }, []>('PRAGMA journal_mode')
+        .get();
+      const foreignKeys = raw
+        .query<{ foreign_keys: number }, []>('PRAGMA foreign_keys')
+        .get();
+      const busyTimeout = raw
+        .query<{ timeout: number }, []>('PRAGMA busy_timeout')
+        .get();
+      const synchronous = raw
+        .query<{ synchronous: number }, []>('PRAGMA synchronous')
+        .get();
 
-      assert.deepEqual(result.rows, []);
-      assert.equal(result.journalMode[0].toLowerCase(), 'wal');
-      assert.equal(result.foreignKeys[0], 1);
-      assert.equal(result.busyTimeout[0], 5_000);
-      assert.equal(result.synchronous[0], 2);
+      assert.deepEqual(rows, []);
+      assert.equal(journalMode?.journal_mode.toLowerCase(), 'wal');
+      assert.equal(foreignKeys?.foreign_keys, 1);
+      assert.equal(busyTimeout?.timeout, 5_000);
+      assert.equal(synchronous?.synchronous, 2);
     } finally {
       await provider.close();
     }
@@ -194,8 +212,11 @@ test('opens a business connection distinct from the migration connection', async
     assert.notEqual(businessConnection, migrationConnection);
     assert.equal(
       provider.read((connection) =>
-        connection.db.get(sql`SELECT COUNT(*) AS count FROM migration_probe`),
-      )[0],
+        connection.db
+          .select({ count: sql<number>`COUNT(*)` })
+          .from(sql.raw('migration_probe'))
+          .get(),
+      ).count,
       0,
     );
     await provider.close();
@@ -285,5 +306,83 @@ test('read exposes a revocable facade without a raw Database bypass', async () =
     assert.ok(capturedConnection);
     assert.throws(() => capturedConnection.db, DatabaseFacadeRevokedError);
     await provider.close();
+  });
+});
+
+test('read facade rejects write and manual transaction capabilities', async () => {
+  await withTempDirectory(async (directory) => {
+    const provider = createDatabaseProvider(join(directory, 'database.sqlite'));
+    try {
+      provider.read((connection) => {
+        for (const forbidden of [
+          '$client',
+          'session',
+          'insert',
+          'update',
+          'delete',
+          'transaction',
+          'run',
+          'get',
+          'all',
+          'values',
+        ]) {
+          assert.equal(forbidden in connection.db, false, forbidden);
+          assert.equal(
+            (connection.db as unknown as Record<string, unknown>)[forbidden],
+            undefined,
+            forbidden,
+          );
+        }
+      });
+    } finally {
+      await provider.close();
+    }
+  });
+});
+
+test('query builders cannot leak raw state or execute after their read callback', async () => {
+  await withTempDirectory(async (directory) => {
+    const provider = createDatabaseProvider(join(directory, 'database.sqlite'));
+    let capturedBuilder: ReturnType<
+      ReturnType<
+        Parameters<Parameters<typeof provider.read>[0]>[0]['db']['select']
+      >['from']
+    >;
+
+    try {
+      provider.read((connection) => {
+        capturedBuilder = connection.db.select().from(sessions);
+        const escaped = capturedBuilder as unknown as Record<string, unknown>;
+        assert.equal('session' in escaped, false);
+        assert.equal(escaped.session, undefined);
+        assert.deepEqual(capturedBuilder.all(), []);
+      });
+
+      assert.throws(() => capturedBuilder.all(), DatabaseFacadeRevokedError);
+    } finally {
+      await provider.close();
+    }
+  });
+});
+
+test('clock rejects a captured connection after the read callback ends', async () => {
+  await withTempDirectory(async (directory) => {
+    const provider = createDatabaseProvider(join(directory, 'database.sqlite'));
+    let capturedConnection:
+      | Parameters<Parameters<typeof provider.read>[0]>[0]
+      | undefined;
+
+    try {
+      provider.read((connection) => {
+        capturedConnection = connection;
+      });
+      assert.ok(capturedConnection);
+      assert.throws(
+        () => provider.clock.now(capturedConnection),
+        DatabaseFacadeRevokedError,
+      );
+    } finally {
+      await provider.close();
+    }
   });
 });

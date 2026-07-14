@@ -9,7 +9,26 @@ const CLOCK_QUERY = `
        + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER) AS now_ms
 `;
 
-const HIDDEN_DATABASE_PROPERTIES = new Set<PropertyKey>(['$client', 'session']);
+const READ_DATABASE_PROPERTIES = new Set<PropertyKey>([
+  '$count',
+  'query',
+  'select',
+  'selectDistinct',
+]);
+const HIDDEN_SCOPED_PROPERTIES = new Set<PropertyKey>([
+  '$client',
+  'client',
+  'raw',
+  'session',
+  'stmt',
+]);
+const TERMINAL_QUERY_METHODS = new Set<PropertyKey>([
+  'all',
+  'execute',
+  'get',
+  'run',
+  'values',
+]);
 
 export class DatabaseFacadeRevokedError extends Error {
   constructor() {
@@ -18,9 +37,9 @@ export class DatabaseFacadeRevokedError extends Error {
   }
 }
 
-export type ReadDatabase = Omit<
+export type ReadDatabase = Pick<
   PersistenceDrizzleDatabase,
-  '$client' | 'session'
+  '$count' | 'query' | 'select' | 'selectDistinct'
 >;
 
 export interface DatabaseConnection {
@@ -35,6 +54,7 @@ interface ConnectionState {
   active: boolean;
   readonly raw: Database;
   readonly database: ReadDatabase;
+  readonly scopedValues: WeakMap<object, object>;
 }
 
 const connectionStates = new WeakMap<DatabaseConnection, ConnectionState>();
@@ -50,38 +70,94 @@ export function createDatabaseConnectionFacade(
 ): DatabaseConnection {
   const state = {} as ConnectionState;
   const drizzleDatabase = createDrizzleDatabase(raw);
+  const scopedValues = new WeakMap<object, object>();
+
+  const scopeValue = <T>(value: T, terminal = false): T => {
+    if (
+      terminal ||
+      ((typeof value !== 'object' || value === null) &&
+        typeof value !== 'function')
+    ) {
+      return value;
+    }
+    const object = value as object;
+    const existing = scopedValues.get(object);
+    if (existing) return existing as T;
+
+    const scoped = new Proxy(object, {
+      get(target, property) {
+        assertActive(state);
+        if (HIDDEN_SCOPED_PROPERTIES.has(property)) return undefined;
+        const nested = Reflect.get(target, property, target);
+        if (typeof nested !== 'function') return scopeValue(nested);
+        return (...arguments_: unknown[]) => {
+          assertActive(state);
+          const result = Reflect.apply(nested, target, arguments_);
+          return scopeValue(result, TERMINAL_QUERY_METHODS.has(property));
+        };
+      },
+      getOwnPropertyDescriptor(target, property) {
+        assertActive(state);
+        if (HIDDEN_SCOPED_PROPERTIES.has(property)) return undefined;
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+      getPrototypeOf() {
+        assertActive(state);
+        return null;
+      },
+      has(target, property) {
+        assertActive(state);
+        return (
+          !HIDDEN_SCOPED_PROPERTIES.has(property) &&
+          Reflect.has(target, property)
+        );
+      },
+      ownKeys(target) {
+        assertActive(state);
+        return Reflect.ownKeys(target).filter(
+          (property) => !HIDDEN_SCOPED_PROPERTIES.has(property),
+        );
+      },
+    });
+    scopedValues.set(object, scoped);
+    return scoped as T;
+  };
+
   const database = new Proxy(drizzleDatabase, {
     get(target, property) {
       assertActive(state);
-      if (HIDDEN_DATABASE_PROPERTIES.has(property)) return undefined;
+      if (!READ_DATABASE_PROPERTIES.has(property)) return undefined;
       const value = Reflect.get(target, property, target);
-      if (typeof value !== 'function') return value;
+      if (typeof value !== 'function') return scopeValue(value);
       return (...arguments_: unknown[]) => {
         assertActive(state);
-        return Reflect.apply(value, target, arguments_);
+        return scopeValue(Reflect.apply(value, target, arguments_));
       };
     },
     getOwnPropertyDescriptor(target, property) {
       assertActive(state);
-      if (HIDDEN_DATABASE_PROPERTIES.has(property)) return undefined;
+      if (!READ_DATABASE_PROPERTIES.has(property)) return undefined;
       return Reflect.getOwnPropertyDescriptor(target, property);
+    },
+    getPrototypeOf() {
+      assertActive(state);
+      return null;
     },
     has(target, property) {
       assertActive(state);
       return (
-        !HIDDEN_DATABASE_PROPERTIES.has(property) &&
-        Reflect.has(target, property)
+        READ_DATABASE_PROPERTIES.has(property) && Reflect.has(target, property)
       );
     },
     ownKeys(target) {
       assertActive(state);
-      return Reflect.ownKeys(target).filter(
-        (property) => !HIDDEN_DATABASE_PROPERTIES.has(property),
+      return Reflect.ownKeys(target).filter((property) =>
+        READ_DATABASE_PROPERTIES.has(property),
       );
     },
   }) as ReadDatabase;
 
-  Object.assign(state, { active: true, raw, database });
+  Object.assign(state, { active: true, raw, database, scopedValues });
   const connection = Object.freeze({
     get db(): ReadDatabase {
       return assertActive(connectionStates.get(connection)).database;
