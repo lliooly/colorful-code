@@ -43,19 +43,25 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # v0.19.0
+
+      - name: Verify Bazel orchestration contract
+        run: REQUIRE_BAZEL=1 bash bazel/test/run-task.test.sh
+
       - name: Lint
-        run: pnpm turbo run lint --filter='!@colorful-code/desktop'
+        run: bazel run //:lint
 
       - name: Typecheck
-        run: pnpm turbo run typecheck --filter='!@colorful-code/desktop'
+        run: bazel run //:typecheck
 
       - name: Build TypeScript packages
         env:
           NEXT_PUBLIC_API_BASE_URL: http://127.0.0.1:3001
-        run: pnpm turbo run build --filter='!@colorful-code/desktop'
+        run: bazel run //:build
 
       - name: Test non-desktop packages
-        run: pnpm test
+        run: bazel run //:test
 
   desktop:
     name: Desktop checks
@@ -85,11 +91,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # v0.19.0
+
       - name: Build desktop server sidecar
-        run: pnpm --filter @colorful-code/desktop build:server-sidecar
+        run: bazel run //:desktop-sidecar
 
       - name: Check desktop crate
-        run: pnpm --filter @colorful-code/desktop lint
+        run: bazel run //:desktop-check
 
       - name: Test desktop crate
-        run: pnpm --filter @colorful-code/desktop test
+        run: bazel run //:desktop-test

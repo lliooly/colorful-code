@@ -1,10 +1,11 @@
 # Colorful Code
+
 感谢 zread 对本项目的文档支持
 [![zread](https://img.shields.io/badge/Ask_Zread-_.svg?style=flat-square&color=00b0aa&labelColor=000000&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTQuOTYxNTYgMS42MDAxSDIuMjQxNTZDMS44ODgxIDEuNjAwMSAxLjYwMTU2IDEuODg2NjQgMS42MDE1NiAyLjI0MDFWNC45NjAxQzEuNjAxNTYgNS4zMTM1NiAxLjg4ODEgNS42MDAxIDIuMjQxNTYgNS42MDAxSDQuOTYxNTZDNS4zMTUwMiA1LjYwMDEgNS42MDE1NiA1LjMxMzU2IDUuNjAxNTYgNC45NjAxVjIuMjQwMUM1LjYwMTU2IDEuODg2NjQgNS4zMTUwMiAxLjYwMDEgNC45NjE1NiAxLjYwMDFaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00Ljk2MTU2IDEwLjM5OTlIMi4yNDE1NkMxLjg4ODEgMTAuMzk5OSAxLjYwMTU2IDEwLjY4NjQgMS42MDE1NiAxMS4wMzk5VjEzLjc1OTlDMS42MDE1NiAxNC4xMTM0IDEuODg4MSAxNC4zOTk5IDIuMjQxNTYgMTQuMzk5OUg0Ljk2MTU2QzUuMzE1MDIgMTQuMzk5OSA1LjYwMTU2IDE0LjExMzQgNS42MDE1NiAxMy43NTk5VjExLjAzOTlDNS42MDE1NiAxMC42ODY0IDUuMzE1MDIgMTAuMzk5OSA0Ljk2MTU2IDEwLjM5OTlaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik0xMy43NTg0IDEuNjAwMUgxMS4wMzg0QzEwLjY4NSAxLjYwMDEgMTAuMzk4NCAxLjg4NjY0IDEwLjM5ODQgMi4yNDAxVjQuOTYwMUMxMC4zOTg0IDUuMzEzNTYgMTAuNjg1IDUuNjAwMSAxMS4wMzg0IDUuNjAwMUgxMy43NTg0QzE0LjExMTkgNS42MDAxIDE0LjM5ODQgNS4zMTM1NiAxNC4zOTg0IDQuOTYwMVYyLjI0MDFDMTQuMzk4NCAxLjg4NjY0IDE0LjExMTkgMS42MDAxIDEzLjc1ODQgMS42MDAxWiIgZmlsbD0iI2ZmZiIvPgo8cGF0aCBkPSJNNCAxMkwxMiA0TDQgMTJaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00IDEyTDEyIDQiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K&logoColor=ffffff)](https://zread.ai/lliooly/colorful-code)
 
 Colorful Code 是一个面向本地开发场景的编码 Agent 工作台。项目提供 Web UI、NestJS Agent Server、Tauri 桌面壳和可复用的工具运行时，用来承载会话流、权限审批、文件与命令工具、MCP / LSP 插件、项目历史和检查点恢复等能力。
 
-这个仓库是一个 pnpm monorepo，日常 TypeScript 任务由 Turborepo 编排；Bazel 作为未来多语言构建与桌面打包的预留层。
+这个仓库是一个 pnpm monorepo，日常 TypeScript 任务由 Turborepo 执行；Bazel 为检查、构建、测试和桌面端任务提供统一编排入口。
 
 ## 主要能力
 
@@ -44,7 +45,7 @@ colorful-code/
 │  └─ shared/       # 框架无关的共享工具
 ├─ tooling/         # TypeScript、ESLint、Prettier 共享配置
 ├─ docs/            # 设计文档、计划与指南
-└─ bazel/           # Bazel bootstrap 说明
+└─ bazel/           # Bazel 任务入口与适配器
 ```
 
 ## 环境要求
@@ -54,6 +55,7 @@ colorful-code/
 - Bun（Server 与 CLI 当前依赖 Bun 运行）
 - ripgrep (`rg`)（搜索工具运行时需要）
 - Rust 与系统 Tauri 依赖（仅桌面端开发 / 打包需要）
+- Bazelisk（推荐，会读取 `.bazelversion`）或 Bazel
 
 ## 快速开始
 
@@ -173,6 +175,18 @@ pnpm format       # 检查格式
 pnpm format:write # 写入格式化结果
 pnpm clean        # 清理构建产物
 pnpm agent:cli    # 运行 CLI 入口
+```
+
+也可以通过 Bazel 运行对应的检查、构建与测试任务；使用前仍需先执行 `pnpm install`。完整的目标说明与环境边界见 [Bazel 任务入口](./bazel/README.md)。
+
+```bash
+bazel run //:lint
+bazel run //:typecheck
+bazel run //:build
+bazel run //:test
+bazel run //:desktop-sidecar
+bazel run //:desktop-check
+bazel run //:desktop-test
 ```
 
 常用分包命令：

@@ -12,6 +12,8 @@ EMPTY_BIN_DIR="$TMP_DIR/empty-bin"
 WORKSPACE_DIR="$TMP_DIR/workspace with spaces"
 PNPM_LOG="$TMP_DIR/pnpm.log"
 PWD_LOG="$TMP_DIR/pwd.log"
+ENV_LOG="$TMP_DIR/env.log"
+API_BASE_URL_SENTINEL='http://127.0.0.1:3999'
 mkdir -p "$BIN_DIR" "$EMPTY_BIN_DIR" "$WORKSPACE_DIR"
 
 cat >"$BIN_DIR/pnpm" <<'MOCK'
@@ -19,6 +21,7 @@ cat >"$BIN_DIR/pnpm" <<'MOCK'
 set -euo pipefail
 printf '%s\n' "$@" >"$PNPM_LOG"
 printf '%s\n' "$PWD" >"$PWD_LOG"
+printf '%s\n' "${NEXT_PUBLIC_API_BASE_URL-}" >"$ENV_LOG"
 exit "${PNPM_EXIT:-0}"
 MOCK
 chmod +x "$BIN_DIR/pnpm"
@@ -80,6 +83,8 @@ run_adapter() {
   BUILD_WORKSPACE_DIRECTORY="$WORKSPACE_DIR" \
     PNPM_LOG="$PNPM_LOG" \
     PWD_LOG="$PWD_LOG" \
+    ENV_LOG="$ENV_LOG" \
+    NEXT_PUBLIC_API_BASE_URL="$API_BASE_URL_SENTINEL" \
     PNPM_EXIT=0 \
     PATH="$BIN_DIR:/usr/bin:/bin" \
     /bin/bash "$RUN_TASK" "$@" >"$stdout_file" 2>"$stderr_file"
@@ -103,6 +108,7 @@ assert_mapping() {
 }
 
 assert_mapping build $'turbo\nrun\nbuild\n--filter=!@colorful-code/desktop'
+assert_file_equals "$API_BASE_URL_SENTINEL" "$ENV_LOG" "build environment"
 assert_mapping lint $'turbo\nrun\nlint\n--filter=!@colorful-code/desktop'
 assert_mapping typecheck $'turbo\nrun\ntypecheck\n--filter=!@colorful-code/desktop'
 assert_mapping test $'run\ntest'
@@ -113,7 +119,8 @@ assert_mapping desktop-test $'--filter\n@colorful-code/desktop\ntest'
 set +e
 (
   unset BUILD_WORKSPACE_DIRECTORY PNPM_EXIT
-  PNPM_LOG="$PNPM_LOG" PWD_LOG="$PWD_LOG" PATH="$BIN_DIR:/usr/bin:/bin" \
+  PNPM_LOG="$PNPM_LOG" PWD_LOG="$PWD_LOG" ENV_LOG="$ENV_LOG" \
+    NEXT_PUBLIC_API_BASE_URL="$API_BASE_URL_SENTINEL" PATH="$BIN_DIR:/usr/bin:/bin" \
     /bin/bash "$RUN_TASK" build >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr"
 )
 status=$?
@@ -124,7 +131,8 @@ pass_count=$((pass_count + 1))
 printf 'ok - missing workspace rejected\n'
 
 set +e
-BUILD_WORKSPACE_DIRECTORY="$WORKSPACE_DIR" PNPM_LOG="$PNPM_LOG" PWD_LOG="$PWD_LOG" PNPM_EXIT=0 PATH="$EMPTY_BIN_DIR" \
+BUILD_WORKSPACE_DIRECTORY="$WORKSPACE_DIR" PNPM_LOG="$PNPM_LOG" PWD_LOG="$PWD_LOG" ENV_LOG="$ENV_LOG" \
+  NEXT_PUBLIC_API_BASE_URL="$API_BASE_URL_SENTINEL" PNPM_EXIT=0 PATH="$EMPTY_BIN_DIR" \
   /bin/bash "$RUN_TASK" build >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr"
 status=$?
 set -e
@@ -149,6 +157,8 @@ set +e
 BUILD_WORKSPACE_DIRECTORY="$WORKSPACE_DIR" \
   PNPM_LOG="$PNPM_LOG" \
   PWD_LOG="$PWD_LOG" \
+  ENV_LOG="$ENV_LOG" \
+  NEXT_PUBLIC_API_BASE_URL="$API_BASE_URL_SENTINEL" \
   PNPM_EXIT=23 \
   PATH="$BIN_DIR:/usr/bin:/bin" \
   /bin/bash "$RUN_TASK" test >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr"
@@ -192,7 +202,8 @@ if [[ -n "$bazel_command" ]]; then
 
   (
     cd "$WORKSPACE_ROOT"
-    "$bazel_command" --ignore_all_rc_files build --lockfile_mode=error \
+    NEXT_PUBLIC_API_BASE_URL="$API_BASE_URL_SENTINEL" \
+      "$bazel_command" --ignore_all_rc_files build --lockfile_mode=error \
       //:build //:lint //:typecheck //:test \
       //:desktop-sidecar //:desktop-check //:desktop-test
   )
@@ -201,25 +212,34 @@ if [[ -n "$bazel_command" ]]; then
 
   : >"$PNPM_LOG"
   : >"$PWD_LOG"
+  : >"$ENV_LOG"
   set +e
   (
     cd "$WORKSPACE_ROOT"
-    PNPM_LOG="$PNPM_LOG" PWD_LOG="$PWD_LOG" PNPM_EXIT=0 PATH="$BIN_DIR:$PATH" \
-      "$bazel_command" --ignore_all_rc_files run --lockfile_mode=error //:lint
+    PNPM_LOG="$PNPM_LOG" PWD_LOG="$PWD_LOG" ENV_LOG="$ENV_LOG" \
+      NEXT_PUBLIC_API_BASE_URL="$API_BASE_URL_SENTINEL" PNPM_EXIT=0 PATH="$BIN_DIR:$PATH" \
+      "$bazel_command" --ignore_all_rc_files run --lockfile_mode=error //:build
   ) >"$TMP_DIR/bazel-run-stdout" 2>"$TMP_DIR/bazel-run-stderr"
   status=$?
   set -e
-  assert_status 0 "$status" "Bazel lint run"
-  assert_file_equals $'turbo\nrun\nlint\n--filter=!@colorful-code/desktop' "$PNPM_LOG" "Bazel lint run"
-  assert_file_equals "$WORKSPACE_ROOT" "$PWD_LOG" "Bazel lint working directory"
+  if [[ "$status" -ne 0 ]]; then
+    cat "$TMP_DIR/bazel-run-stderr" >&2
+    fail "Bazel build run: expected status 0, got $status"
+  fi
+  assert_file_equals $'turbo\nrun\nbuild\n--filter=!@colorful-code/desktop' "$PNPM_LOG" "Bazel build run"
+  assert_file_equals "$WORKSPACE_ROOT" "$PWD_LOG" "Bazel build working directory"
+  assert_file_equals "$API_BASE_URL_SENTINEL" "$ENV_LOG" "Bazel build environment"
   pass_count=$((pass_count + 1))
-  printf 'ok - Bazel lint target executes through the mock adapter\n'
+  printf 'ok - Bazel build target executes through the mock adapter with its runtime environment\n'
 
   lock_checksum_after="$(cksum "$WORKSPACE_ROOT/MODULE.bazel.lock")"
   [[ "$lock_checksum_after" == "$lock_checksum_before" ]] || fail "Bazel commands changed MODULE.bazel.lock"
   pass_count=$((pass_count + 1))
   printf 'ok - Bazel commands leave the module lock unchanged\n'
 else
+  if [[ "${REQUIRE_BAZEL:-0}" == "1" ]]; then
+    fail "Bazel is required but neither bazel nor bazelisk is available"
+  fi
   printf 'ok - Bazel query/build/run skipped (bazel unavailable)\n'
 fi
 
