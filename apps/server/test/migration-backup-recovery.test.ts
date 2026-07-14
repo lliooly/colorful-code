@@ -1,11 +1,13 @@
 import { strict as assert } from 'node:assert';
 import { createHash } from 'node:crypto';
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -26,6 +28,29 @@ test('createMigrationBackup includes uncheckpointed WAL commits and writes a ver
       CREATE TABLE messages (body TEXT NOT NULL);
       INSERT INTO messages VALUES ('latest committed value');
     `);
+    assert.equal(
+      source.query<{ journal_mode: string }, []>('PRAGMA journal_mode').get()
+        ?.journal_mode,
+      'wal',
+    );
+    assert.equal(existsSync(`${sourceDatabasePath}-wal`), true);
+    assert.ok(statSync(`${sourceDatabasePath}-wal`).size > 0);
+
+    const mainFileOnlyPath = join(directory, 'main-file-only.sqlite');
+    copyFileSync(sourceDatabasePath, mainFileOnlyPath);
+    const mainFileOnly = new Database(mainFileOnlyPath, { readonly: true });
+    let mainFileOnlyHasLatestCommit = false;
+    try {
+      mainFileOnlyHasLatestCommit =
+        mainFileOnly
+          .query<{ body: string }, []>('SELECT body FROM messages')
+          .get()?.body === 'latest committed value';
+    } catch {
+      // The schema itself may still only exist in WAL, which also proves the premise.
+    } finally {
+      mainFileOnly.close();
+    }
+    assert.equal(mainFileOnlyHasLatestCommit, false);
 
     const backup = createMigrationBackup({
       database: source,
@@ -56,7 +81,7 @@ test('createMigrationBackup includes uncheckpointed WAL commits and writes a ver
       sourceSchemaVersion: 3,
       targetSchemaVersion: 4,
       createdAt: '2026-07-14T01:02:03.004Z',
-      databaseFile: 'source.sqlite',
+      databaseFile: 'colorful-code.db',
       sizeBytes: databaseBytes.byteLength,
       sha256: createHash('sha256').update(databaseBytes).digest('hex'),
       integrityCheck: 'ok',
@@ -65,6 +90,12 @@ test('createMigrationBackup includes uncheckpointed WAL commits and writes a ver
     assert.equal(
       backup.directoryPath,
       join(directory, 'backups', '20260714T010203004Z-fixed-id'),
+    );
+    assert.equal(
+      existsSync(
+        join(directory, 'backups', '.20260714T010203004Z-fixed-id.reserve'),
+      ),
+      false,
     );
   } finally {
     source.close();
@@ -212,6 +243,10 @@ test('createMigrationBackup removes its temporary directory when snapshot creati
       false,
     );
     assert.equal(existsSync(join(directory, 'backups', backupId)), false);
+    assert.equal(
+      existsSync(join(directory, 'backups', `.${backupId}.reserve`)),
+      false,
+    );
   } finally {
     source.exec('ROLLBACK');
     source.close();
@@ -288,6 +323,117 @@ test('createMigrationBackup rejects an invalid date and unsafe random ids', () =
       );
     }
     assert.equal(existsSync(join(directory, 'backups')), false);
+  } finally {
+    source.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('createMigrationBackup rejects a source path that does not match the connection', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'migration-backup-path-'));
+  const actualDatabasePath = join(directory, 'actual.sqlite');
+  const claimedDatabasePath = join(directory, 'claimed.sqlite');
+  const source = new Database(actualDatabasePath, { create: true });
+
+  try {
+    assert.throws(
+      () =>
+        createMigrationBackup({
+          database: source,
+          sourceDatabasePath: claimedDatabasePath,
+          sourceSchemaVersion: 1,
+          targetSchemaVersion: 2,
+        }),
+      /does not match the database connection/,
+    );
+    assert.equal(existsSync(join(directory, 'backups')), false);
+  } finally {
+    source.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('createMigrationBackup rejects memory and anonymous connections', () => {
+  for (const filename of [':memory:', '']) {
+    const source = new Database(filename);
+    try {
+      assert.throws(
+        () =>
+          createMigrationBackup({
+            database: source,
+            sourceDatabasePath: filename,
+            sourceSchemaVersion: 0,
+            targetSchemaVersion: 1,
+          }),
+        /named file database/,
+      );
+    } finally {
+      source.close();
+    }
+  }
+});
+
+test('createMigrationBackup respects an exclusive reservation for the generated id', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'migration-backup-reserve-'));
+  const sourceDatabasePath = join(directory, 'source.sqlite');
+  const source = new Database(sourceDatabasePath, { create: true });
+  const reservationPath = join(
+    directory,
+    'backups',
+    '.20260714T080000000Z-contended.reserve',
+  );
+
+  try {
+    mkdirSync(join(directory, 'backups'));
+    writeFileSync(reservationPath, 'first participant', { flag: 'wx' });
+    assert.throws(
+      () =>
+        createMigrationBackup({
+          database: source,
+          sourceDatabasePath,
+          sourceSchemaVersion: 1,
+          targetSchemaVersion: 2,
+          now: () => new Date('2026-07-14T08:00:00.000Z'),
+          randomId: () => 'contended',
+        }),
+      /reservation/,
+    );
+    assert.equal(readFileSync(reservationPath, 'utf8'), 'first participant');
+  } finally {
+    source.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('createMigrationBackup quotes single quotes in VACUUM INTO paths', () => {
+  const directory = mkdtempSync(join(tmpdir(), "migration-backup-'quoted-"));
+  const sourceDatabasePath = join(directory, 'manifest.json');
+  const source = new Database(sourceDatabasePath, { create: true });
+
+  try {
+    source.exec(
+      "CREATE TABLE quoted_path (value TEXT); INSERT INTO quoted_path VALUES ('ok')",
+    );
+    const backup = createMigrationBackup({
+      database: source,
+      sourceDatabasePath,
+      sourceSchemaVersion: 1,
+      targetSchemaVersion: 2,
+      now: () => new Date('2026-07-14T09:00:00.000Z'),
+      randomId: () => 'quoted',
+    });
+    assert.equal(backup.manifest.databaseFile, 'colorful-code.db');
+    const snapshot = new Database(backup.databasePath, { readonly: true });
+    try {
+      assert.equal(
+        snapshot
+          .query<{ value: string }, []>('SELECT value FROM quoted_path')
+          .get()?.value,
+        'ok',
+      );
+    } finally {
+      snapshot.close();
+    }
   } finally {
     source.close();
     rmSync(directory, { recursive: true, force: true });
