@@ -7,6 +7,8 @@ import {
   type BootstrapDependencies,
 } from '../src/main';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
+import { AppModule } from '../src/app.module';
+import { ConfigModule, SERVER_ENV } from '../src/config/config.module';
 import { DataDirectoryLockConflictError } from '../src/runtime/data-directory-instance-lock';
 import type { DaemonApplication } from '../src/runtime/daemon-lifecycle';
 
@@ -44,7 +46,9 @@ test('bootstrap delegates application creation exclusively to startDaemon', asyn
       events.push('start-daemon');
       assert.equal(options.databasePath, '/tmp/colorful-code/main-test.sqlite');
       assert.deepEqual(events, ['load-env-files', 'start-daemon']);
-      const created = await options.createApplication();
+      const created = await options.createApplication(
+        '/tmp/colorful-code/resolved-main-test.sqlite',
+      );
       assert.equal(created, application);
       return created;
     },
@@ -58,6 +62,28 @@ test('bootstrap delegates application creation exclusively to startDaemon', asyn
     'start-daemon',
     'create-nest-app',
   ]);
+});
+
+test('bootstrap passes the resolved daemon database path into Nest environment', async () => {
+  let receivedEnvironment: typeof serverEnvironment | undefined;
+  const dependencies: BootstrapDependencies = {
+    loadDevelopmentEnvFiles: () => undefined,
+    loadEnvironment: () => serverEnvironment,
+    createNestApplication: async (environment) => {
+      receivedEnvironment = environment;
+      return application;
+    },
+    startDaemon: async (options) =>
+      options.createApplication('/tmp/colorful-code/resolved.sqlite'),
+  };
+
+  await bootstrap(dependencies);
+
+  assert.equal(
+    receivedEnvironment?.databasePath,
+    '/tmp/colorful-code/resolved.sqlite',
+  );
+  assert.notEqual(receivedEnvironment, serverEnvironment);
 });
 
 test('creates Nest with abortOnError disabled so startup cleanup can run', async () => {
@@ -82,6 +108,37 @@ test('creates Nest with abortOnError disabled so startup cleanup can run', async
 
   assert.deepEqual(factoryOptions, { abortOnError: false });
   assert.equal(shutdownHookCalls, 1);
+});
+
+test('creates Nest from a dynamic AppModule carrying the exact resolved environment', async () => {
+  let receivedModule: unknown;
+  const nestApplication = {
+    enableCors: () => undefined,
+    enableShutdownHooks: () => undefined,
+    listen: async () => undefined,
+    close: async () => undefined,
+  } as unknown as NestFastifyApplication;
+
+  await createNestApplication(serverEnvironment, async (module) => {
+    receivedModule = module;
+    return nestApplication;
+  });
+
+  const appDynamicModule = receivedModule as {
+    module?: unknown;
+    imports?: Array<{
+      module?: unknown;
+      providers?: Array<{ provide?: unknown; useValue?: unknown }>;
+    }>;
+  };
+  assert.equal(appDynamicModule.module, AppModule);
+  const configDynamicModule = appDynamicModule.imports?.find(
+    (entry) => entry.module === ConfigModule,
+  );
+  const environmentProvider = configDynamicModule?.providers?.find(
+    (provider) => provider.provide === SERVER_ENV,
+  );
+  assert.equal(environmentProvider?.useValue, serverEnvironment);
 });
 
 test('awaits the registered close callback through the Fastify onClose hook', async () => {

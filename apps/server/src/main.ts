@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import type { NestApplicationOptions } from '@nestjs/common';
+import type { DynamicModule, NestApplicationOptions } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import {
   FastifyAdapter,
@@ -43,13 +43,16 @@ export async function bootstrap(
 
   return dependencies.startDaemon({
     databasePath: serverEnvironment.databasePath,
-    createApplication: () =>
-      dependencies.createNestApplication(serverEnvironment),
+    createApplication: (databasePath) =>
+      dependencies.createNestApplication({
+        ...serverEnvironment,
+        databasePath,
+      }),
   });
 }
 
 export type NestApplicationCreator = (
-  module: typeof AppModule,
+  module: DynamicModule,
   adapter: FastifyAdapter,
   options: Pick<NestApplicationOptions, 'abortOnError'>,
 ) => Promise<NestFastifyApplication>;
@@ -61,9 +64,13 @@ export async function createNestApplication(
 ): Promise<DaemonApplication> {
   const adapter = new FastifyAdapter();
 
-  const app = await createApplication(AppModule, adapter, {
-    abortOnError: false,
-  });
+  const app = await createApplication(
+    AppModule.forRoot(serverEnvironment),
+    adapter,
+    {
+      abortOnError: false,
+    },
+  );
 
   app.enableCors(buildCorsOptions(serverEnvironment.corsOrigins));
   app.enableShutdownHooks();

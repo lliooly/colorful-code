@@ -1,4 +1,5 @@
-import { dirname, resolve } from 'node:path';
+import { resolveDatabasePath } from '../persistence/database-path';
+import { bootstrapMigrations } from '../persistence/migration-bootstrap';
 import { DataDirectoryInstanceLock } from './data-directory-instance-lock';
 
 export interface InstanceLockHandle {
@@ -14,36 +15,34 @@ export interface DaemonApplication {
 export interface StartDaemonOptions {
   databasePath: string;
   acquireLock?: (dataDirectory: string) => Promise<InstanceLockHandle>;
-  createApplication: () => Promise<DaemonApplication>;
+  migrateDatabase?: (databasePath: string) => void | Promise<void>;
+  createApplication: (databasePath: string) => Promise<DaemonApplication>;
 }
-
-const NOOP_LOCK: InstanceLockHandle = {
-  release: async () => undefined,
-};
 
 export async function startDaemon(
   options: StartDaemonOptions,
 ): Promise<DaemonApplication> {
-  const dataDirectory = resolveDataDirectory(options.databasePath);
+  const resolvedPath = await resolveDatabasePath(options.databasePath);
   const acquireLock =
     options.acquireLock ??
     DataDirectoryInstanceLock.acquire.bind(DataDirectoryInstanceLock);
-  let lock: InstanceLockHandle | undefined;
+  const migrateDatabase = options.migrateDatabase ?? bootstrapMigrations;
+  let releaseCoordinator: ReleaseCoordinator | undefined;
   let application: DaemonApplication | undefined;
 
   try {
-    lock =
-      dataDirectory === undefined
-        ? NOOP_LOCK
-        : await acquireLock(dataDirectory);
-    application = await options.createApplication();
-    application.onClose(() => lock!.release());
+    const lock = await acquireLock(resolvedPath.dataDirectory);
+    releaseCoordinator = createReleaseCoordinator(lock);
+    await migrateDatabase(resolvedPath.databasePath);
+    application = await options.createApplication(resolvedPath.databasePath);
+    application.onClose(releaseCoordinator.release);
     await application.listen();
     return application;
   } catch (startupError) {
-    if (lock === undefined) throw startupError;
+    if (releaseCoordinator === undefined) throw startupError;
 
     const errors: unknown[] = [startupError];
+    const releaseAttemptsBeforeClose = releaseCoordinator.attemptCount;
     if (application !== undefined) {
       try {
         await application.close();
@@ -52,9 +51,15 @@ export async function startDaemon(
       }
     }
     try {
-      await lock.release();
+      const releaseAttempt =
+        releaseCoordinator.attemptCount > releaseAttemptsBeforeClose
+          ? releaseCoordinator.lastAttempt!
+          : releaseCoordinator.release();
+      await releaseAttempt;
     } catch (releaseError) {
-      errors.push(releaseError);
+      if (!errors.some((error) => errorContainsIdentity(error, releaseError))) {
+        errors.push(releaseError);
+      }
     }
 
     if (errors.length === 1) throw startupError;
@@ -62,13 +67,76 @@ export async function startDaemon(
   }
 }
 
-function resolveDataDirectory(databasePath: string): string | undefined {
+interface ReleaseCoordinator {
+  readonly release: () => Promise<void>;
+  readonly attemptCount: number;
+  readonly lastAttempt: Promise<void> | undefined;
+}
+
+function createReleaseCoordinator(
+  lock: InstanceLockHandle,
+): ReleaseCoordinator {
+  let attemptCount = 0;
+  let inFlightOrSuccessful: Promise<void> | undefined;
+  let lastAttempt: Promise<void> | undefined;
+
+  const release = (): Promise<void> => {
+    if (inFlightOrSuccessful !== undefined) return inFlightOrSuccessful;
+
+    attemptCount += 1;
+    const physicalAttempt = Promise.resolve().then(() => lock.release());
+    const trackedAttempt = physicalAttempt.then(
+      () => undefined,
+      (error: unknown) => {
+        if (inFlightOrSuccessful === trackedAttempt) {
+          inFlightOrSuccessful = undefined;
+        }
+        throw error;
+      },
+    );
+    inFlightOrSuccessful = trackedAttempt;
+    lastAttempt = trackedAttempt;
+    return trackedAttempt;
+  };
+
+  return {
+    release,
+    get attemptCount() {
+      return attemptCount;
+    },
+    get lastAttempt() {
+      return lastAttempt;
+    },
+  };
+}
+
+function errorContainsIdentity(
+  error: unknown,
+  target: unknown,
+  seen = new Set<unknown>(),
+): boolean {
+  if (error === target) return true;
   if (
-    databasePath === '' ||
-    databasePath === ':memory:' ||
-    databasePath.startsWith('file::memory:')
+    ((typeof error !== 'object' || error === null) &&
+      typeof error !== 'function') ||
+    seen.has(error)
   ) {
-    return undefined;
+    return false;
   }
-  return dirname(resolve(databasePath));
+  seen.add(error);
+
+  if (
+    error instanceof AggregateError &&
+    error.errors.some((nestedError) =>
+      errorContainsIdentity(nestedError, target, seen),
+    )
+  ) {
+    return true;
+  }
+
+  return (
+    error instanceof Error &&
+    'cause' in error &&
+    errorContainsIdentity(error.cause, target, seen)
+  );
 }
