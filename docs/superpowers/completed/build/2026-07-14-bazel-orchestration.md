@@ -24,6 +24,7 @@
 ### 任务 1：以 TDD 实现严格任务适配器
 
 **文件：**
+
 - 创建：`bazel/test/run-task.test.sh`
 - 创建：`bazel/run-task.sh`
 
@@ -84,6 +85,7 @@ git commit -m "feat(构建): 添加 Bazel 任务适配器"
 ### 任务 2：声明并验证 Bazel 入口
 
 **文件：**
+
 - 创建：`BUILD.bazel`
 - 创建：`.bazelversion`
 - 修改：`.bazelrc`
@@ -131,6 +133,7 @@ git commit -m "feat(构建): 暴露 Bazel workspace 入口"
 ### 任务 3：接入 CI 并完善文档
 
 **文件：**
+
 - 修改：`.github/workflows/ci.yml`
 - 修改：`bazel/README.md`
 - 修改：`README.md`
@@ -165,6 +168,7 @@ git commit -m "ci(构建): 使用 Bazel 统一任务入口"
 ### 任务 4：整体审查、性能与健壮性收口
 
 **文件：**
+
 - 修改：仅限审查发现确有必要的上述文件
 
 - [ ] **步骤 1：规格审查**

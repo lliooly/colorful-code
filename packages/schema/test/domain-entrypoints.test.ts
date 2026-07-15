@@ -17,13 +17,18 @@ const domainEntrypoints = [
   'queue',
   'run',
   'snapshot',
-  'thread'
+  'thread',
 ] as const;
 
 describe('domain entrypoints', () => {
-  test.each(domainEntrypoints)('loads @colorful-code/schema/%s', async (entrypoint) => {
-    await expect(import(`@colorful-code/schema/${entrypoint}`)).resolves.toBeDefined();
-  });
+  test.each(domainEntrypoints)(
+    'loads @colorful-code/schema/%s',
+    async (entrypoint) => {
+      const domainModule = await import(`@colorful-code/schema/${entrypoint}`);
+
+      expect(domainModule).toBeTypeOf('object');
+    },
+  );
 });
 
 describe('healthResponseSchema', () => {
@@ -32,6 +37,8 @@ describe('healthResponseSchema', () => {
   });
 
   test('rejects any other status', () => {
-    expect(healthResponseSchema.safeParse({ status: 'error' }).success).toBe(false);
+    expect(healthResponseSchema.safeParse({ status: 'error' }).success).toBe(
+      false,
+    );
   });
 });

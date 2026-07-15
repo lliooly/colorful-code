@@ -24,6 +24,7 @@
 - [Persistence Foundation](./specs/2026-07-10-colorful-code-2-persistence-foundation-design.md)
 - [Thread Contract](./specs/2026-07-10-colorful-code-2-thread-contract-design.md)
 - [Runtime Ownership and Recovery](./specs/2026-07-10-colorful-code-2-runtime-ownership-recovery-design.md)
+- [Schema Authoring Foundation](./specs/2026-07-15-schema-authoring-foundation-design.md)
 
 这些规范是 Colorful Code 2.0 的长期约束，部分基础设施虽已在 Phase 0A 落地，但规范覆盖的 2.0 业务能力尚未全部实现，因此不能归档。
 

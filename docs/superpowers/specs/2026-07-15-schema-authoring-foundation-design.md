@@ -104,16 +104,15 @@ Phase 0B 不创建 v2 Controller、REST handler、数据库业务表、Ledger、
 
 ## 11. 验收矩阵
 
-| 阶段 | 可验证交付 |
-| --- | --- |
-| 0B-1 | 15 个领域入口与唯一 registry 建立 |
-| 0B-2 | 基础类型、枚举、ErrorCode 与旧术语检查通过 |
-| 0B-3 | 全部公共资源 parse/reject 测试通过且无内部类型 |
-| 0B-4 | 完整 endpoint registry，修改命令 commandId/fencing 检查通过 |
-| 0B-5 | Ack、replay、ApiError、HTTP 映射、operation terminal event 通过 |
-| 0B-6 | 双 cursor、basis、unknown fallback、reset、snapshot 通过 |
-| 0B-7 | principal/discovery/CredentialRef/config/policy/revocation 与 secret Gate 通过 |
-| 0B-8 | 四类产物可重复、确定性生成 |
-| 0B-9 | TypeScript 与 Swift 消费相同 golden fixtures 并通过 |
-| 0B-10 | CI 重新生成、无漂移、跨语言 conformance 和边界扫描全部通过 |
-
+| 阶段  | 可验证交付                                                                     |
+| ----- | ------------------------------------------------------------------------------ |
+| 0B-1  | 15 个领域入口与唯一 registry 建立                                              |
+| 0B-2  | 基础类型、枚举、ErrorCode 与旧术语检查通过                                     |
+| 0B-3  | 全部公共资源 parse/reject 测试通过且无内部类型                                 |
+| 0B-4  | 完整 endpoint registry，修改命令 commandId/fencing 检查通过                    |
+| 0B-5  | Ack、replay、ApiError、HTTP 映射、operation terminal event 通过                |
+| 0B-6  | 双 cursor、basis、unknown fallback、reset、snapshot 通过                       |
+| 0B-7  | principal/discovery/CredentialRef/config/policy/revocation 与 secret Gate 通过 |
+| 0B-8  | 四类产物可重复、确定性生成                                                     |
+| 0B-9  | TypeScript 与 Swift 消费相同 golden fixtures 并通过                            |
+| 0B-10 | CI 重新生成、无漂移、跨语言 conformance 和边界扫描全部通过                     |

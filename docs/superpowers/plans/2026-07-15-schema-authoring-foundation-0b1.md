@@ -34,14 +34,15 @@
 ### 任务 1：用失败测试锁定领域入口
 
 **文件：**
+
 - 创建：`packages/schema/test/domain-entrypoints.test.ts`
 - 修改：`packages/schema/package.json`
 
-- [ ] **步骤 1：编写失败的领域入口测试**
+- [x] **步骤 1：编写失败的领域入口测试**
 
 测试静态导入 `@colorful-code/schema`，并逐一动态导入 `@colorful-code/schema/common`、`ids`、`enums`、`thread`、`run`、`queue`、`operations`、`commands`、`ack`、`errors`、`events`、`snapshot`、`auth`、`config`、`policy`。断言每个 import 返回 module object，并断言 root 的 `healthResponseSchema` 接受 `{ status: 'ok' }`、拒绝其他 status。
 
-- [ ] **步骤 2：增加测试命令并确认红灯**
+- [x] **步骤 2：增加测试命令并确认红灯**
 
 在 `packages/schema/package.json` scripts 中增加：
 
@@ -56,6 +57,7 @@
 ### 任务 2：建立领域 authoring 文件和包出口
 
 **文件：**
+
 - 创建：`packages/schema/src/common.ts`
 - 创建：`packages/schema/src/ids.ts`
 - 创建：`packages/schema/src/enums.ts`
@@ -74,19 +76,19 @@
 - 修改：`packages/schema/src/index.ts`
 - 修改：`packages/schema/package.json`
 
-- [ ] **步骤 1：迁移既有 health contract**
+- [x] **步骤 1：迁移既有 health contract**
 
 将 `healthResponseSchema` 与由 `z.infer` 得到的 `HealthResponse` 移至 `common.ts`。`index.ts` 不再直接 author schema，只从 `common` 及其他领域入口 re-export。
 
-- [ ] **步骤 2：建立其余空 authoring 入口**
+- [x] **步骤 2：建立其余空 authoring 入口**
 
 每个尚未进入定义阶段的文件只包含领域职责注释与 `export {};`。不得提前添加 0B-2 的 ID、枚举、revision 或 cursor schema，也不得添加 0B-3 及之后的公共资源。
 
-- [ ] **步骤 3：发布显式包子路径**
+- [x] **步骤 3：发布显式包子路径**
 
 在 package `exports` 中保留 root，并为每个领域文件增加 `./<domain>: ./src/<domain>.ts`。exports key 使用稳定字典序，避免隐式 wildcard 暴露未来内部文件。
 
-- [ ] **步骤 4：确认绿灯**
+- [x] **步骤 4：确认绿灯**
 
 运行：`pnpm --filter @colorful-code/schema test`
 
@@ -103,23 +105,24 @@
 ### 任务 3：0B-1 范围与安全审查
 
 **文件：**
+
 - 检查：`packages/schema/src/*.ts`
 - 检查：`packages/schema/test/domain-entrypoints.test.ts`
 - 检查：`packages/schema/package.json`
 
-- [ ] **步骤 1：规格合规审查**
+- [x] **步骤 1：规格合规审查**
 
 逐项确认 16 个入口均存在；`index.ts` 只做 re-export；没有手写第二套 TypeScript model；没有进入 0B-2；没有新增 0C 的 Controller、持久化、runtime 或 credential 实现。
 
-- [ ] **步骤 2：代码质量与并发安全审查**
+- [x] **步骤 2：代码质量与并发安全审查**
 
 确认模块初始化无可变全局 registry、锁或异步副作用；包 exports 不使用 wildcard；领域入口之间无循环依赖；测试不依赖执行顺序或共享可变状态。由于本阶段只有纯 schema 模块入口，不应引入锁；若出现锁或 mutable singleton，视为阻断问题并移除。
 
-- [ ] **步骤 3：中间提交**
+- [x] **步骤 3：中间提交**
 
 只暂存 0B-1 实现与测试文件，提交一次可回退的基础实现。不得暂存用户已有文档改动。
 
-- [ ] **步骤 4：主代理最终复核并保留未提交交接改动**
+- [x] **步骤 4：主代理最终复核并保留未提交交接改动**
 
 主代理独立检查中间提交后的 diff、运行完整验证，并针对发现的问题做最后修正。最后修正不提交，保持在分支工作区供用户 review 和手动提交。若没有需要修正的代码，也至少将本计划的完成勾选保留为未提交变更，确保最后一次交接不创建 commit。
 

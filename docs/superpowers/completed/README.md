@@ -42,6 +42,12 @@
 
 - [已完成文档归档实现计划](./maintenance/2026-07-14-completed-document-archive.md)
 
+## 构建编排
+
+| 已完成工作         | 设计                                                     | 计划                                              | 主要实现证据                                                          |
+| ------------------ | -------------------------------------------------------- | ------------------------------------------------- | --------------------------------------------------------------------- |
+| Bazel 统一构建入口 | [设计](./build/2026-07-14-bazel-orchestration-design.md) | [计划](./build/2026-07-14-bazel-orchestration.md) | `82fd0cc7`，7 个统一任务入口、CI 接入及 `run-task.test.sh` 适配器测试 |
+
 ## 下一步
 
 Phase 0B 从 Contract Enums、Schema Authoring Foundation 和 Generated Artifact Drift Checks 开始。当前入口见 [工程文档导航](../README.md) 和 [2.0 Implementation Roadmap](../plans/2026-07-10-colorful-code-2-implementation-roadmap.md)。
