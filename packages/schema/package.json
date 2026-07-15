@@ -4,7 +4,22 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./ack": "./src/ack.ts",
+    "./auth": "./src/auth.ts",
+    "./commands": "./src/commands.ts",
+    "./common": "./src/common.ts",
+    "./config": "./src/config.ts",
+    "./enums": "./src/enums.ts",
+    "./errors": "./src/errors.ts",
+    "./events": "./src/events.ts",
+    "./ids": "./src/ids.ts",
+    "./operations": "./src/operations.ts",
+    "./policy": "./src/policy.ts",
+    "./queue": "./src/queue.ts",
+    "./run": "./src/run.ts",
+    "./snapshot": "./src/snapshot.ts",
+    "./thread": "./src/thread.ts"
   },
   "dependencies": {
     "zod": "^4.4.3"
@@ -12,6 +27,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "lint": "eslint src --max-warnings=0",
+    "test": "bun test test",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist"
   }
