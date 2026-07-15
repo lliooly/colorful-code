@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import * as enums from '@colorful-code/schema/enums';
+import { errorCodeSchema } from '@colorful-code/schema/errors';
 
 const enumCases = {
   threadLifecycleSchema: ['available', 'archived', 'deleted'],
@@ -132,4 +133,46 @@ describe('public enum schemas', () => {
       }
     });
   }
+});
+
+describe('errorCodeSchema', () => {
+  const errorCodes = [
+    'VALIDATION_ERROR',
+    'THREAD_NOT_FOUND',
+    'THREAD_ARCHIVED',
+    'THREAD_DELETED',
+    'THREAD_PURGE_STARTED',
+    'THREAD_NOT_IMMEDIATELY_RUNNABLE',
+    'RUN_NOT_FOUND',
+    'RUN_NOT_ACTIVE',
+    'RUN_ALREADY_TERMINAL',
+    'STALE_PLAN_GENERATION',
+    'STALE_INCARNATION',
+    'QUEUE_ITEM_NOT_FOUND',
+    'QUEUE_ITEM_ALREADY_CONSUMED',
+    'QUEUE_REVISION_CONFLICT',
+    'COMMAND_ID_CONFLICT',
+    'APPROVAL_EXPIRED',
+    'OPERATION_CONFLICT',
+    'CONFIG_REVISION_CONFLICT',
+    'POLICY_REVISION_CONFLICT',
+    'RUNTIME_DRAINING',
+    'RECOVERY_BLOCKED',
+    'INDETERMINATE_SIDE_EFFECT',
+    'AUTHENTICATION_REQUIRED',
+    'CREDENTIAL_UNAVAILABLE',
+    'INTERNAL_ERROR',
+  ] as const;
+
+  test('exposes exactly the 25 stable codes', () => {
+    expect(errorCodeSchema.options).toEqual(errorCodes);
+    for (const code of errorCodes) {
+      expect(errorCodeSchema.safeParse(code).success).toBe(true);
+    }
+  });
+
+  test('rejects unknown and case-changed codes', () => {
+    expect(errorCodeSchema.safeParse('UNKNOWN_ERROR').success).toBe(false);
+    expect(errorCodeSchema.safeParse('validation_error').success).toBe(false);
+  });
 });
