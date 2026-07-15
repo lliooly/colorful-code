@@ -81,7 +81,7 @@ const threadViewBaseShape = {
   goal: z.string().nullable(),
   workspaceBinding: workspaceBindingSchema,
   activeRunId: runIdSchema.nullable(),
-  revision: revisionSchema,
+  threadRevision: revisionSchema,
   queueRevision: revisionSchema,
   configRevision: configRevisionSchema,
   policyRevision: policyRevisionSchema,

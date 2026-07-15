@@ -28,7 +28,7 @@ const threadFixture = {
     trust: 'trusted',
   },
   activeRunId: null,
-  revision: 1,
+  threadRevision: 1,
   queueRevision: 2,
   configRevision: 3,
   policyRevision: 4,

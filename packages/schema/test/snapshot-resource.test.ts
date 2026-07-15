@@ -17,7 +17,7 @@ const snapshot = {
       trust: 'trusted',
     },
     activeRunId: null,
-    revision: 1,
+    threadRevision: 1,
     queueRevision: 1,
     configRevision: 1,
     policyRevision: 1,
