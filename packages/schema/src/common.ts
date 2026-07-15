@@ -1,6 +1,9 @@
 import { z } from 'zod';
 
-export const healthResponseSchema = z.object({
+export const strictObjectSchema = <Shape extends z.ZodRawShape>(shape: Shape) =>
+  z.strictObject(shape);
+
+export const healthResponseSchema = strictObjectSchema({
   status: z.literal('ok'),
 });
 
@@ -35,21 +38,17 @@ export type PlanGeneration = z.infer<typeof planGenerationSchema>;
 export const jsonValueSchema = z.json();
 export type JsonValue = z.infer<typeof jsonValueSchema>;
 
-export const pageInfoSchema = z
-  .object({
-    nextCursor: pageCursorSchema.nullable(),
-    hasMore: z.boolean(),
-  })
-  .strict();
+export const pageInfoSchema = strictObjectSchema({
+  nextCursor: pageCursorSchema.nullable(),
+  hasMore: z.boolean(),
+});
 export type PageInfo = z.infer<typeof pageInfoSchema>;
 
 export const pageSchema = <ItemSchema extends z.ZodType>(item: ItemSchema) =>
-  z
-    .object({
-      items: z.array(item),
-      pageInfo: pageInfoSchema,
-    })
-    .strict();
+  strictObjectSchema({
+    items: z.array(item),
+    pageInfo: pageInfoSchema,
+  });
 
 export type Page<ItemSchema extends z.ZodType> = z.infer<
   ReturnType<typeof pageSchema<ItemSchema>>

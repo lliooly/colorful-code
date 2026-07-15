@@ -12,6 +12,7 @@ import {
   policyRevisionSchema,
   revisionSchema,
   streamCursorSchema,
+  strictObjectSchema,
   timestampSchema,
 } from '@colorful-code/schema/common';
 import {
@@ -163,6 +164,13 @@ describe('jsonValueSchema', () => {
 });
 
 describe('pagination schemas', () => {
+  test('strictObjectSchema preserves its shape and rejects unknown keys', () => {
+    const schema = strictObjectSchema({ value: z.string() });
+
+    expect(schema.parse({ value: 'ok' })).toEqual({ value: 'ok' });
+    expect(schema.safeParse({ value: 'ok', extra: true }).success).toBe(false);
+  });
+
   test('parses strict page info', () => {
     expect(
       pageInfoSchema.parse({ nextCursor: '9007199254740993', hasMore: true }),

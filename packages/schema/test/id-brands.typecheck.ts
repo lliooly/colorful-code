@@ -22,7 +22,7 @@ import {
   toolExecutionIdSchema,
   transcriptItemIdSchema,
   workspaceIdSchema,
-} from '../src/ids.js';
+} from '@colorful-code/schema/ids';
 
 type IdTypes = {
   ThreadId: z.infer<typeof threadIdSchema>;

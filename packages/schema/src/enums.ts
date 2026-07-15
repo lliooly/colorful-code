@@ -33,16 +33,18 @@ export type RunStatus = z.infer<typeof runStatusSchema>;
 export const runKindSchema = z.enum(['interactive', 'checkpointApply']);
 export type RunKind = z.infer<typeof runKindSchema>;
 
-export const queueControlStateSchema = z.enum([
+const queueControlStates = [
   'active',
   'pausedByUser',
   'pausedByStop',
   'pausedByFailure',
-]);
+] as const;
+
+export const queueControlStateSchema = z.enum(queueControlStates);
 export type QueueControlState = z.infer<typeof queueControlStateSchema>;
 
 export const effectiveQueueDispatchStateSchema = z.enum([
-  ...queueControlStateSchema.options,
+  ...queueControlStates,
   'blockedByIndeterminate',
 ]);
 export type EffectiveQueueDispatchState = z.infer<
