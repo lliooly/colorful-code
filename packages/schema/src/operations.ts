@@ -25,6 +25,41 @@ import {
   threadIdSchema,
   toolExecutionIdSchema,
 } from './ids.js';
+import { apiErrorPayloadSchema } from './errors.js';
+
+const operationTerminalCommonShape = () => ({
+  operationId: operationIdSchema,
+  kind: operationKindSchema,
+  runId: runIdSchema.nullable(),
+  revision: revisionSchema,
+});
+
+export const operationTerminalEventPayloadSchema = z.discriminatedUnion(
+  'status',
+  [
+    strictObjectSchema({
+      ...operationTerminalCommonShape(),
+      status: z.literal('completed'),
+      completedAt: timestampSchema,
+      result: jsonValueSchema.optional(),
+    }),
+    strictObjectSchema({
+      ...operationTerminalCommonShape(),
+      status: z.literal('failed'),
+      error: apiErrorPayloadSchema,
+    }),
+    strictObjectSchema({
+      ...operationTerminalCommonShape(),
+      status: z.literal('cancelled'),
+      reason: z.string().trim().min(1),
+      cancelledAt: timestampSchema,
+      result: jsonValueSchema.optional(),
+    }),
+  ],
+);
+export type OperationTerminalEventPayload = z.infer<
+  typeof operationTerminalEventPayloadSchema
+>;
 
 export const operationProgressSchema = strictObjectSchema({
   phase: z.string().trim().min(1),

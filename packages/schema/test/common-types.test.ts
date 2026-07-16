@@ -4,6 +4,7 @@ import { z } from 'zod';
 import {
   configRevisionSchema,
   durableCursorSchema,
+  jsonObjectSchema,
   jsonValueSchema,
   pageCursorSchema,
   pageInfoSchema,
@@ -62,6 +63,22 @@ const idSchemas = [
   principalIdSchema,
   pluginIdSchema,
 ] as const;
+
+const nestedObject = (containerCount: number): unknown => {
+  let value: unknown = 'leaf';
+  for (let index = 0; index < containerCount; index += 1) {
+    value = { value };
+  }
+  return value;
+};
+
+const nestedArray = (containerCount: number): unknown => {
+  let value: unknown = 'leaf';
+  for (let index = 0; index < containerCount; index += 1) {
+    value = [value];
+  }
+  return value;
+};
 
 describe('resource ID schemas', () => {
   test.each(idSchemas)('accepts opaque non-empty strings', (schema) => {
@@ -159,6 +176,152 @@ describe('jsonValueSchema', () => {
     }
     expect(jsonValueSchema.safeParse({ nested: undefined }).success).toBe(
       false,
+    );
+  });
+
+  test('rejects cycles, accessors and hostile proxies without throwing', () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+
+    let getterCalled = false;
+    const accessor = Object.defineProperty({}, 'secret', {
+      enumerable: true,
+      get: () => {
+        getterCalled = true;
+        throw new Error('must not invoke');
+      },
+    });
+    const hostile = new Proxy(
+      {},
+      {
+        getPrototypeOf: () => {
+          throw new Error('hostile prototype trap');
+        },
+      },
+    );
+
+    for (const invalid of [cyclic, accessor, hostile]) {
+      expect(() => jsonValueSchema.safeParse(invalid)).not.toThrow();
+      expect(jsonValueSchema.safeParse(invalid).success).toBe(false);
+    }
+    expect(getterCalled).toBe(false);
+  });
+
+  test('accepts at most 100 JSON containers and rejects the next depth', () => {
+    for (const atLimit of [nestedObject(100), nestedArray(100)]) {
+      expect(jsonValueSchema.safeParse(atLimit).success).toBe(true);
+    }
+    for (const overLimit of [nestedObject(101), nestedArray(101)]) {
+      expect(() => jsonValueSchema.safeParse(overLimit)).not.toThrow();
+      expect(jsonValueSchema.safeParse(overLimit).success).toBe(false);
+    }
+
+    expect(jsonObjectSchema.safeParse(nestedObject(100)).success).toBe(true);
+    expect(() => jsonObjectSchema.safeParse(nestedObject(101))).not.toThrow();
+    expect(jsonObjectSchema.safeParse(nestedObject(101)).success).toBe(false);
+  });
+
+  test('rejects pathological object and array depth without throwing', () => {
+    for (const pathological of [nestedObject(15_000), nestedArray(15_000)]) {
+      expect(() => jsonValueSchema.safeParse(pathological)).not.toThrow();
+      expect(jsonValueSchema.safeParse(pathological).success).toBe(false);
+    }
+    expect(() =>
+      jsonObjectSchema.safeParse(nestedObject(15_000)),
+    ).not.toThrow();
+    expect(jsonObjectSchema.safeParse(nestedObject(15_000)).success).toBe(
+      false,
+    );
+  });
+
+  test('allows shared subtrees and returns a detached deep snapshot', () => {
+    const shared = { value: 1 };
+    const input = { first: shared, second: shared, array: [shared] };
+    const parsed = jsonValueSchema.parse(input);
+
+    expect(JSON.stringify(parsed)).toBe(JSON.stringify(input));
+    expect(parsed).not.toBe(input);
+    if (
+      parsed === null ||
+      typeof parsed !== 'object' ||
+      Array.isArray(parsed)
+    ) {
+      throw new Error('expected object JSON snapshot');
+    }
+    expect(parsed.first).not.toBe(shared);
+    expect(parsed.second).not.toBe(shared);
+    expect(parsed.first).not.toBe(parsed.second);
+
+    shared.value = 2;
+    input.array.push({ value: 3 });
+    expect(JSON.stringify(parsed)).toBe(
+      '{"first":{"value":1},"second":{"value":1},"array":[{"value":1}]}',
+    );
+  });
+
+  test('preserves an own __proto__ data key without prototype pollution', () => {
+    const input = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(input, '__proto__', {
+      value: { polluted: true },
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+
+    const parsed = jsonValueSchema.parse(input);
+    expect(JSON.stringify(parsed)).toBe('{"__proto__":{"polluted":true}}');
+    expect(Object.prototype).not.toHaveProperty('polluted');
+  });
+
+  test('preserves prefixed, proto and nested object keys without collisions', () => {
+    const nested = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(nested, '__proto__', {
+      value: 'nested-proto',
+      enumerable: true,
+    });
+    Object.defineProperty(nested, '\u0000__proto__', {
+      value: 'nested-prefixed',
+      enumerable: true,
+    });
+
+    const input = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(input, '\u0000__proto__', {
+      value: 'prefixed',
+      enumerable: true,
+    });
+    Object.defineProperty(input, '__proto__', {
+      value: 'proto',
+      enumerable: true,
+    });
+    Object.defineProperty(input, 'nested', {
+      value: [{ object: nested }],
+      enumerable: true,
+    });
+
+    expect(JSON.stringify(jsonValueSchema.parse(input))).toBe(
+      '{"\\u0000__proto__":"prefixed","__proto__":"proto","nested":[{"object":{"__proto__":"nested-proto","\\u0000__proto__":"nested-prefixed"}}]}',
+    );
+    expect(Object.prototype).not.toHaveProperty('polluted');
+  });
+
+  test('exports recursive JSON-only and object-only JSON Schemas', () => {
+    const valueJsonSchema = z.toJSONSchema(jsonValueSchema);
+    const objectJsonSchema = z.toJSONSchema(jsonObjectSchema);
+    const valueDefinition = Object.values(valueJsonSchema.$defs ?? {})[0] as
+      | { anyOf?: Array<{ type?: string }> }
+      | undefined;
+    const valueTypes = new Set(
+      valueDefinition?.anyOf?.map((branch) => branch.type),
+    );
+
+    expect(valueTypes).toEqual(
+      new Set(['string', 'number', 'boolean', 'null', 'array', 'object']),
+    );
+    expect(valueDefinition?.anyOf).toHaveLength(6);
+    expect(objectJsonSchema.type).toBe('object');
+    expect(objectJsonSchema.additionalProperties).toBeDefined();
+    expect(JSON.stringify(valueJsonSchema)).not.toBe(
+      '{"$schema":"https://json-schema.org/draft/2020-12/schema"}',
     );
   });
 });

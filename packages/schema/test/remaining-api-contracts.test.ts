@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { z } from 'zod';
 
-import { configRevisionResultSchema } from '@colorful-code/schema/config';
 import {
   checkpointPageSchema,
   httpContractRegistry,
@@ -9,11 +8,7 @@ import {
   undefinedResultSchema,
   type HttpContractDescriptor,
 } from '@colorful-code/schema/commands';
-import {
-  approvalViewSchema,
-  operationViewSchema,
-} from '@colorful-code/schema/operations';
-import { policyRevisionResultSchema } from '@colorful-code/schema/policy';
+import { operationViewSchema } from '@colorful-code/schema/operations';
 import { threadSnapshotSchema } from '@colorful-code/schema/snapshot';
 
 const registry: Readonly<Record<string, HttpContractDescriptor>> =
@@ -32,6 +27,33 @@ const schema = (value: z.ZodType | undefined): z.ZodType => {
     throw new Error('expected schema');
   }
   return value;
+};
+
+const operationAck = {
+  commandId: 'command-1',
+  operationId: 'operation-1',
+  status: 'accepted',
+  replayed: false,
+  threadId: 'thread-1',
+  currentDurableCursor: '1',
+  acceptedAt: '2026-07-16T00:00:00Z',
+};
+const ackWithResult = (result: unknown) => ({ ...operationAck, result });
+const approvalResult = {
+  approvalId: 'approval-1',
+  threadId: 'thread-1',
+  runId: 'run-1',
+  kind: 'toolExecution',
+  status: 'pending',
+  planGeneration: 2,
+  policyRevision: 3,
+  requestSummary: { tool: 'write' },
+  decision: null,
+  revision: 4,
+  createdAt: '2026-07-16T00:00:00Z',
+  updatedAt: '2026-07-16T00:00:00Z',
+  decidedAt: null,
+  expiresAt: null,
 };
 
 const endpointMatrix = [
@@ -126,23 +148,70 @@ describe('remaining v2 HTTP contract registry', () => {
 
   test('binds every remaining endpoint to its exact response contract', () => {
     const expectedResponses = {
-      'approval.decide': ['commandAck', approvalViewSchema],
-      'config.change': ['commandAck', configRevisionResultSchema],
-      'policy.change': ['commandAck', policyRevisionResultSchema],
-      'operation.list': ['query', operationPageSchema],
-      'operation.get': ['query', operationViewSchema],
-      'checkpoint.list': ['query', checkpointPageSchema],
-      'checkpoint.apply': ['commandAck', undefinedResultSchema],
-      'snapshot.get': ['query', threadSnapshotSchema],
-      'event.attach': ['query', undefinedResultSchema],
+      'approval.decide': {
+        responseKind: 'commandAck',
+        validResult: approvalResult,
+        invalidResult: { ...approvalResult, approvalId: undefined },
+      },
+      'config.change': {
+        responseKind: 'commandAck',
+        validResult: { configRevision: 2 },
+        invalidResult: { configRevision: -1 },
+      },
+      'policy.change': {
+        responseKind: 'commandAck',
+        validResult: { policyRevision: 2 },
+        invalidResult: { policyRevision: -1 },
+      },
+      'operation.list': {
+        responseKind: 'query',
+        resultSchema: operationPageSchema,
+      },
+      'operation.get': {
+        responseKind: 'query',
+        resultSchema: operationViewSchema,
+      },
+      'checkpoint.list': {
+        responseKind: 'query',
+        resultSchema: checkpointPageSchema,
+      },
+      'checkpoint.apply': { responseKind: 'commandAck' },
+      'snapshot.get': {
+        responseKind: 'query',
+        resultSchema: threadSnapshotSchema,
+      },
+      'event.attach': {
+        responseKind: 'query',
+        resultSchema: undefinedResultSchema,
+      },
     } as const;
 
-    for (const [operationId, [responseKind, resultSchema]] of Object.entries(
-      expectedResponses,
-    )) {
+    for (const [operationId, expected] of Object.entries(expectedResponses)) {
       const descriptor = endpoint(operationId);
-      expect(descriptor.responseKind).toBe(responseKind);
-      expect(descriptor.resultSchema).toBe(resultSchema);
+      expect(descriptor.responseKind).toBe(expected.responseKind);
+      if ('validResult' in expected) {
+        expect(
+          descriptor.resultSchema.safeParse(ackWithResult(expected.validResult))
+            .success,
+        ).toBe(true);
+        expect(descriptor.resultSchema.parse(operationAck)).toEqual(
+          operationAck,
+        );
+        expect(
+          descriptor.resultSchema.safeParse(
+            ackWithResult(expected.invalidResult),
+          ).success,
+        ).toBe(false);
+      } else if (expected.responseKind === 'commandAck') {
+        expect(descriptor.resultSchema.parse(operationAck)).toEqual(
+          operationAck,
+        );
+        expect(
+          descriptor.resultSchema.safeParse(ackWithResult(null)).success,
+        ).toBe(false);
+      } else {
+        expect(descriptor.resultSchema).toBe(expected.resultSchema);
+      }
     }
   });
 });
@@ -198,6 +267,24 @@ describe('approval decision contract', () => {
     }
     expect(
       schema(descriptor.pathSchema).safeParse({ ...path, extra: true }).success,
+    ).toBe(false);
+  });
+
+  test('binds the complete ApprovalView as the Ack result', () => {
+    const resultSchema = endpoint('approval.decide').resultSchema;
+
+    expect(resultSchema.parse(ackWithResult(approvalResult))).toEqual(
+      ackWithResult(approvalResult),
+    );
+    expect(
+      resultSchema.safeParse(
+        ackWithResult({ ...approvalResult, decision: { reason: 'missing' } }),
+      ).success,
+    ).toBe(false);
+    expect(
+      resultSchema.safeParse(
+        ackWithResult({ ...approvalResult, workerId: 'internal' }),
+      ).success,
     ).toBe(false);
   });
 });
@@ -257,12 +344,13 @@ describe('config and policy change contracts', () => {
       const { [field]: _removed, ...withoutFence } = body;
       expect(bodySchema.safeParse(withoutFence).success).toBe(false);
     }
-    expect(descriptor.resultSchema.parse({ configRevision: 2 })).toEqual({
-      configRevision: 2,
-    });
     expect(
-      descriptor.resultSchema.safeParse({ configRevision: 2, ack: true })
-        .success,
+      descriptor.resultSchema.parse(ackWithResult({ configRevision: 2 })),
+    ).toEqual(ackWithResult({ configRevision: 2 }));
+    expect(
+      descriptor.resultSchema.safeParse(
+        ackWithResult({ configRevision: 2, ack: true }),
+      ).success,
     ).toBe(false);
   });
 
@@ -322,12 +410,13 @@ describe('config and policy change contracts', () => {
       const { [field]: _removed, ...withoutFence } = body;
       expect(bodySchema.safeParse(withoutFence).success).toBe(false);
     }
-    expect(descriptor.resultSchema.parse({ policyRevision: 2 })).toEqual({
-      policyRevision: 2,
-    });
     expect(
-      descriptor.resultSchema.safeParse({ policyRevision: 2, ack: true })
-        .success,
+      descriptor.resultSchema.parse(ackWithResult({ policyRevision: 2 })),
+    ).toEqual(ackWithResult({ policyRevision: 2 }));
+    expect(
+      descriptor.resultSchema.safeParse(
+        ackWithResult({ policyRevision: 2, ack: true }),
+      ).success,
     ).toBe(false);
   });
 });
@@ -412,6 +501,10 @@ describe('operation, checkpoint, snapshot and event query contracts', () => {
         false,
       );
     }
+    expect(apply.resultSchema.parse(operationAck)).toEqual(operationAck);
+    expect(
+      apply.resultSchema.safeParse(ackWithResult({ applied: true })).success,
+    ).toBe(false);
   });
 
   test('uses an empty strict snapshot query and paired event stream cursors', () => {

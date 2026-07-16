@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { jsonObjectSchema } from './common.js';
 import {
   commandIdSchema,
   operationIdSchema,
@@ -36,157 +37,20 @@ export const errorCodeSchema = z.enum([
 ]);
 export type ErrorCode = z.infer<typeof errorCodeSchema>;
 
-type JsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | JsonValue[]
-  | { [key: string]: JsonValue };
-type JsonObject = { [key: string]: JsonValue };
-
-const hasDataValue = (
-  descriptor: PropertyDescriptor | undefined,
-): descriptor is PropertyDescriptor & { value: unknown } =>
-  descriptor !== undefined && 'value' in descriptor;
-
-const invalidJsonValue = Symbol('invalidJsonValue');
-
-const snapshotJsonValue = (
-  value: unknown,
-  ancestors: WeakSet<object>,
-): JsonValue | typeof invalidJsonValue => {
-  if (
-    value === null ||
-    typeof value === 'string' ||
-    typeof value === 'boolean'
-  ) {
-    return value;
-  }
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : invalidJsonValue;
-  }
-  if (typeof value !== 'object') return invalidJsonValue;
-
-  try {
-    const isArray = Array.isArray(value);
-    const prototype = Object.getPrototypeOf(value);
-    if (
-      (isArray && prototype !== Array.prototype) ||
-      (!isArray && prototype !== Object.prototype && prototype !== null)
-    ) {
-      return invalidJsonValue;
-    }
-    if (ancestors.has(value)) return invalidJsonValue;
-
-    ancestors.add(value);
-    try {
-      const descriptors = Object.getOwnPropertyDescriptors(value);
-      const keys = Reflect.ownKeys(descriptors);
-
-      if (isArray) {
-        const lengthDescriptor = descriptors.length;
-        if (!hasDataValue(lengthDescriptor)) return invalidJsonValue;
-        const length = lengthDescriptor.value;
-        if (!Number.isSafeInteger(length) || length < 0) {
-          return invalidJsonValue;
-        }
-        if (keys.length !== length + 1) return invalidJsonValue;
-
-        const snapshot: JsonValue[] = new Array(length);
-
-        for (const key of keys) {
-          if (key === 'length') continue;
-          if (typeof key !== 'string') return invalidJsonValue;
-          const index = Number(key);
-          if (
-            !Number.isSafeInteger(index) ||
-            index < 0 ||
-            index >= length ||
-            String(index) !== key
-          ) {
-            return invalidJsonValue;
-          }
-          const descriptor = descriptors[key];
-          if (!hasDataValue(descriptor) || !descriptor.enumerable) {
-            return invalidJsonValue;
-          }
-          const item = snapshotJsonValue(descriptor.value, ancestors);
-          if (item === invalidJsonValue) return invalidJsonValue;
-          Object.defineProperty(snapshot, key, {
-            value: item,
-            enumerable: true,
-            writable: true,
-            configurable: true,
-          });
-        }
-        return snapshot;
-      }
-
-      const snapshot = Object.create(null) as JsonObject;
-      for (const key of keys) {
-        if (typeof key !== 'string') return invalidJsonValue;
-        const descriptor = descriptors[key];
-        if (!hasDataValue(descriptor) || !descriptor.enumerable) {
-          return invalidJsonValue;
-        }
-        const item = snapshotJsonValue(descriptor.value, ancestors);
-        if (item === invalidJsonValue) return invalidJsonValue;
-        Object.defineProperty(snapshot, key, {
-          value: item,
-          enumerable: true,
-          writable: true,
-          configurable: true,
-        });
-      }
-      return snapshot;
-    } finally {
-      ancestors.delete(value);
-    }
-  } catch {
-    return invalidJsonValue;
-  }
-};
-
-const snapshotJsonObject = (
-  value: unknown,
-): JsonObject | typeof invalidJsonValue => {
-  try {
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-      return invalidJsonValue;
-    }
-    const snapshot = snapshotJsonValue(value, new WeakSet());
-    return snapshot !== invalidJsonValue &&
-      snapshot !== null &&
-      typeof snapshot === 'object' &&
-      !Array.isArray(snapshot)
-      ? snapshot
-      : invalidJsonValue;
-  } catch {
-    return invalidJsonValue;
-  }
-};
-
-const jsonObjectSchema = z.unknown().transform((value, context) => {
-  const snapshot = snapshotJsonObject(value);
-  if (snapshot === invalidJsonValue) {
-    context.addIssue({ code: 'custom', message: 'Expected a JSON object' });
-    return z.NEVER;
-  }
-  return snapshot;
+export const apiErrorPayloadSchema = z.strictObject({
+  code: errorCodeSchema,
+  message: z.string().trim().min(1),
+  commandId: commandIdSchema.optional(),
+  threadId: threadIdSchema.optional(),
+  runId: runIdSchema.optional(),
+  operationId: operationIdSchema.optional(),
+  retryable: z.boolean(),
+  details: jsonObjectSchema.optional(),
 });
+export type ApiErrorPayload = z.infer<typeof apiErrorPayloadSchema>;
 
 export const apiErrorSchema = z.strictObject({
-  error: z.strictObject({
-    code: errorCodeSchema,
-    message: z.string().trim().min(1),
-    commandId: commandIdSchema.optional(),
-    threadId: threadIdSchema.optional(),
-    runId: runIdSchema.optional(),
-    operationId: operationIdSchema.optional(),
-    retryable: z.boolean(),
-    details: jsonObjectSchema.optional(),
-  }),
+  error: apiErrorPayloadSchema,
 });
 export type ApiError = z.infer<typeof apiErrorSchema>;
 

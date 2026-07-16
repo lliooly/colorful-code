@@ -20,6 +20,19 @@ const threadPath = { threadId: 'thread-1' };
 const runPath = { ...threadPath, runId: 'run-1' };
 const queueItemPath = { ...threadPath, queueItemId: 'queue-item-1' };
 const textInput = { content: { kind: 'text', text: 'hello' } };
+const acceptedAt = '2026-07-16T09:30:00+08:00';
+
+const canonicalOperationAck = {
+  commandId,
+  operationId: 'operation-1',
+  status: 'accepted',
+  replayed: false,
+  threadId: 'thread-1',
+  runId: 'run-1',
+  completionEvents: ['operation.completed'],
+  currentDurableCursor: '7',
+  acceptedAt,
+} as const;
 
 const fixtures = {
   'thread.create': { body: { commandId } },
@@ -196,6 +209,34 @@ const schema = (value: ZodType | undefined): ZodType => {
   if (value === undefined) throw new Error('expected endpoint schema');
   return value;
 };
+
+describe('canonical mutation responses', () => {
+  test('every mutation result schema parses a complete asynchronous command Ack', () => {
+    for (const descriptor of Object.values(httpContractRegistry)) {
+      if (descriptor.method === 'GET') continue;
+
+      expect(descriptor.resultSchema.parse(canonicalOperationAck)).toEqual(
+        canonicalOperationAck,
+      );
+    }
+  });
+
+  test('a mutation Ack can carry a synchronous result without an operation id', () => {
+    const synchronousAck = {
+      commandId,
+      status: 'accepted',
+      replayed: false,
+      threadId: 'thread-1',
+      currentDurableCursor: '8',
+      acceptedAt,
+      result: { configRevision: 2 },
+    } as const;
+
+    expect(
+      httpContractRegistry['config.change'].resultSchema.parse(synchronousAck),
+    ).toEqual(synchronousAck);
+  });
+});
 
 const entries = Object.entries(httpContractRegistry) as Array<
   [keyof HttpContractRegistry, HttpContractDescriptor]
