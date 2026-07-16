@@ -154,6 +154,8 @@ describe('revision and generation schemas', () => {
     for (const invalid of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
       expect(schema.safeParse(invalid).success).toBe(false);
     }
+
+    expect(z.toJSONSchema(schema).minimum).toBe(0);
   });
 });
 
@@ -182,6 +184,14 @@ describe('jsonValueSchema', () => {
   test('rejects cycles, accessors and hostile proxies without throwing', () => {
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
+    const deeplyCyclic: Record<string, unknown> = {};
+    let tail = deeplyCyclic;
+    for (let depth = 0; depth < 15_000; depth += 1) {
+      const next: Record<string, unknown> = {};
+      tail.value = next;
+      tail = next;
+    }
+    tail.value = deeplyCyclic;
 
     let getterCalled = false;
     const accessor = Object.defineProperty({}, 'secret', {
@@ -200,38 +210,22 @@ describe('jsonValueSchema', () => {
       },
     );
 
-    for (const invalid of [cyclic, accessor, hostile]) {
+    for (const invalid of [cyclic, deeplyCyclic, accessor, hostile]) {
       expect(() => jsonValueSchema.safeParse(invalid)).not.toThrow();
       expect(jsonValueSchema.safeParse(invalid).success).toBe(false);
     }
     expect(getterCalled).toBe(false);
   });
 
-  test('accepts at most 100 JSON containers and rejects the next depth', () => {
-    for (const atLimit of [nestedObject(100), nestedArray(100)]) {
-      expect(jsonValueSchema.safeParse(atLimit).success).toBe(true);
-    }
-    for (const overLimit of [nestedObject(101), nestedArray(101)]) {
-      expect(() => jsonValueSchema.safeParse(overLimit)).not.toThrow();
-      expect(jsonValueSchema.safeParse(overLimit).success).toBe(false);
-    }
-
-    expect(jsonObjectSchema.safeParse(nestedObject(100)).success).toBe(true);
-    expect(() => jsonObjectSchema.safeParse(nestedObject(101))).not.toThrow();
-    expect(jsonObjectSchema.safeParse(nestedObject(101)).success).toBe(false);
-  });
-
-  test('rejects pathological object and array depth without throwing', () => {
+  test('accepts deeply nested JSON without imposing an undocumented depth limit', () => {
     for (const pathological of [nestedObject(15_000), nestedArray(15_000)]) {
       expect(() => jsonValueSchema.safeParse(pathological)).not.toThrow();
-      expect(jsonValueSchema.safeParse(pathological).success).toBe(false);
+      expect(jsonValueSchema.safeParse(pathological).success).toBe(true);
     }
     expect(() =>
       jsonObjectSchema.safeParse(nestedObject(15_000)),
     ).not.toThrow();
-    expect(jsonObjectSchema.safeParse(nestedObject(15_000)).success).toBe(
-      false,
-    );
+    expect(jsonObjectSchema.safeParse(nestedObject(15_000)).success).toBe(true);
   });
 
   test('allows shared subtrees and returns a detached deep snapshot', () => {

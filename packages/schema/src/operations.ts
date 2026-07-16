@@ -63,8 +63,8 @@ export type OperationTerminalEventPayload = z.infer<
 
 export const operationProgressSchema = strictObjectSchema({
   phase: z.string().trim().min(1),
-  completedUnits: z.number().int().nonnegative().safe().optional(),
-  totalUnits: z.number().int().nonnegative().safe().optional(),
+  completedUnits: z.number().int().safe().nonnegative().optional(),
+  totalUnits: z.number().int().safe().nonnegative().optional(),
   message: z.string().optional(),
 });
 export type OperationProgress = z.infer<typeof operationProgressSchema>;
@@ -118,7 +118,7 @@ export type ApprovalView = z.infer<typeof approvalViewSchema>;
 export const artifactReferenceSchema = strictObjectSchema({
   artifactId: artifactIdSchema,
   mediaType: z.string().trim().min(1),
-  byteLength: z.number().int().nonnegative().safe(),
+  byteLength: z.number().int().safe().nonnegative(),
   label: z.string().nullable(),
 });
 export type ArtifactReference = z.infer<typeof artifactReferenceSchema>;

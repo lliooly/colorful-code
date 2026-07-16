@@ -88,7 +88,7 @@ describe('negative public envelope invariants', () => {
     }
   });
 
-  test('fails safely for non-JSON, cyclic, and excessively deep details', () => {
+  test('fails safely for non-JSON and cyclic details at arbitrary depth', () => {
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
     let excessivelyDeep: Record<string, unknown> = {};
@@ -106,12 +106,18 @@ describe('negative public envelope invariants', () => {
       { value: Number.NaN },
       { value: undefined },
       cyclic,
-      excessivelyDeep,
     ]) {
       const candidate = withDetails(details);
       expect(() => apiErrorSchema.safeParse(candidate)).not.toThrow();
       expect(apiErrorSchema.safeParse(candidate).success).toBe(false);
     }
+
+    expect(() =>
+      apiErrorSchema.safeParse(withDetails(excessivelyDeep)),
+    ).not.toThrow();
+    expect(apiErrorSchema.safeParse(withDetails(excessivelyDeep)).success).toBe(
+      true,
+    );
   });
 
   test('accepts only terminal operation statuses and rejects internal fields', () => {

@@ -23,16 +23,16 @@ export type StreamCursor = z.infer<typeof streamCursorSchema>;
 export const pageCursorSchema = canonicalUnsignedDecimalSchema;
 export type PageCursor = z.infer<typeof pageCursorSchema>;
 
-export const revisionSchema = z.number().int().nonnegative().safe();
+export const revisionSchema = z.number().int().safe().nonnegative();
 export type Revision = z.infer<typeof revisionSchema>;
 
-export const configRevisionSchema = z.number().int().nonnegative().safe();
+export const configRevisionSchema = z.number().int().safe().nonnegative();
 export type ConfigRevision = z.infer<typeof configRevisionSchema>;
 
-export const policyRevisionSchema = z.number().int().nonnegative().safe();
+export const policyRevisionSchema = z.number().int().safe().nonnegative();
 export type PolicyRevision = z.infer<typeof policyRevisionSchema>;
 
-export const planGenerationSchema = z.number().int().nonnegative().safe();
+export const planGenerationSchema = z.number().int().safe().nonnegative();
 export type PlanGeneration = z.infer<typeof planGenerationSchema>;
 
 export type JsonValue =
@@ -50,173 +50,241 @@ const hasDataValue = (
   descriptor !== undefined && 'value' in descriptor;
 
 const invalidJsonValue = Symbol('invalidJsonValue');
-const MAX_JSON_DEPTH = 100;
+type JsonToken =
+  | ['value', string | number | boolean | null]
+  | ['array', number]
+  | ['object', number]
+  | ['key', string];
 
-const snapshotJsonValue = (
-  value: unknown,
-  ancestors: WeakSet<object>,
-  depth: number,
-): JsonValue | typeof invalidJsonValue => {
-  if (
-    value === null ||
-    typeof value === 'string' ||
-    typeof value === 'boolean'
-  ) {
-    return value;
-  }
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : invalidJsonValue;
-  }
-  if (typeof value !== 'object') return invalidJsonValue;
-  if (depth >= MAX_JSON_DEPTH) return invalidJsonValue;
+type PendingJsonItem =
+  | { kind: 'value'; value: unknown }
+  | { kind: 'key'; key: string }
+  | { kind: 'exit'; value: object };
+
+const encodeJsonValue = (
+  root: unknown,
+): JsonToken[] | typeof invalidJsonValue => {
+  const tokens: JsonToken[] = [];
+  const ancestors = new WeakSet<object>();
+  const pending: PendingJsonItem[] = [{ kind: 'value', value: root }];
 
   try {
-    const isArray = Array.isArray(value);
-    const prototype = Object.getPrototypeOf(value);
-    if (
-      (isArray && prototype !== Array.prototype) ||
-      (!isArray && prototype !== Object.prototype && prototype !== null)
-    ) {
-      return invalidJsonValue;
-    }
-    if (ancestors.has(value)) return invalidJsonValue;
+    while (pending.length > 0) {
+      const item = pending.pop();
+      if (item === undefined) return invalidJsonValue;
 
-    ancestors.add(value);
-    try {
+      if (item.kind === 'key') {
+        tokens.push(['key', item.key]);
+        continue;
+      }
+      if (item.kind === 'exit') {
+        ancestors.delete(item.value);
+        continue;
+      }
+
+      const value = item.value;
+      if (
+        value === null ||
+        typeof value === 'string' ||
+        typeof value === 'boolean'
+      ) {
+        tokens.push(['value', value]);
+        continue;
+      }
+      if (typeof value === 'number') {
+        if (!Number.isFinite(value)) return invalidJsonValue;
+        tokens.push(['value', value]);
+        continue;
+      }
+      if (typeof value !== 'object') return invalidJsonValue;
+
+      const isArray = Array.isArray(value);
+      const prototype = Object.getPrototypeOf(value);
+      if (
+        (isArray && prototype !== Array.prototype) ||
+        (!isArray && prototype !== Object.prototype && prototype !== null) ||
+        ancestors.has(value)
+      ) {
+        return invalidJsonValue;
+      }
+
       const descriptors = Object.getOwnPropertyDescriptors(value);
       const keys = Reflect.ownKeys(descriptors);
+      ancestors.add(value);
+      pending.push({ kind: 'exit', value });
 
       if (isArray) {
         const lengthDescriptor = descriptors.length;
         if (!hasDataValue(lengthDescriptor)) return invalidJsonValue;
         const length = lengthDescriptor.value;
-        if (!Number.isSafeInteger(length) || length < 0) {
+        if (
+          !Number.isSafeInteger(length) ||
+          length < 0 ||
+          keys.length !== length + 1
+        ) {
           return invalidJsonValue;
         }
-        if (keys.length !== length + 1) return invalidJsonValue;
 
-        const snapshot: JsonValue[] = new Array(length);
-        for (const key of keys) {
-          if (key === 'length') continue;
-          if (typeof key !== 'string') return invalidJsonValue;
-          const index = Number(key);
-          if (
-            !Number.isSafeInteger(index) ||
-            index < 0 ||
-            index >= length ||
-            String(index) !== key
-          ) {
-            return invalidJsonValue;
-          }
-          const descriptor = descriptors[key];
+        tokens.push(['array', length]);
+        for (let index = length - 1; index >= 0; index -= 1) {
+          const descriptor = descriptors[String(index)];
           if (!hasDataValue(descriptor) || !descriptor.enumerable) {
             return invalidJsonValue;
           }
-          const item = snapshotJsonValue(
-            descriptor.value,
-            ancestors,
-            depth + 1,
-          );
-          if (item === invalidJsonValue) return invalidJsonValue;
-          Object.defineProperty(snapshot, key, {
-            value: item,
-            enumerable: true,
-            writable: true,
-            configurable: true,
-          });
+          pending.push({ kind: 'value', value: descriptor.value });
         }
-        return snapshot;
+        continue;
       }
 
-      const snapshot = Object.create(null) as JsonObject;
+      const stringKeys: string[] = [];
       for (const key of keys) {
         if (typeof key !== 'string') return invalidJsonValue;
         const descriptor = descriptors[key];
         if (!hasDataValue(descriptor) || !descriptor.enumerable) {
           return invalidJsonValue;
         }
-        const item = snapshotJsonValue(descriptor.value, ancestors, depth + 1);
-        if (item === invalidJsonValue) return invalidJsonValue;
-        Object.defineProperty(snapshot, key, {
-          value: item,
-          enumerable: true,
-          writable: true,
-          configurable: true,
-        });
+        stringKeys.push(key);
       }
-      return snapshot;
-    } finally {
-      ancestors.delete(value);
+
+      tokens.push(['object', stringKeys.length]);
+      for (let index = stringKeys.length - 1; index >= 0; index -= 1) {
+        const key = stringKeys[index];
+        if (key === undefined) return invalidJsonValue;
+        const descriptor = descriptors[key];
+        if (!hasDataValue(descriptor)) return invalidJsonValue;
+        pending.push({ kind: 'value', value: descriptor.value });
+        pending.push({ kind: 'key', key });
+      }
     }
   } catch {
     return invalidJsonValue;
   }
+
+  return tokens;
 };
 
-const prefixJsonKeys = (value: JsonValue): JsonValue => {
-  if (value === null || typeof value !== 'object') return value;
-  if (Array.isArray(value)) return value.map(prefixJsonKeys);
+type JsonContainerFrame =
+  | { kind: 'array'; value: JsonValue[]; remaining: number }
+  | {
+      kind: 'object';
+      value: JsonObject;
+      remaining: number;
+      key?: string;
+    };
 
-  const prefixed = Object.create(null) as JsonObject;
-  for (const [key, item] of Object.entries(value)) {
-    Object.defineProperty(prefixed, `\u0000${key}`, {
-      value: prefixJsonKeys(item),
-      enumerable: true,
-      writable: true,
-      configurable: true,
-    });
+const decodeJsonValue = (encoded: JsonValue): JsonValue => {
+  const tokens = encoded as JsonToken[];
+  const containers: JsonContainerFrame[] = [];
+  let root: JsonValue | undefined;
+  let hasRoot = false;
+
+  const attach = (value: JsonValue) => {
+    const parent = containers.at(-1);
+    if (parent === undefined) {
+      root = value;
+      hasRoot = true;
+      return;
+    }
+    if (parent.kind === 'array') {
+      parent.value.push(value);
+    } else {
+      const key = parent.key;
+      if (key === undefined) throw new Error('Invalid encoded JSON object');
+      Object.defineProperty(parent.value, key, {
+        value,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+      delete parent.key;
+    }
+    parent.remaining -= 1;
+  };
+
+  const removeCompletedContainers = () => {
+    while (containers.at(-1)?.remaining === 0) containers.pop();
+  };
+
+  for (const token of tokens) {
+    const [kind, payload] = token;
+    if (kind === 'key') {
+      const parent = containers.at(-1);
+      if (parent?.kind !== 'object' || parent.key !== undefined) {
+        throw new Error('Invalid encoded JSON key');
+      }
+      parent.key = payload;
+      continue;
+    }
+    if (kind === 'value') {
+      attach(payload);
+      removeCompletedContainers();
+      continue;
+    }
+
+    const value: JsonValue =
+      kind === 'array' ? [] : (Object.create(null) as JsonObject);
+    attach(value);
+    if (payload > 0) {
+      if (kind === 'array') {
+        containers.push({
+          kind,
+          value: value as JsonValue[],
+          remaining: payload,
+        });
+      } else {
+        containers.push({
+          kind,
+          value: value as JsonObject,
+          remaining: payload,
+        });
+      }
+    } else {
+      removeCompletedContainers();
+    }
   }
-  return prefixed;
+
+  if (!hasRoot || containers.length > 0) {
+    throw new Error('Invalid encoded JSON value');
+  }
+  return root as JsonValue;
 };
 
-const removeJsonKeyPrefixes = (value: JsonValue): JsonValue => {
-  if (value === null || typeof value !== 'object') return value;
-  if (Array.isArray(value)) return value.map(removeJsonKeyPrefixes);
-
-  const normalized = Object.create(null) as JsonObject;
-  for (const [key, item] of Object.entries(value)) {
-    Object.defineProperty(normalized, key.slice(1), {
-      value: removeJsonKeyPrefixes(item),
-      enumerable: true,
-      writable: true,
-      configurable: true,
-    });
-  }
-  return normalized;
-};
-
-const jsonValueNormalizerSchema = z.unknown().transform((value, context) => {
-  const snapshot = snapshotJsonValue(value, new WeakSet(), 0);
-  if (snapshot === invalidJsonValue) {
-    context.addIssue({ code: 'custom', message: 'Expected a JSON value' });
-    return z.NEVER;
-  }
-  return prefixJsonKeys(snapshot);
-});
+const jsonValueNormalizerSchema = z
+  .unknown()
+  .transform<JsonValue>((value, context) => {
+    const encoded = encodeJsonValue(value);
+    if (encoded === invalidJsonValue) {
+      context.addIssue({ code: 'custom', message: 'Expected a JSON value' });
+      return z.NEVER;
+    }
+    return encoded as JsonValue;
+  });
 
 export const jsonValueSchema = jsonValueNormalizerSchema
   .pipe(z.json())
-  .overwrite(removeJsonKeyPrefixes);
+  .overwrite(decodeJsonValue);
 
 const jsonObjectOutputSchema = z.record(z.string(), z.json());
 
 const jsonObjectNormalizerSchema = z.unknown().transform((value, context) => {
-  const snapshot = snapshotJsonValue(value, new WeakSet(), 0);
-  if (
-    snapshot === invalidJsonValue ||
-    snapshot === null ||
-    typeof snapshot !== 'object' ||
-    Array.isArray(snapshot)
-  ) {
+  const encoded = encodeJsonValue(value);
+  if (encoded === invalidJsonValue || encoded[0]?.[0] !== 'object') {
     context.addIssue({ code: 'custom', message: 'Expected a JSON object' });
     return z.NEVER;
   }
-  return prefixJsonKeys(snapshot) as JsonObject;
+  const wrapper = Object.create(null) as JsonObject;
+  Object.defineProperty(wrapper, '\u0000', {
+    value: encoded,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+  return wrapper;
 });
 
 export const jsonObjectSchema = jsonObjectNormalizerSchema
   .pipe(jsonObjectOutputSchema)
-  .overwrite((value) => removeJsonKeyPrefixes(value) as JsonObject);
+  .overwrite((value) => decodeJsonValue(value['\u0000']) as JsonObject);
 
 export const pageInfoSchema = strictObjectSchema({
   nextCursor: pageCursorSchema.nullable(),
