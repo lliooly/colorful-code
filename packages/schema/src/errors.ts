@@ -1,6 +1,5 @@
 import { z } from 'zod';
 
-import { jsonObjectSchema } from './common.js';
 import {
   commandIdSchema,
   operationIdSchema,
@@ -37,6 +36,8 @@ export const errorCodeSchema = z.enum([
 ]);
 export type ErrorCode = z.infer<typeof errorCodeSchema>;
 
+const apiErrorDetailsSchema = z.record(z.string(), z.json());
+
 export const apiErrorPayloadSchema = z.strictObject({
   code: errorCodeSchema,
   message: z.string().trim().min(1),
@@ -45,7 +46,7 @@ export const apiErrorPayloadSchema = z.strictObject({
   runId: runIdSchema.optional(),
   operationId: operationIdSchema.optional(),
   retryable: z.boolean(),
-  details: jsonObjectSchema.optional(),
+  details: apiErrorDetailsSchema.optional(),
 });
 export type ApiErrorPayload = z.infer<typeof apiErrorPayloadSchema>;
 

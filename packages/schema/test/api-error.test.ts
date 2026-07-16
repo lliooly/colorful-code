@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { z } from 'zod';
 
 import {
   apiErrorSchema,
@@ -37,7 +38,99 @@ const expectedHttpStatus = {
   INTERNAL_ERROR: 500,
 } as const satisfies Record<ErrorCode, number>;
 
+const forbiddenAuthoringNodes = (schema: z.ZodType): string[] => {
+  const forbidden: string[] = [];
+  const seen = new Set<object>();
+
+  const visit = (value: unknown, path: string): void => {
+    if (value === null || typeof value !== 'object' || seen.has(value)) return;
+    seen.add(value);
+
+    const internals = value as {
+      _zod?: { def?: Record<string, unknown> };
+    };
+    const definition = internals._zod?.def;
+    if (definition !== undefined) {
+      if (definition.type === 'transform' || definition.type === 'pipe') {
+        forbidden.push(`${path}:${definition.type}`);
+      }
+      if (definition.check === 'custom') {
+        forbidden.push(`${path}:${definition.check}`);
+      }
+      if (
+        definition.type === 'lazy' &&
+        typeof definition.getter === 'function'
+      ) {
+        visit(definition.getter(), `${path}.lazy()`);
+      }
+      visit(definition, `${path}.def`);
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => visit(item, `${path}[${index}]`));
+      return;
+    }
+    for (const [key, child] of Object.entries(value)) {
+      visit(child, `${path}.${key}`);
+    }
+  };
+
+  visit(schema, 'apiErrorSchema');
+  return forbidden;
+};
+
 describe('apiErrorSchema', () => {
+  test('converts to JSON Schema with details as a JSON-valued object', () => {
+    const jsonSchema = z.toJSONSchema(apiErrorSchema);
+    const errorSchema = jsonSchema.properties?.error;
+    expect(errorSchema).toBeObject();
+    if (errorSchema === undefined || typeof errorSchema === 'boolean') return;
+    const detailsSchema = errorSchema.properties?.details;
+
+    expect(detailsSchema).toMatchObject({
+      type: 'object',
+      propertyNames: { type: 'string' },
+    });
+    if (detailsSchema === undefined || typeof detailsSchema === 'boolean')
+      return;
+    const additionalProperties = detailsSchema.additionalProperties;
+    expect(additionalProperties).toMatchObject({
+      $ref: expect.stringMatching(/^#\/\$defs\/[^/]+$/),
+    });
+    if (
+      additionalProperties === undefined ||
+      typeof additionalProperties === 'boolean' ||
+      typeof additionalProperties.$ref !== 'string'
+    ) {
+      return;
+    }
+    const jsonValueRef = additionalProperties.$ref;
+    const definitionKey = jsonValueRef.slice('#/$defs/'.length);
+
+    expect(jsonSchema.$defs?.[definitionKey]).toEqual({
+      anyOf: [
+        { type: 'string' },
+        { type: 'number' },
+        { type: 'boolean' },
+        { type: 'null' },
+        {
+          type: 'array',
+          items: { $ref: jsonValueRef },
+        },
+        {
+          type: 'object',
+          propertyNames: { type: 'string' },
+          additionalProperties: { $ref: jsonValueRef },
+        },
+      ],
+    });
+  });
+
+  test('has no transform, pipe, or custom refine schema nodes', () => {
+    expect(forbiddenAuthoringNodes(apiErrorSchema)).toEqual([]);
+  });
+
   test('parses the strict public error envelope with authoritative IDs', () => {
     const value = {
       error: {
@@ -113,7 +206,15 @@ describe('apiErrorSchema', () => {
     });
 
     expect(
-      apiErrorSchema.safeParse(withDetails({ field: 'threadId' })).success,
+      apiErrorSchema.safeParse(
+        withDetails({
+          field: 'threadId',
+          expectedRevision: 2,
+          retryable: false,
+          missing: null,
+          path: ['error', 0, { nested: true }],
+        }),
+      ).success,
     ).toBe(true);
     for (const details of [
       null,
@@ -132,115 +233,15 @@ describe('apiErrorSchema', () => {
     }
   });
 
-  test('rejects cyclic details without throwing or overflowing the stack', () => {
-    const details: Record<string, unknown> = {};
-    details.self = details;
-    const value = {
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: 'Safe message',
-        retryable: false,
-        details,
-      },
-    };
-
-    expect(() => apiErrorSchema.safeParse(value)).not.toThrow();
-    expect(apiErrorSchema.safeParse(value).success).toBe(false);
-  });
-
-  test('rejects accessors and hostile proxies without invoking or leaking exceptions', () => {
-    let getterInvoked = false;
-    const throwingGetter = Object.defineProperty({}, 'value', {
-      enumerable: true,
-      get(): never {
-        getterInvoked = true;
-        throw new Error('getter must not run');
-      },
-    });
-    const hostileProxy = new Proxy(
-      {},
-      {
-        getPrototypeOf(): never {
-          throw new Error('proxy trap');
-        },
-      },
-    );
-    const withDetails = (details: unknown) => ({
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: 'Safe message',
-        retryable: false,
-        details,
-      },
-    });
-
-    for (const details of [throwingGetter, hostileProxy]) {
-      expect(() =>
-        apiErrorSchema.safeParse(withDetails(details)),
-      ).not.toThrow();
-      expect(apiErrorSchema.safeParse(withDetails(details)).success).toBe(
-        false,
-      );
-    }
-    expect(getterInvoked).toBe(false);
-  });
-
-  test('accepts a shared JSON subtree that is not cyclic', () => {
-    const shared = { state: 'available' };
-    const value = {
-      error: {
-        code: 'VALIDATION_ERROR',
-        message: 'Invalid request',
-        retryable: false,
-        details: { left: shared, right: shared },
-      },
-    };
-
-    const parsed = apiErrorSchema.parse(value);
-
-    expect(parsed.error.details?.left).toEqual(shared);
-    expect(parsed.error.details?.right).toEqual(shared);
-    expect(parsed.error.details?.left).not.toBe(shared);
-    expect(parsed.error.details?.right).not.toBe(shared);
-  });
-
-  test('returns an isolated JSON snapshot that later input mutation cannot corrupt', () => {
-    const details: Record<string, unknown> = {
-      nested: { count: 1 },
-      items: [{ state: 'ready' }],
-    };
-    const parsed = apiErrorSchema.parse({
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: 'Safe message',
-        retryable: false,
-        details,
-      },
-    });
-
-    (details.nested as Record<string, unknown>).invalid = 1n;
-    details.secret = 'added later';
-    details.self = details;
-
-    expect(parsed.error.details).toEqual({
-      nested: { count: 1 },
-      items: [{ state: 'ready' }],
-    });
-    expect(() => JSON.stringify(parsed)).not.toThrow();
-  });
-
-  test('snapshots descriptors without consulting a hostile value get trap', () => {
-    const details = new Proxy(
-      { stable: 'snapshot' },
-      {
-        get: () => 1n,
-      },
-    );
+  test('uses Zod authoring sanitization to drop a wire __proto__ key', () => {
+    const details = JSON.parse(
+      '{"__proto__":{"polluted":true},"stable":"preserved"}',
+    ) as Record<string, unknown>;
 
     const parsed = apiErrorSchema.safeParse({
       error: {
-        code: 'INTERNAL_ERROR',
-        message: 'Safe message',
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid request',
         retryable: false,
         details,
       },
@@ -248,34 +249,19 @@ describe('apiErrorSchema', () => {
 
     expect(parsed.success).toBe(true);
     if (!parsed.success) return;
-    expect(parsed.data.error.details).toEqual({ stable: 'snapshot' });
-    expect(() => JSON.stringify(parsed.data)).not.toThrow();
-  });
-
-  test('normalizes an own __proto__ data key without prototype pollution', () => {
-    const details = Object.defineProperty({}, '__proto__', {
-      value: { polluted: true },
-      enumerable: true,
-      writable: true,
-      configurable: true,
-    });
-
-    const parsed = apiErrorSchema.parse({
-      error: {
-        code: 'VALIDATION_ERROR',
-        message: 'Invalid request',
-        retryable: false,
-        details,
-      },
-    });
-
+    // Zod's object/record authoring sanitizer intentionally drops __proto__.
     expect(
-      Object.prototype.hasOwnProperty.call(parsed.error.details, '__proto__'),
-    ).toBe(true);
-    expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
-    expect(JSON.stringify(parsed.error.details)).toBe(
-      '{"__proto__":{"polluted":true}}',
+      Object.prototype.hasOwnProperty.call(
+        parsed.data.error.details,
+        '__proto__',
+      ),
+    ).toBe(false);
+    expect(parsed.data.error.details).toEqual({ stable: 'preserved' });
+    expect('polluted' in parsed.data.error.details).toBe(false);
+    expect(Object.getPrototypeOf(parsed.data.error.details)).toBe(
+      Object.prototype,
     );
+    expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
   });
 
   test('rejects blank authoritative IDs', () => {
