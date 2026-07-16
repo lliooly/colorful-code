@@ -35,6 +35,7 @@ const operationAck = {
   status: 'accepted',
   replayed: false,
   threadId: 'thread-1',
+  completionEvents: ['operation.completed'],
   currentDurableCursor: '1',
   acceptedAt: '2026-07-16T00:00:00Z',
 };

@@ -55,9 +55,13 @@ const endpoint = (operationId: string): HttpContractDescriptor => {
 describe('negative public envelope invariants', () => {
   test('keeps CommandAck acceptance-only and unable to imply terminal completion', () => {
     const schema = commandAckSchema();
-    const { operationId: _operationId, ...withoutOperationId } = acceptedAck;
+    const {
+      operationId: _operationId,
+      completionEvents: _completionEvents,
+      ...synchronousAck
+    } = acceptedAck;
 
-    expect(schema.parse(withoutOperationId)).toEqual(withoutOperationId);
+    expect(schema.parse(synchronousAck)).toEqual(synchronousAck);
     for (const candidate of [
       { ...acceptedAck, status: 'rejected' },
       { ...acceptedAck, status: 'error' },
@@ -143,8 +147,14 @@ describe('schema construction and parse isolation invariants', () => {
     const second = commandAckSchema(resultSchema);
 
     expect(first).not.toBe(second);
-    expect(first.shape).not.toBe(second.shape);
-    expect(first.shape).not.toBe(unrelated.shape);
+    expect(first).not.toBe(unrelated);
+    expect(second).not.toBe(unrelated);
+    expect(first.options[0]).not.toBe(second.options[0]);
+    expect(first.options[1]).not.toBe(second.options[1]);
+    expect(first.options[0]).not.toBe(unrelated.options[0]);
+    expect(first.options[1]).not.toBe(unrelated.options[1]);
+    expect(second.options[0]).not.toBe(unrelated.options[0]);
+    expect(second.options[1]).not.toBe(unrelated.options[1]);
     expect(
       first.parse({ ...acceptedAck, result: { value: 'stable' } }),
     ).toEqual(second.parse({ ...acceptedAck, result: { value: 'stable' } }));
