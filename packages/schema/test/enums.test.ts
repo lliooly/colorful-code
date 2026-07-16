@@ -48,6 +48,11 @@ const enumCases = {
     'failed',
     'cancelled',
   ],
+  operationCompletionEventKindSchema: [
+    'operation.completed',
+    'operation.failed',
+    'operation.cancelled',
+  ],
   operationKindSchema: [
     'steer',
     'stop',

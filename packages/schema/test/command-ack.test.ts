@@ -16,35 +16,41 @@ const canonicalAck = {
   threadId: 'thread-1',
   runId: 'run-1',
   result: { kind: 'queued', position: 2 },
-  completionEvents: ['queue.applied', 'queue.failed'],
+  completionEvents: ['operation.completed', 'operation.failed'],
   currentDurableCursor: '9007199254740993',
   acceptedAt: '2026-07-16T08:00:00Z',
 } as const;
 
+const synchronousAck = {
+  commandId: canonicalAck.commandId,
+  status: canonicalAck.status,
+  replayed: canonicalAck.replayed,
+  threadId: canonicalAck.threadId,
+  runId: canonicalAck.runId,
+  result: canonicalAck.result,
+  currentDurableCursor: canonicalAck.currentDurableCursor,
+  acceptedAt: canonicalAck.acceptedAt,
+} as const;
+
 describe('commandAckSchema', () => {
-  test('parses the exact accepted Ack envelope with an optional result', () => {
+  test('parses synchronous and complete asynchronous Ack envelopes', () => {
     const schema = ackContract.commandAckSchema(resultSchema);
+    const {
+      result: _asynchronousResult,
+      runId: _asynchronousRunId,
+      ...asynchronousWithoutResultOrRunId
+    } = canonicalAck;
+    const { result: _synchronousResult, ...synchronousWithoutResult } =
+      synchronousAck;
 
     expect(schema.parse(canonicalAck)).toEqual(canonicalAck);
-    const { result: _result, ...withoutResult } = canonicalAck;
-    expect(schema.parse(withoutResult)).toEqual(withoutResult);
-    expect(
-      schema.parse({
-        commandId: canonicalAck.commandId,
-        status: canonicalAck.status,
-        replayed: canonicalAck.replayed,
-        threadId: canonicalAck.threadId,
-        currentDurableCursor: canonicalAck.currentDurableCursor,
-        acceptedAt: canonicalAck.acceptedAt,
-      }),
-    ).toEqual({
-      commandId: canonicalAck.commandId,
-      status: canonicalAck.status,
-      replayed: canonicalAck.replayed,
-      threadId: canonicalAck.threadId,
-      currentDurableCursor: canonicalAck.currentDurableCursor,
-      acceptedAt: canonicalAck.acceptedAt,
-    });
+    expect(schema.parse(synchronousAck)).toEqual(synchronousAck);
+    expect(schema.parse(asynchronousWithoutResultOrRunId)).toEqual(
+      asynchronousWithoutResultOrRunId,
+    );
+    expect(schema.parse(synchronousWithoutResult)).toEqual(
+      synchronousWithoutResult,
+    );
     expect(
       schema.safeParse({ ...canonicalAck, result: { kind: 'queued' } }).success,
     ).toBe(false);
@@ -63,12 +69,44 @@ describe('commandAckSchema', () => {
     }
   });
 
+  test('requires asynchronous metadata as one complete pair', () => {
+    const schema = ackContract.commandAckSchema(resultSchema);
+
+    expect(
+      schema.safeParse({ ...synchronousAck, operationId: 'operation-1' })
+        .success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({
+        ...synchronousAck,
+        completionEvents: ['operation.completed'],
+      }).success,
+    ).toBe(false);
+    expect(schema.safeParse(canonicalAck).success).toBe(true);
+    expect(
+      schema.safeParse({ ...canonicalAck, completionEvents: [] }).success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({
+        ...canonicalAck,
+        completionEvents: ['queue.failed'],
+      }).success,
+    ).toBe(false);
+  });
+
   test('omits result from the no-result schema instead of accepting any value', () => {
     const schema = ackContract.commandAckSchema();
-    const { result: _result, ...withoutResult } = canonicalAck;
+    const { result: _result, ...asynchronousWithoutResult } = canonicalAck;
+    const { result: _syncResult, ...synchronousWithoutResult } = synchronousAck;
 
-    expect(schema.parse(withoutResult)).toEqual(withoutResult);
+    expect(schema.parse(asynchronousWithoutResult)).toEqual(
+      asynchronousWithoutResult,
+    );
+    expect(schema.parse(synchronousWithoutResult)).toEqual(
+      synchronousWithoutResult,
+    );
     expect(schema.safeParse(canonicalAck).success).toBe(false);
+    expect(schema.safeParse(synchronousAck).success).toBe(false);
   });
 
   test('rejects unknown fields, non-accepted statuses and non-canonical cursors', () => {
@@ -106,11 +144,48 @@ describe('commandAckSchema', () => {
     }
   });
 
+  test('publishes two strict JSON Schema branches without custom refinement', () => {
+    const schema = ackContract.commandAckSchema(resultSchema);
+    const jsonSchema = z.toJSONSchema(schema);
+
+    expect(schema).toBeInstanceOf(z.ZodUnion);
+    expect(jsonSchema.anyOf).toHaveLength(2);
+    for (const branch of jsonSchema.anyOf ?? []) {
+      expect(branch.type).toBe('object');
+      expect(branch.additionalProperties).toBe(false);
+    }
+
+    const branches = jsonSchema.anyOf ?? [];
+    const synchronousBranch = branches.find(
+      (branch) => !branch.required?.includes('operationId'),
+    );
+    const asynchronousBranch = branches.find((branch) =>
+      branch.required?.includes('operationId'),
+    );
+
+    expect(synchronousBranch).toBeDefined();
+    expect(asynchronousBranch).toBeDefined();
+    expect(synchronousBranch!.properties).not.toHaveProperty('operationId');
+    expect(synchronousBranch!.properties).not.toHaveProperty(
+      'completionEvents',
+    );
+    expect(asynchronousBranch!.required).toContain('completionEvents');
+    expect(asynchronousBranch!.properties?.completionEvents).toMatchObject({
+      minItems: 1,
+    });
+    expect(asynchronousBranch!.properties?.completionEvents?.items).toEqual({
+      type: 'string',
+      enum: ['operation.completed', 'operation.failed', 'operation.cancelled'],
+    });
+  });
+
   test('creates equivalent fresh schemas without publishing a replay wrapper', () => {
     const first = ackContract.commandAckSchema(resultSchema);
     const second = ackContract.commandAckSchema(resultSchema);
 
     expect(first).not.toBe(second);
+    expect(first.options[0]).not.toBe(second.options[0]);
+    expect(first.options[1]).not.toBe(second.options[1]);
     expect(first.parse(canonicalAck)).toEqual(second.parse(canonicalAck));
     expect('commandReplayResultSchema' in ackContract).toBe(false);
     expect('CommandReplayResult' in ackContract).toBe(false);
