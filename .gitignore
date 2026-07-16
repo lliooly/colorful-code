@@ -32,3 +32,4 @@ apps/server/data/
 *.db-shm
 .backups/
 data/backups/
+.worktrees/
