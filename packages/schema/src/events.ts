@@ -67,18 +67,28 @@ type JsonWireOutput<Value> = 0 extends 1 & Value
     ? JsonValue
     : Extract<Value, JsonValue>;
 
+const invalidJsonWirePayload = Symbol('invalidJsonWirePayload');
+
 const createJsonWirePayloadSchema = <PayloadSchema extends z.ZodType>(
   payloadSchema: PayloadSchema,
 ) => {
   assertJsonSchemaCompatible(payloadSchema);
-  return payloadSchema.nonoptional().superRefine((value, context) => {
-    if (!jsonValueSchema.safeParse(value).success) {
-      context.addIssue({
-        code: 'custom',
-        message: 'Expected a JSON wire value',
-      });
-    }
-  }) as z.ZodType<
+  return payloadSchema
+    .nonoptional()
+    .overwrite((value) => {
+      const result = jsonValueSchema.safeParse(value);
+      return (
+        result.success ? result.data : invalidJsonWirePayload
+      ) as typeof value;
+    })
+    .superRefine((value, context) => {
+      if ((value as unknown) === invalidJsonWirePayload) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Expected a JSON wire value',
+        });
+      }
+    }) as z.ZodType<
     JsonWireOutput<z.output<PayloadSchema>>,
     z.input<PayloadSchema>
   >;

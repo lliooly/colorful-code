@@ -607,4 +607,67 @@ describe('event envelope factories', () => {
     }).not.toThrow();
     expect(calls).toBe(0);
   });
+
+  test('returns a detached JSON snapshot instead of aliasing permissive input', () => {
+    const permissivePayload = createEventPayloadSchema(
+      'example.detached',
+      z.any().nonoptional(),
+    );
+    const envelope = createDurableEventEnvelopeSchema(permissivePayload);
+    const source: Record<string, unknown> = {
+      nested: { text: 'original', items: ['first'] },
+    };
+    const parsed = envelope.parse({
+      ...durableBase,
+      kind: 'example.detached',
+      payload: source,
+    });
+    const parsedPayload = parsed.payload as Record<string, JsonValue>;
+    const parsedNested = parsedPayload.nested as Record<string, JsonValue>;
+
+    expect(parsedPayload).not.toBe(source);
+    expect(parsedNested).not.toBe(source.nested);
+
+    const sourceNested = source.nested as Record<string, unknown>;
+    sourceNested.text = 'mutated';
+    (sourceNested.items as unknown[]).push('second');
+    sourceNested.injected = () => 'not-json';
+    source.self = source;
+
+    expect(parsedPayload).toEqual({
+      nested: { text: 'original', items: ['first'] },
+    });
+    expect(() => JSON.stringify(parsedPayload)).not.toThrow();
+  });
+
+  test('preserves a detached own __proto__ JSON data key', () => {
+    const permissivePayload = createEventPayloadSchema(
+      'example.proto-data',
+      z.any().nonoptional(),
+    );
+    const envelope = createTransientEventEnvelopeSchema(permissivePayload);
+    const source = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(source, '__proto__', {
+      value: { safe: true },
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+
+    const parsed = envelope.parse({
+      ...transientBase,
+      kind: 'example.proto-data',
+      payload: source,
+    });
+    const parsedPayload = parsed.payload as Record<string, JsonValue>;
+
+    expect(parsedPayload).not.toBe(source);
+    expect(
+      Object.prototype.hasOwnProperty.call(parsedPayload, '__proto__'),
+    ).toBe(true);
+    expect(parsedPayload.__proto__).toEqual({ safe: true });
+    (source.__proto__ as Record<string, unknown>).safe = false;
+    expect(parsedPayload.__proto__).toEqual({ safe: true });
+    expect(() => JSON.stringify(parsedPayload)).not.toThrow();
+  });
 });
