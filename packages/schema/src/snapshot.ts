@@ -101,7 +101,7 @@ const snapshotBaseShape = {
   snapshotVersion: revisionSchema,
 };
 
-export const threadSnapshotSchema = z.union([
+const rawThreadSnapshotSchema = z.union([
   strictObjectSchema(snapshotBaseShape),
   strictObjectSchema({
     ...snapshotBaseShape,
@@ -115,6 +115,48 @@ export const threadSnapshotSchema = z.union([
     streamState: streamStateSnapshotSchema,
   }),
 ]);
+
+const decimalCursorIsAtMost = (candidate: string, cutoff: string) =>
+  candidate.length < cutoff.length ||
+  (candidate.length === cutoff.length && candidate <= cutoff);
+
+const bufferIncarnationMismatchMessage =
+  'Stream buffer incarnationId must equal snapshot.incarnationId';
+const bufferCutoffMismatchMessage =
+  'Stream buffer lastStreamSequence must not exceed snapshot.streamCursor';
+
+export const threadSnapshotSchema = rawThreadSnapshotSchema.superRefine(
+  (snapshot, context) => {
+    if (!('streamState' in snapshot)) return;
+
+    for (const [bufferKind, buffers] of [
+      ['assistantBuffers', snapshot.streamState.assistantBuffers],
+      ['toolBuffers', snapshot.streamState.toolBuffers],
+    ] as const) {
+      for (const [index, buffer] of buffers.entries()) {
+        if (buffer.incarnationId !== snapshot.incarnationId) {
+          context.addIssue({
+            code: 'custom',
+            path: ['streamState', bufferKind, index, 'incarnationId'],
+            message: bufferIncarnationMismatchMessage,
+          });
+        }
+        if (
+          !decimalCursorIsAtMost(
+            buffer.lastStreamSequence,
+            snapshot.streamCursor,
+          )
+        ) {
+          context.addIssue({
+            code: 'custom',
+            path: ['streamState', bufferKind, index, 'lastStreamSequence'],
+            message: bufferCutoffMismatchMessage,
+          });
+        }
+      }
+    }
+  },
+);
 export type ThreadSnapshot = z.infer<typeof threadSnapshotSchema>;
 
 export const snapshotResetReasonSchema = z.enum([
@@ -152,10 +194,20 @@ const incarnationMismatchMessage =
   'SnapshotReset incarnationId must equal snapshot.incarnationId';
 const streamCursorMismatchMessage =
   'SnapshotReset streamCursor must equal snapshot.streamCursor';
+const threadIdMismatchMessage =
+  'SnapshotReset threadId must equal snapshot.thread.threadId';
 
 export const snapshotResetSchema = z
   .union([durableOnlySnapshotResetSchema, runtimeSnapshotResetSchema])
   .superRefine((frame, context) => {
+    if (frame.threadId !== frame.snapshot.thread.threadId) {
+      context.addIssue({
+        code: 'custom',
+        path: ['threadId'],
+        message: threadIdMismatchMessage,
+      });
+    }
+
     if (frame.durableCursor !== frame.snapshot.durableCursor) {
       context.addIssue({
         code: 'custom',

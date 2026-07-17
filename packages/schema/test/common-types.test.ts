@@ -347,6 +347,24 @@ describe('createBoundedJsonValueSchema', () => {
     }
   });
 
+  test('rejects an object before ownKeys when braces exceed the budget', () => {
+    let ownKeysCalls = 0;
+    const observed = new Proxy(
+      {},
+      {
+        ownKeys: (target) => {
+          ownKeysCalls += 1;
+          return Reflect.ownKeys(target);
+        },
+      },
+    );
+
+    expect(createBoundedJsonValueSchema(0).safeParse(observed).success).toBe(
+      false,
+    );
+    expect(ownKeysCalls).toBe(0);
+  });
+
   test('counts every JSON wire token at an exact serialized boundary', () => {
     const fixtures: Array<[unknown, number]> = [
       ['"', 4],

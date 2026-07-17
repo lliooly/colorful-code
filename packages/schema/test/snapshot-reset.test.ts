@@ -5,6 +5,7 @@ import {
   snapshotResetKindSchema,
   snapshotResetSchema,
   streamStateSnapshotSchema,
+  threadSnapshotSchema,
 } from '@colorful-code/schema/snapshot';
 
 const at = '2026-07-17T10:00:00+08:00';
@@ -97,6 +98,26 @@ const runtimeReset = {
   snapshot: runtimeSnapshot,
   incarnationId: 'incarnation-1',
   streamCursor: '43',
+} as const;
+
+const cutoffSnapshot = {
+  ...snapshot,
+  incarnationId: 'incarnation-1',
+  streamCursor: '5',
+  streamState: {
+    assistantBuffers: [
+      {
+        ...assistantStreaming,
+        lastStreamSequence: '5',
+      },
+    ],
+    toolBuffers: [
+      {
+        ...toolStreaming,
+        lastStreamSequence: '4',
+      },
+    ],
+  },
 } as const;
 
 describe('StreamStateSnapshot', () => {
@@ -330,6 +351,139 @@ describe('StreamStateSnapshot', () => {
   });
 });
 
+describe('ThreadSnapshot stream cutoff', () => {
+  test('accepts assistant and tool buffers at or below the cutoff', () => {
+    expect(threadSnapshotSchema.safeParse(cutoffSnapshot).success).toBe(true);
+
+    const hugeCursor = '9'.repeat(10_000);
+    const hugeLowerCursor = '8'.repeat(10_000);
+    expect(
+      threadSnapshotSchema.safeParse({
+        ...cutoffSnapshot,
+        streamCursor: hugeCursor,
+        streamState: {
+          assistantBuffers: [
+            {
+              ...cutoffSnapshot.streamState.assistantBuffers[0],
+              lastStreamSequence: hugeCursor,
+            },
+          ],
+          toolBuffers: [
+            {
+              ...cutoffSnapshot.streamState.toolBuffers[0],
+              lastStreamSequence: hugeLowerCursor,
+            },
+          ],
+        },
+      }).success,
+    ).toBe(true);
+  });
+
+  test('rejects assistant and tool buffers from another incarnation', () => {
+    const assistantMismatch = threadSnapshotSchema.safeParse({
+      ...cutoffSnapshot,
+      streamState: {
+        ...cutoffSnapshot.streamState,
+        assistantBuffers: [
+          {
+            ...cutoffSnapshot.streamState.assistantBuffers[0],
+            incarnationId: 'incarnation-2',
+          },
+        ],
+      },
+    });
+    const toolMismatch = threadSnapshotSchema.safeParse({
+      ...cutoffSnapshot,
+      streamState: {
+        ...cutoffSnapshot.streamState,
+        toolBuffers: [
+          {
+            ...cutoffSnapshot.streamState.toolBuffers[0],
+            incarnationId: 'incarnation-2',
+          },
+        ],
+      },
+    });
+
+    expect(assistantMismatch.success).toBe(false);
+    expect(toolMismatch.success).toBe(false);
+    if (!assistantMismatch.success && !toolMismatch.success) {
+      expect(
+        assistantMismatch.error.issues.map((issue) => issue.path),
+      ).toContainEqual(['streamState', 'assistantBuffers', 0, 'incarnationId']);
+      expect(
+        toolMismatch.error.issues.map((issue) => issue.path),
+      ).toContainEqual(['streamState', 'toolBuffers', 0, 'incarnationId']);
+    }
+  });
+
+  test('rejects assistant and tool buffers above the snapshot cutoff', () => {
+    const assistantAbove = threadSnapshotSchema.safeParse({
+      ...cutoffSnapshot,
+      streamState: {
+        ...cutoffSnapshot.streamState,
+        assistantBuffers: [
+          {
+            ...cutoffSnapshot.streamState.assistantBuffers[0],
+            lastStreamSequence: '6',
+          },
+        ],
+      },
+    });
+    const toolAbove = threadSnapshotSchema.safeParse({
+      ...cutoffSnapshot,
+      streamState: {
+        ...cutoffSnapshot.streamState,
+        toolBuffers: [
+          {
+            ...cutoffSnapshot.streamState.toolBuffers[0],
+            lastStreamSequence: '999',
+          },
+        ],
+      },
+    });
+    const hugeAbove = threadSnapshotSchema.safeParse({
+      ...cutoffSnapshot,
+      streamCursor: '9'.repeat(10_000),
+      streamState: {
+        ...cutoffSnapshot.streamState,
+        toolBuffers: [
+          {
+            ...cutoffSnapshot.streamState.toolBuffers[0],
+            lastStreamSequence: `1${'0'.repeat(10_000)}`,
+          },
+        ],
+      },
+    });
+
+    expect(assistantAbove.success).toBe(false);
+    expect(toolAbove.success).toBe(false);
+    expect(hugeAbove.success).toBe(false);
+    if (!assistantAbove.success && !toolAbove.success && !hugeAbove.success) {
+      expect(
+        assistantAbove.error.issues.map((issue) => issue.path),
+      ).toContainEqual([
+        'streamState',
+        'assistantBuffers',
+        0,
+        'lastStreamSequence',
+      ]);
+      expect(toolAbove.error.issues.map((issue) => issue.path)).toContainEqual([
+        'streamState',
+        'toolBuffers',
+        0,
+        'lastStreamSequence',
+      ]);
+      expect(hugeAbove.error.issues.map((issue) => issue.path)).toContainEqual([
+        'streamState',
+        'toolBuffers',
+        0,
+        'lastStreamSequence',
+      ]);
+    }
+  });
+});
+
 describe('SnapshotReset', () => {
   test('publishes one authoritative control kind literal', () => {
     expect(snapshotResetKindSchema.value).toBe(durableReset.kind);
@@ -389,6 +543,23 @@ describe('SnapshotReset', () => {
     if (!result.success) {
       expect(result.error.issues.map((issue) => issue.message)).toContain(
         'SnapshotReset durableCursor must equal snapshot.durableCursor',
+      );
+    }
+  });
+
+  test('rejects a frame threadId that differs from its snapshot thread', () => {
+    const result = snapshotResetSchema.safeParse({
+      ...durableReset,
+      threadId: 'thread-2',
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toContainEqual(
+        expect.objectContaining({
+          path: ['threadId'],
+          message: 'SnapshotReset threadId must equal snapshot.thread.threadId',
+        }),
       );
     }
   });

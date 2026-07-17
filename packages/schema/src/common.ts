@@ -237,13 +237,16 @@ function encodeJsonValue(
         continue;
       }
 
+      if (!consumeJsonLength(budget, 2)) {
+        return jsonValueExceedsMaxLength;
+      }
       const keys = Reflect.ownKeys(value);
       for (const key of keys) {
         if (typeof key !== 'string') return invalidJsonValue;
       }
       const stringKeys = keys as string[];
 
-      if (!consumeJsonLength(budget, 2 + Math.max(0, stringKeys.length - 1))) {
+      if (!consumeJsonLength(budget, Math.max(0, stringKeys.length - 1))) {
         return jsonValueExceedsMaxLength;
       }
       for (const key of stringKeys) {
