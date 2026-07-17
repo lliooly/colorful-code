@@ -1,0 +1,472 @@
+import { describe, expect, test } from 'bun:test';
+import { z } from 'zod';
+
+import {
+  createDurableEventEnvelopeSchema,
+  createEventPayloadSchema,
+  createTransientEventEnvelopeSchema,
+  knownDurableEventEnvelopeSchema,
+  knownDurableEventPayloadSchema,
+  knownTransientEventEnvelopeSchema,
+  knownTransientEventPayloadSchema,
+} from '@colorful-code/schema/events';
+
+const occurredAt = '2026-07-17T10:30:00+08:00';
+
+const thread = {
+  threadId: 'thread-1',
+  lineageId: 'lineage-1',
+  parentThreadId: null,
+  lifecycle: 'available',
+  runtimeStatus: 'running',
+  title: 'Envelope test',
+  goal: null,
+  workspaceBinding: {
+    workspaceId: 'workspace-1',
+    displayPath: '/workspace/project',
+    trust: 'trusted',
+  },
+  activeRunId: 'run-1',
+  threadRevision: 2,
+  queueRevision: 3,
+  configRevision: 4,
+  policyRevision: 5,
+  createdAt: occurredAt,
+  updatedAt: occurredAt,
+};
+
+const run = {
+  runId: 'run-1',
+  threadId: 'thread-1',
+  kind: 'interactive',
+  status: 'running',
+  sourceInputItemId: 'input-1',
+  sourceQueueItemId: null,
+  planGeneration: 1,
+  configRevision: 4,
+  policyRevision: 5,
+  terminalReason: null,
+  startedAt: occurredAt,
+  endedAt: null,
+  createdAt: occurredAt,
+  updatedAt: occurredAt,
+  revision: 2,
+};
+
+const queue = {
+  threadId: 'thread-1',
+  items: [],
+  controlState: 'active',
+  blockedByIndeterminate: false,
+  effectiveState: 'active',
+  revision: 3,
+};
+
+const approval = {
+  approvalId: 'approval-1',
+  threadId: 'thread-1',
+  runId: 'run-1',
+  kind: 'toolExecution',
+  status: 'pending',
+  planGeneration: 1,
+  policyRevision: 5,
+  requestSummary: { tool: 'shell' },
+  decision: null,
+  revision: 1,
+  createdAt: occurredAt,
+  updatedAt: occurredAt,
+  decidedAt: null,
+  expiresAt: null,
+};
+
+const operationCommon = {
+  operationId: 'operation-1',
+  kind: 'steer',
+  runId: 'run-1',
+  revision: 2,
+};
+
+const toolTerminal = {
+  toolExecutionId: 'tool-execution-1',
+  threadId: 'thread-1',
+  runId: 'run-1',
+  toolName: 'shell',
+  state: 'completed',
+  planGeneration: 1,
+  policyRevision: 5,
+  redactedSummary: { exitCode: 0 },
+  artifacts: [],
+  createdAt: occurredAt,
+  updatedAt: occurredAt,
+  completedAt: occurredAt,
+};
+
+const durablePayloads = {
+  'thread.updated': thread,
+  'thread.lifecycleChanged': { ...thread, lifecycle: 'archived' },
+  'run.statusChanged': run,
+  'queue.changed': queue,
+  'operation.completed': {
+    ...operationCommon,
+    status: 'completed',
+    completedAt: occurredAt,
+    result: { applied: true },
+  },
+  'operation.failed': {
+    ...operationCommon,
+    status: 'failed',
+    error: {
+      code: 'OPERATION_CONFLICT',
+      message: 'operation failed',
+      retryable: false,
+      operationId: 'operation-1',
+    },
+  },
+  'operation.cancelled': {
+    ...operationCommon,
+    status: 'cancelled',
+    reason: 'cancelled by user',
+    cancelledAt: occurredAt,
+  },
+  'approval.requested': approval,
+  'approval.resolved': {
+    ...approval,
+    status: 'approved',
+    decision: { decision: 'approve' },
+    decidedAt: occurredAt,
+  },
+  'approval.expired': { ...approval, status: 'expired' },
+  'tool.terminal': toolTerminal,
+} as const;
+
+const durableBase = {
+  eventId: 'event-1',
+  threadId: 'thread-1',
+  critical: false,
+  occurredAt,
+  runId: 'run-1',
+  planGeneration: 1,
+  durability: 'durable',
+  durableSequence: '9007199254740993',
+} as const;
+
+const transientPayloads = {
+  'assistant.textDelta': { chunk: ' hello ' },
+  'assistant.reasoningDelta': { chunk: '\nreasoning\n' },
+  'tool.stdoutDelta': {
+    toolExecutionId: 'tool-execution-1',
+    chunk: ' stdout ',
+  },
+  'tool.stderrDelta': {
+    toolExecutionId: 'tool-execution-1',
+    chunk: ' stderr ',
+  },
+  'operation.progressDelta': {
+    operationId: 'operation-1',
+    progress: { phase: 'copying', completedUnits: 2, totalUnits: 10 },
+  },
+} as const;
+
+const transientBase = {
+  eventId: 'event-2',
+  threadId: 'thread-1',
+  critical: false,
+  occurredAt,
+  runId: 'run-1',
+  planGeneration: 1,
+  durability: 'transient',
+  incarnationId: 'incarnation-1',
+  streamSequence: '9007199254740994',
+  durableBasis: '9007199254740993',
+} as const;
+
+describe('known durable event envelopes', () => {
+  test('locks the known kind set and parses each resource-backed payload', () => {
+    const kinds = knownDurableEventPayloadSchema.options.map(
+      (option) => option.shape.kind.value,
+    );
+
+    expect(kinds).toEqual(Object.keys(durablePayloads));
+    expect(kinds).not.toContain('credential.revoked');
+
+    for (const [kind, payload] of Object.entries(durablePayloads)) {
+      const fixture = { ...durableBase, kind, payload };
+      expect(knownDurableEventEnvelopeSchema.parse(fixture)).toEqual(fixture);
+    }
+  });
+
+  test('requires the common base and keeps optional run fences optional', () => {
+    const complete = {
+      ...durableBase,
+      kind: 'thread.updated',
+      payload: thread,
+    };
+    const {
+      runId: _runId,
+      planGeneration: _generation,
+      ...withoutFences
+    } = complete;
+
+    expect(knownDurableEventEnvelopeSchema.parse(withoutFences)).toEqual(
+      withoutFences,
+    );
+
+    for (const field of [
+      'eventId',
+      'threadId',
+      'kind',
+      'critical',
+      'occurredAt',
+      'payload',
+    ] as const) {
+      const candidate: Record<string, unknown> = { ...complete };
+      delete candidate[field];
+      expect(knownDurableEventEnvelopeSchema.safeParse(candidate).success).toBe(
+        false,
+      );
+    }
+  });
+
+  test('accepts a strict paired streamBasis and rejects transient cursor fields', () => {
+    const fixture = {
+      ...durableBase,
+      kind: 'thread.updated',
+      payload: thread,
+    };
+
+    expect(
+      knownDurableEventEnvelopeSchema.safeParse({
+        ...fixture,
+        streamBasis: {
+          incarnationId: 'incarnation-1',
+          streamSequence: '42',
+        },
+      }).success,
+    ).toBe(true);
+
+    for (const invalid of [
+      { ...fixture, incarnationId: 'incarnation-1' },
+      { ...fixture, streamSequence: '1' },
+      { ...fixture, durableBasis: '1' },
+      { ...fixture, streamBasis: { incarnationId: 'incarnation-1' } },
+      { ...fixture, streamBasis: { streamSequence: '1' } },
+      {
+        ...fixture,
+        streamBasis: {
+          incarnationId: 'incarnation-1',
+          streamSequence: '1',
+          extra: true,
+        },
+      },
+    ]) {
+      expect(knownDurableEventEnvelopeSchema.safeParse(invalid).success).toBe(
+        false,
+      );
+    }
+  });
+
+  test('pins operation event kinds to their matching terminal status', () => {
+    const completed = durablePayloads['operation.completed'];
+    const failed = durablePayloads['operation.failed'];
+    const cancelled = durablePayloads['operation.cancelled'];
+
+    for (const [kind, payload] of [
+      ['operation.completed', failed],
+      ['operation.completed', cancelled],
+      ['operation.failed', completed],
+      ['operation.failed', cancelled],
+      ['operation.cancelled', completed],
+      ['operation.cancelled', failed],
+    ]) {
+      expect(
+        knownDurableEventEnvelopeSchema.safeParse({
+          ...durableBase,
+          kind,
+          payload,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  test('rejects non-canonical durable and stream basis cursors', () => {
+    const fixture = {
+      ...durableBase,
+      kind: 'thread.updated',
+      payload: thread,
+    };
+
+    for (const durableSequence of [1, '-1', '01', '1.0', ' 1']) {
+      expect(
+        knownDurableEventEnvelopeSchema.safeParse({
+          ...fixture,
+          durableSequence,
+        }).success,
+      ).toBe(false);
+    }
+    for (const streamSequence of [1, '-1', '01', '1.0', ' 1']) {
+      expect(
+        knownDurableEventEnvelopeSchema.safeParse({
+          ...fixture,
+          streamBasis: {
+            incarnationId: 'incarnation-1',
+            streamSequence,
+          },
+        }).success,
+      ).toBe(false);
+    }
+  });
+});
+
+describe('known transient event envelopes', () => {
+  test('locks the known kind set and preserves meaningful chunk whitespace', () => {
+    const kinds = knownTransientEventPayloadSchema.options.map(
+      (option) => option.shape.kind.value,
+    );
+
+    expect(kinds).toEqual(Object.keys(transientPayloads));
+
+    for (const [kind, payload] of Object.entries(transientPayloads)) {
+      const fixture = { ...transientBase, kind, payload };
+      expect(knownTransientEventEnvelopeSchema.parse(fixture)).toEqual(fixture);
+    }
+  });
+
+  test('requires its complete cursor space and rejects durable cursor fields', () => {
+    const fixture = {
+      ...transientBase,
+      kind: 'assistant.textDelta',
+      payload: transientPayloads['assistant.textDelta'],
+    };
+
+    for (const field of [
+      'incarnationId',
+      'streamSequence',
+      'durableBasis',
+    ] as const) {
+      const candidate: Record<string, unknown> = { ...fixture };
+      delete candidate[field];
+      expect(
+        knownTransientEventEnvelopeSchema.safeParse(candidate).success,
+      ).toBe(false);
+    }
+    for (const invalid of [
+      { ...fixture, durableSequence: '1' },
+      {
+        ...fixture,
+        streamBasis: {
+          incarnationId: 'incarnation-1',
+          streamSequence: '1',
+        },
+      },
+    ]) {
+      expect(knownTransientEventEnvelopeSchema.safeParse(invalid).success).toBe(
+        false,
+      );
+    }
+  });
+
+  test('rejects non-canonical transient cursors and bases', () => {
+    const fixture = {
+      ...transientBase,
+      kind: 'assistant.textDelta',
+      payload: transientPayloads['assistant.textDelta'],
+    };
+
+    for (const invalidCursor of [1, '-1', '01', '1.0', ' 1']) {
+      expect(
+        knownTransientEventEnvelopeSchema.safeParse({
+          ...fixture,
+          streamSequence: invalidCursor,
+        }).success,
+      ).toBe(false);
+      expect(
+        knownTransientEventEnvelopeSchema.safeParse({
+          ...fixture,
+          durableBasis: invalidCursor,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  test('bounds string chunks without exposing credential-shaped fields', () => {
+    const fixture = {
+      ...transientBase,
+      kind: 'assistant.textDelta',
+      payload: { chunk: 'x' },
+    };
+
+    expect(knownTransientEventEnvelopeSchema.safeParse(fixture).success).toBe(
+      true,
+    );
+    for (const payload of [
+      { chunk: '' },
+      { chunk: 'x'.repeat(65_537) },
+      { chunk: 'safe', secret: 'credential-material' },
+      { chunk: 'safe', rawCredential: 'credential-material' },
+    ]) {
+      expect(
+        knownTransientEventEnvelopeSchema.safeParse({
+          ...fixture,
+          payload,
+        }).success,
+      ).toBe(false);
+    }
+  });
+});
+
+describe('event envelope factories', () => {
+  test('build fresh isolated strict schemas without mutable registration', () => {
+    const alphaPayload = createEventPayloadSchema(
+      'example.alpha',
+      z.strictObject({ value: z.string() }),
+    );
+    const betaPayload = createEventPayloadSchema(
+      'example.beta',
+      z.strictObject({ count: z.number().int() }),
+    );
+    const alphaFirst = createDurableEventEnvelopeSchema(alphaPayload);
+    const beta = createDurableEventEnvelopeSchema(betaPayload);
+    const alphaSecond = createDurableEventEnvelopeSchema(alphaPayload);
+    const transient = createTransientEventEnvelopeSchema(alphaPayload);
+    const alphaFixture = {
+      ...durableBase,
+      kind: 'example.alpha',
+      payload: { value: 'a' },
+    };
+
+    expect(alphaFirst).not.toBe(alphaSecond);
+    expect(alphaFirst.parse(alphaFixture)).toEqual(alphaFixture);
+    expect(alphaSecond.parse(alphaFixture)).toEqual(alphaFixture);
+    expect(beta.safeParse(alphaFixture).success).toBe(false);
+    expect(
+      transient.safeParse({
+        ...transientBase,
+        kind: 'example.alpha',
+        payload: { value: 'a' },
+      }).success,
+    ).toBe(true);
+    expect(
+      alphaFirst.safeParse({ ...alphaFixture, payload: { value: 'a', x: 1 } })
+        .success,
+    ).toBe(false);
+  });
+
+  test('does not widen the envelope from foreign top-level payload metadata', () => {
+    const foreignPayloadSchema = z.strictObject({
+      kind: z.literal('example.foreign'),
+      payload: z.strictObject({ value: z.string() }),
+      workerId: z.string(),
+    });
+    const envelopeSchema =
+      createDurableEventEnvelopeSchema(foreignPayloadSchema);
+
+    expect(
+      envelopeSchema.safeParse({
+        ...durableBase,
+        kind: 'example.foreign',
+        payload: { value: 'safe' },
+        workerId: 'internal-worker',
+      }).success,
+    ).toBe(false);
+  });
+});
