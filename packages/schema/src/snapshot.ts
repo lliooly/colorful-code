@@ -126,8 +126,10 @@ export const snapshotResetReasonSchema = z.enum([
 ]);
 export type SnapshotResetReason = z.infer<typeof snapshotResetReasonSchema>;
 
+export const snapshotResetKindSchema = z.literal('stream.snapshotReset');
+
 const snapshotResetBaseShape = {
-  kind: z.literal('stream.snapshotReset'),
+  kind: snapshotResetKindSchema,
   resetId: resetIdSchema,
   threadId: threadIdSchema,
   reason: snapshotResetReasonSchema,

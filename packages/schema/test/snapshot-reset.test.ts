@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { z } from 'zod';
 
 import {
+  snapshotResetKindSchema,
   snapshotResetSchema,
   streamStateSnapshotSchema,
 } from '@colorful-code/schema/snapshot';
@@ -330,6 +331,13 @@ describe('StreamStateSnapshot', () => {
 });
 
 describe('SnapshotReset', () => {
+  test('publishes one authoritative control kind literal', () => {
+    expect(snapshotResetKindSchema.value).toBe(durableReset.kind);
+    expect(snapshotResetKindSchema.parse(durableReset.kind)).toBe(
+      durableReset.kind,
+    );
+  });
+
   test('accepts strict durable-only and runtime reset frames', () => {
     expect(snapshotResetSchema.parse(durableReset)).toEqual(durableReset);
     expect(snapshotResetSchema.parse(runtimeReset)).toEqual(runtimeReset);

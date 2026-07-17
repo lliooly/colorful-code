@@ -7,6 +7,7 @@ import {
   parseThreadStreamFrame,
   unknownEventEnvelopeSchema,
 } from '@colorful-code/schema/events';
+import { snapshotResetKindSchema } from '@colorful-code/schema/snapshot';
 
 const occurredAt = '2026-07-17T10:30:00+08:00';
 
@@ -80,7 +81,7 @@ const snapshot = {
 } as const;
 
 const snapshotReset = {
-  kind: 'stream.snapshotReset',
+  kind: snapshotResetKindSchema.value,
   resetId: 'reset-1',
   threadId: 'thread-1',
   reason: 'runtimeNotLoaded',
@@ -200,7 +201,7 @@ describe('parseThreadStreamFrame unknown event compatibility', () => {
     const reservedKinds = [
       ...durableKinds,
       ...transientKinds,
-      'stream.snapshotReset',
+      snapshotResetKindSchema.value,
     ];
     const exclusionPattern = patterns
       .map((pattern) => new RegExp(pattern))
@@ -266,7 +267,7 @@ describe('parseThreadStreamFrame unknown event compatibility', () => {
     expectProtocolError({ ...snapshotReset, durableCursor: '42' });
     expectProtocolError({
       ...unknownDurable,
-      kind: 'stream.snapshotReset',
+      kind: snapshotResetKindSchema.value,
     });
   });
 

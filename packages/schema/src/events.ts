@@ -28,7 +28,11 @@ import {
 } from './operations.js';
 import { queueViewSchema } from './queue.js';
 import { runViewSchema } from './run.js';
-import { snapshotResetSchema, type SnapshotReset } from './snapshot.js';
+import {
+  snapshotResetKindSchema,
+  snapshotResetSchema,
+  type SnapshotReset,
+} from './snapshot.js';
 import { threadViewSchema } from './thread.js';
 
 const MAX_DELTA_CHUNK_LENGTH = 65_536;
@@ -304,7 +308,7 @@ export type KnownTransientEventEnvelope = z.infer<
 >;
 
 const reservedEventKinds = Object.freeze([
-  'stream.snapshotReset',
+  snapshotResetKindSchema.value,
   'thread.updated',
   'thread.lifecycleChanged',
   'run.statusChanged',
