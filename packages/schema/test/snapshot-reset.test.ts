@@ -11,6 +11,7 @@ import {
 const at = '2026-07-17T10:00:00+08:00';
 const MAX_STREAM_BUFFERS = 100;
 const MAX_BUFFER_CONTENT_LENGTH = 1_048_576;
+const MAX_BUFFER_JSON_TOKENS = 50_000;
 
 const snapshot = {
   thread: {
@@ -260,6 +261,34 @@ describe('StreamStateSnapshot', () => {
       streamStateSnapshotSchema.safeParse({
         assistantBuffers: [],
         toolBuffers: [{ ...toolStreaming, content: `${atLimit}x` }],
+      }).success,
+    ).toBe(false);
+  });
+
+  test('bounds tool JSON by encoded token complexity', () => {
+    expect(
+      streamStateSnapshotSchema.safeParse({
+        assistantBuffers: [],
+        toolBuffers: [
+          {
+            ...toolStreaming,
+            content: Array.from(
+              { length: MAX_BUFFER_JSON_TOKENS - 1 },
+              () => null,
+            ),
+          },
+        ],
+      }).success,
+    ).toBe(true);
+    expect(
+      streamStateSnapshotSchema.safeParse({
+        assistantBuffers: [],
+        toolBuffers: [
+          {
+            ...toolStreaming,
+            content: Array.from({ length: MAX_BUFFER_JSON_TOKENS }, () => null),
+          },
+        ],
       }).success,
     ).toBe(false);
   });

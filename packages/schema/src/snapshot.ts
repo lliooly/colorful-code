@@ -32,9 +32,11 @@ import { threadViewSchema } from './thread.js';
 
 const MAX_STREAM_BUFFERS = 100;
 const MAX_BUFFER_CONTENT_LENGTH = 1_048_576;
+const MAX_BUFFER_JSON_TOKENS = 50_000;
 
 const boundedToolContentSchema = createBoundedJsonValueSchema(
   MAX_BUFFER_CONTENT_LENGTH,
+  MAX_BUFFER_JSON_TOKENS,
 );
 
 const streamBufferFenceShape = {

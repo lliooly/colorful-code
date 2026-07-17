@@ -51,6 +51,7 @@ const hasDataValue = (
 
 const invalidJsonValue = Symbol('invalidJsonValue');
 const jsonValueExceedsMaxLength = Symbol('jsonValueExceedsMaxLength');
+const jsonValueExceedsMaxTokenCount = Symbol('jsonValueExceedsMaxTokenCount');
 type JsonToken =
   | ['value', string | number | boolean | null]
   | ['array', number]
@@ -74,6 +75,20 @@ const consumeJsonLength = (
   budget.remaining -= length;
   return true;
 };
+
+const hasArrayTokenMinimum = (
+  budget: JsonEncodingBudget | undefined,
+  length: number,
+) =>
+  budget === undefined ||
+  (budget.remaining > 0 && length <= budget.remaining - 1);
+
+const hasObjectTokenMinimum = (
+  budget: JsonEncodingBudget | undefined,
+  keyCount: number,
+) =>
+  budget === undefined ||
+  (budget.remaining > 0 && keyCount <= Math.floor((budget.remaining - 1) / 2));
 
 const consumeJsonStringLength = (
   value: string,
@@ -124,11 +139,21 @@ function encodeJsonValue(root: unknown): JsonToken[] | typeof invalidJsonValue;
 function encodeJsonValue(
   root: unknown,
   maxSerializedLength: number,
-): JsonToken[] | typeof invalidJsonValue | typeof jsonValueExceedsMaxLength;
+  maxTokenCount?: number,
+):
+  | JsonToken[]
+  | typeof invalidJsonValue
+  | typeof jsonValueExceedsMaxLength
+  | typeof jsonValueExceedsMaxTokenCount;
 function encodeJsonValue(
   root: unknown,
   maxSerializedLength?: number,
-): JsonToken[] | typeof invalidJsonValue | typeof jsonValueExceedsMaxLength {
+  maxTokenCount?: number,
+):
+  | JsonToken[]
+  | typeof invalidJsonValue
+  | typeof jsonValueExceedsMaxLength
+  | typeof jsonValueExceedsMaxTokenCount {
   const tokens: JsonToken[] = [];
   const ancestors = new WeakSet<object>();
   const pending: PendingJsonItem[] = [{ kind: 'value', value: root }];
@@ -136,6 +161,8 @@ function encodeJsonValue(
     maxSerializedLength === undefined
       ? undefined
       : { remaining: maxSerializedLength };
+  const tokenBudget =
+    maxTokenCount === undefined ? undefined : { remaining: maxTokenCount };
 
   try {
     while (pending.length > 0) {
@@ -143,6 +170,9 @@ function encodeJsonValue(
       if (item === undefined) return invalidJsonValue;
 
       if (item.kind === 'key') {
+        if (!consumeJsonLength(tokenBudget, 1)) {
+          return jsonValueExceedsMaxTokenCount;
+        }
         tokens.push(['key', item.key]);
         continue;
       }
@@ -190,6 +220,9 @@ function encodeJsonValue(
             ? consumeJsonStringLength(value, budget)
             : consumeJsonLength(budget, value === null ? 4 : value ? 4 : 5);
         if (!withinBudget) return jsonValueExceedsMaxLength;
+        if (!consumeJsonLength(tokenBudget, 1)) {
+          return jsonValueExceedsMaxTokenCount;
+        }
         tokens.push(['value', value]);
         continue;
       }
@@ -197,6 +230,9 @@ function encodeJsonValue(
         if (!Number.isFinite(value)) return invalidJsonValue;
         if (!consumeJsonLength(budget, String(value).length)) {
           return jsonValueExceedsMaxLength;
+        }
+        if (!consumeJsonLength(tokenBudget, 1)) {
+          return jsonValueExceedsMaxTokenCount;
         }
         tokens.push(['value', value]);
         continue;
@@ -227,8 +263,14 @@ function encodeJsonValue(
         if (!consumeJsonLength(budget, 2 + Math.max(0, length - 1))) {
           return jsonValueExceedsMaxLength;
         }
+        if (!hasArrayTokenMinimum(tokenBudget, length)) {
+          return jsonValueExceedsMaxTokenCount;
+        }
         const keys = Reflect.ownKeys(value);
         if (keys.length !== length + 1) return invalidJsonValue;
+        if (!consumeJsonLength(tokenBudget, 1)) {
+          return jsonValueExceedsMaxTokenCount;
+        }
         tokens.push(['array', length]);
         if (length > 0) {
           ancestors.add(value);
@@ -246,6 +288,10 @@ function encodeJsonValue(
       }
       const stringKeys = keys as string[];
 
+      if (!hasObjectTokenMinimum(tokenBudget, stringKeys.length)) {
+        return jsonValueExceedsMaxTokenCount;
+      }
+
       if (!consumeJsonLength(budget, Math.max(0, stringKeys.length - 1))) {
         return jsonValueExceedsMaxLength;
       }
@@ -256,6 +302,9 @@ function encodeJsonValue(
         ) {
           return jsonValueExceedsMaxLength;
         }
+      }
+      if (!consumeJsonLength(tokenBudget, 1)) {
+        return jsonValueExceedsMaxTokenCount;
       }
       tokens.push(['object', stringKeys.length]);
       if (stringKeys.length > 0) {
@@ -371,17 +420,32 @@ export const jsonValueSchema = jsonValueNormalizerSchema
   .pipe(z.json())
   .overwrite(decodeJsonValue);
 
-export const createBoundedJsonValueSchema = (maxSerializedLength: number) => {
+export const createBoundedJsonValueSchema = (
+  maxSerializedLength: number,
+  maxTokenCount?: number,
+) => {
   if (!Number.isSafeInteger(maxSerializedLength) || maxSerializedLength < 0) {
     throw new TypeError(
       'Maximum serialized JSON length must be a non-negative safe integer',
+    );
+  }
+  if (
+    maxTokenCount !== undefined &&
+    (!Number.isSafeInteger(maxTokenCount) || maxTokenCount < 0)
+  ) {
+    throw new TypeError(
+      'Maximum JSON token count must be a non-negative safe integer',
     );
   }
 
   const boundedJsonValueNormalizerSchema = z
     .unknown()
     .transform<JsonValue>((value, context) => {
-      const encoded = encodeJsonValue(value, maxSerializedLength);
+      const encoded = encodeJsonValue(
+        value,
+        maxSerializedLength,
+        maxTokenCount,
+      );
       if (encoded === invalidJsonValue) {
         context.addIssue({ code: 'custom', message: 'Expected a JSON value' });
         return z.NEVER;
@@ -390,6 +454,13 @@ export const createBoundedJsonValueSchema = (maxSerializedLength: number) => {
         context.addIssue({
           code: 'custom',
           message: 'JSON value exceeds the maximum serialized length',
+        });
+        return z.NEVER;
+      }
+      if (encoded === jsonValueExceedsMaxTokenCount) {
+        context.addIssue({
+          code: 'custom',
+          message: 'JSON value exceeds the maximum token count',
         });
         return z.NEVER;
       }

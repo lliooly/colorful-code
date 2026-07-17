@@ -328,22 +328,32 @@ describe('createBoundedJsonValueSchema', () => {
         'Maximum serialized JSON length must be a non-negative safe integer',
       );
     }
+
+    for (const invalid of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => createBoundedJsonValueSchema(100, invalid)).toThrow(
+        'Maximum JSON token count must be a non-negative safe integer',
+      );
+    }
   });
 
-  test('keeps invalid JSON distinct from a valid value over budget', () => {
-    const schema = createBoundedJsonValueSchema(0);
-    const invalid = schema.safeParse(undefined);
-    const overBudget = schema.safeParse(null);
+  test('keeps invalid, over-length and over-complexity issues distinct', () => {
+    const invalid = createBoundedJsonValueSchema(100, 10).safeParse(undefined);
+    const overLength = createBoundedJsonValueSchema(0, 10).safeParse(null);
+    const overComplexity = createBoundedJsonValueSchema(100, 0).safeParse(null);
 
     expect(invalid.success).toBe(false);
-    expect(overBudget.success).toBe(false);
-    if (!invalid.success && !overBudget.success) {
+    expect(overLength.success).toBe(false);
+    expect(overComplexity.success).toBe(false);
+    if (!invalid.success && !overLength.success && !overComplexity.success) {
       expect(invalid.error.issues.map((issue) => issue.message)).toContain(
         'Expected a JSON value',
       );
-      expect(overBudget.error.issues.map((issue) => issue.message)).toContain(
+      expect(overLength.error.issues.map((issue) => issue.message)).toContain(
         'JSON value exceeds the maximum serialized length',
       );
+      expect(
+        overComplexity.error.issues.map((issue) => issue.message),
+      ).toContain('JSON value exceeds the maximum token count');
     }
   });
 
@@ -399,6 +409,81 @@ describe('createBoundedJsonValueSchema', () => {
     }
   });
 
+  test('counts primitive, container and key tokens at exact boundaries', () => {
+    const fixtures: Array<[unknown, number]> = [
+      [null, 1],
+      [[], 1],
+      [[null], 2],
+      [{}, 1],
+      [{ a: null }, 3],
+      [{ a: [true] }, 4],
+    ];
+
+    for (const [value, tokenCount] of fixtures) {
+      expect(
+        createBoundedJsonValueSchema(1_000, tokenCount).safeParse(value)
+          .success,
+      ).toBe(true);
+      expect(
+        createBoundedJsonValueSchema(1_000, tokenCount - 1).safeParse(value)
+          .success,
+      ).toBe(false);
+    }
+  });
+
+  test('prechecks dense arrays and objects before enumerating their values', () => {
+    const arraySource = Array.from({ length: 100 }, () => null);
+    let arrayOwnKeysCalls = 0;
+    let arrayLengthDescriptorReads = 0;
+    let arrayElementDescriptorReads = 0;
+    const observedArray = new Proxy(arraySource, {
+      ownKeys: (target) => {
+        arrayOwnKeysCalls += 1;
+        return Reflect.ownKeys(target);
+      },
+      getOwnPropertyDescriptor: (target, key) => {
+        if (key === 'length') arrayLengthDescriptorReads += 1;
+        else arrayElementDescriptorReads += 1;
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+
+    const objectSource = Object.fromEntries(
+      Array.from({ length: 100 }, (_, index) => [`key-${index}`, null]),
+    );
+    let objectOwnKeysCalls = 0;
+    let objectDescriptorReads = 0;
+    const observedObject = new Proxy(objectSource, {
+      ownKeys: (target) => {
+        objectOwnKeysCalls += 1;
+        return Reflect.ownKeys(target);
+      },
+      getOwnPropertyDescriptor: (target, key) => {
+        objectDescriptorReads += 1;
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+
+    expect(
+      createBoundedJsonValueSchema(10_000, 100).safeParse(observedArray)
+        .success,
+    ).toBe(false);
+    expect(arrayLengthDescriptorReads).toBe(1);
+    expect(arrayOwnKeysCalls).toBe(0);
+    expect(arrayElementDescriptorReads).toBe(0);
+
+    expect(
+      createBoundedJsonValueSchema(10_000, 200).safeParse(observedObject)
+        .success,
+    ).toBe(false);
+    expect(objectOwnKeysCalls).toBe(1);
+    expect(objectDescriptorReads).toBe(0);
+
+    expect(
+      createBoundedJsonValueSchema(10_000).safeParse(arraySource).success,
+    ).toBe(true);
+  });
+
   test('counts a large escaped string without constructing a serialized copy', () => {
     const limit = 1_048_576;
     const escapedUnit = '"\\\n\ud800';
@@ -452,7 +537,7 @@ describe('createBoundedJsonValueSchema', () => {
   test('returns a detached bounded snapshot', () => {
     const shared = ['before'];
     const source = { nested: shared, repeated: shared };
-    const parsed = createBoundedJsonValueSchema(100).parse(source);
+    const parsed = createBoundedJsonValueSchema(100, 7).parse(source);
 
     expect(parsed).not.toBe(source);
     if (
@@ -467,6 +552,11 @@ describe('createBoundedJsonValueSchema', () => {
 
     source.nested[0] = 'after';
     expect(parsed).toEqual({ nested: ['before'], repeated: ['before'] });
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(
+      createBoundedJsonValueSchema(100, 100).safeParse(cyclic).success,
+    ).toBe(false);
     expect(() =>
       z.toJSONSchema(createBoundedJsonValueSchema(100)),
     ).not.toThrow();
