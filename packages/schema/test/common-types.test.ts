@@ -393,10 +393,20 @@ describe('createBoundedJsonValueSchema', () => {
 
   test('stops reading wide container descriptors when the budget is exhausted', () => {
     const wideArraySource = Array.from({ length: 10_000 }, () => 'x');
-    let arrayDescriptorReads = 0;
+    let arrayOwnKeysCalls = 0;
+    let arrayLengthDescriptorReads = 0;
+    let arrayElementDescriptorReads = 0;
     const wideArray = new Proxy(wideArraySource, {
+      ownKeys: (target) => {
+        arrayOwnKeysCalls += 1;
+        return Reflect.ownKeys(target);
+      },
       getOwnPropertyDescriptor: (target, key) => {
-        arrayDescriptorReads += 1;
+        if (key === 'length') {
+          arrayLengthDescriptorReads += 1;
+        } else {
+          arrayElementDescriptorReads += 1;
+        }
         return Reflect.getOwnPropertyDescriptor(target, key);
       },
     });
@@ -415,7 +425,9 @@ describe('createBoundedJsonValueSchema', () => {
     const schema = createBoundedJsonValueSchema(100);
     expect(schema.safeParse(wideArray).success).toBe(false);
     expect(schema.safeParse(wideObject).success).toBe(false);
-    expect(arrayDescriptorReads).toBe(1);
+    expect(arrayLengthDescriptorReads).toBe(1);
+    expect(arrayOwnKeysCalls).toBe(0);
+    expect(arrayElementDescriptorReads).toBe(0);
     expect(objectDescriptorReads).toBe(0);
   });
 

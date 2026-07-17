@@ -213,8 +213,6 @@ function encodeJsonValue(
         return invalidJsonValue;
       }
 
-      const keys = Reflect.ownKeys(value);
-
       if (isArray) {
         const lengthDescriptor = Object.getOwnPropertyDescriptor(
           value,
@@ -222,17 +220,15 @@ function encodeJsonValue(
         );
         if (!hasDataValue(lengthDescriptor)) return invalidJsonValue;
         const length = lengthDescriptor.value;
-        if (
-          !Number.isSafeInteger(length) ||
-          length < 0 ||
-          keys.length !== length + 1
-        ) {
+        if (!Number.isSafeInteger(length) || length < 0) {
           return invalidJsonValue;
         }
 
         if (!consumeJsonLength(budget, 2 + Math.max(0, length - 1))) {
           return jsonValueExceedsMaxLength;
         }
+        const keys = Reflect.ownKeys(value);
+        if (keys.length !== length + 1) return invalidJsonValue;
         tokens.push(['array', length]);
         if (length > 0) {
           ancestors.add(value);
@@ -241,6 +237,7 @@ function encodeJsonValue(
         continue;
       }
 
+      const keys = Reflect.ownKeys(value);
       for (const key of keys) {
         if (typeof key !== 'string') return invalidJsonValue;
       }
