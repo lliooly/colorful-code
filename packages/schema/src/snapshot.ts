@@ -1,9 +1,8 @@
 import { z } from 'zod';
 
 import {
+  createBoundedJsonValueSchema,
   durableCursorSchema,
-  jsonValueSchema,
-  type JsonValue,
   pageSchema,
   revisionSchema,
   streamCursorSchema,
@@ -34,45 +33,8 @@ import { threadViewSchema } from './thread.js';
 const MAX_STREAM_BUFFERS = 100;
 const MAX_BUFFER_CONTENT_LENGTH = 1_048_576;
 
-const hasSerializedJsonLengthAtMost = (root: JsonValue, limit: number) => {
-  const pending: JsonValue[] = [root];
-  let length = 0;
-
-  while (pending.length > 0) {
-    const value = pending.pop();
-    if (value === undefined) return false;
-
-    if (value === null) {
-      length += 4;
-    } else if (typeof value === 'string') {
-      length += JSON.stringify(value).length;
-    } else if (typeof value === 'number' || typeof value === 'boolean') {
-      length += String(value).length;
-    } else if (Array.isArray(value)) {
-      length += 2 + Math.max(0, value.length - 1);
-      for (let index = value.length - 1; index >= 0; index -= 1) {
-        const item = value[index];
-        if (item === undefined) return false;
-        pending.push(item);
-      }
-    } else {
-      const entries = Object.entries(value);
-      length += 2 + Math.max(0, entries.length - 1);
-      for (const [key, item] of entries) {
-        length += JSON.stringify(key).length + 1;
-        pending.push(item);
-      }
-    }
-
-    if (length > limit) return false;
-  }
-
-  return true;
-};
-
-const boundedToolContentSchema = jsonValueSchema.refine(
-  (value) => hasSerializedJsonLengthAtMost(value, MAX_BUFFER_CONTENT_LENGTH),
-  { message: 'Tool stream buffer content exceeds the size limit' },
+const boundedToolContentSchema = createBoundedJsonValueSchema(
+  MAX_BUFFER_CONTENT_LENGTH,
 );
 
 const streamBufferFenceShape = {

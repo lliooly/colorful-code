@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import {
   configRevisionSchema,
+  createBoundedJsonValueSchema,
   durableCursorSchema,
   jsonObjectSchema,
   jsonValueSchema,
@@ -317,6 +318,128 @@ describe('jsonValueSchema', () => {
     expect(JSON.stringify(valueJsonSchema)).not.toBe(
       '{"$schema":"https://json-schema.org/draft/2020-12/schema"}',
     );
+  });
+});
+
+describe('createBoundedJsonValueSchema', () => {
+  test('rejects invalid serialized-length budgets at construction', () => {
+    for (const invalid of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => createBoundedJsonValueSchema(invalid)).toThrow(
+        'Maximum serialized JSON length must be a non-negative safe integer',
+      );
+    }
+  });
+
+  test('keeps invalid JSON distinct from a valid value over budget', () => {
+    const schema = createBoundedJsonValueSchema(0);
+    const invalid = schema.safeParse(undefined);
+    const overBudget = schema.safeParse(null);
+
+    expect(invalid.success).toBe(false);
+    expect(overBudget.success).toBe(false);
+    if (!invalid.success && !overBudget.success) {
+      expect(invalid.error.issues.map((issue) => issue.message)).toContain(
+        'Expected a JSON value',
+      );
+      expect(overBudget.error.issues.map((issue) => issue.message)).toContain(
+        'JSON value exceeds the maximum serialized length',
+      );
+    }
+  });
+
+  test('counts every JSON wire token at an exact serialized boundary', () => {
+    const fixtures: Array<[unknown, number]> = [
+      ['"', 4],
+      ['\\', 4],
+      ['\u0000\b\t\n\f\r\u001f', 24],
+      ['\ud800', 8],
+      ['你😀', 5],
+      [-0, 1],
+      [1e21, 5],
+      [true, 4],
+      [false, 5],
+      [null, 4],
+      [[], 2],
+      [{}, 2],
+      [{ ['"\\\n']: 0 }, 12],
+      [[null, true, { a: 'b' }], 21],
+    ];
+
+    for (const [value, serializedLength] of fixtures) {
+      expect(
+        createBoundedJsonValueSchema(serializedLength).safeParse(value).success,
+      ).toBe(true);
+      const rejected = createBoundedJsonValueSchema(
+        serializedLength - 1,
+      ).safeParse(value);
+      expect(rejected.success).toBe(false);
+      if (!rejected.success) {
+        expect(rejected.error.issues.map((issue) => issue.message)).toContain(
+          'JSON value exceeds the maximum serialized length',
+        );
+      }
+    }
+  });
+
+  test('counts a large escaped string without constructing a serialized copy', () => {
+    const limit = 1_048_576;
+    const escapedUnit = '"\\\n\ud800';
+    const value = `${escapedUnit.repeat(87_381)}xx`;
+    const schema = createBoundedJsonValueSchema(limit);
+
+    expect(schema.safeParse(value).success).toBe(true);
+    expect(schema.safeParse(`${value}x`).success).toBe(false);
+  });
+
+  test('stops reading wide container descriptors when the budget is exhausted', () => {
+    const wideArraySource = Array.from({ length: 10_000 }, () => 'x');
+    let arrayDescriptorReads = 0;
+    const wideArray = new Proxy(wideArraySource, {
+      getOwnPropertyDescriptor: (target, key) => {
+        arrayDescriptorReads += 1;
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+
+    const wideObjectSource = Object.fromEntries(
+      Array.from({ length: 10_000 }, (_, index) => [`key-${index}`, 'x']),
+    );
+    let objectDescriptorReads = 0;
+    const wideObject = new Proxy(wideObjectSource, {
+      getOwnPropertyDescriptor: (target, key) => {
+        objectDescriptorReads += 1;
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+
+    const schema = createBoundedJsonValueSchema(100);
+    expect(schema.safeParse(wideArray).success).toBe(false);
+    expect(schema.safeParse(wideObject).success).toBe(false);
+    expect(arrayDescriptorReads).toBe(1);
+    expect(objectDescriptorReads).toBe(0);
+  });
+
+  test('returns a detached bounded snapshot', () => {
+    const shared = ['before'];
+    const source = { nested: shared, repeated: shared };
+    const parsed = createBoundedJsonValueSchema(100).parse(source);
+
+    expect(parsed).not.toBe(source);
+    if (
+      parsed === null ||
+      typeof parsed !== 'object' ||
+      Array.isArray(parsed)
+    ) {
+      throw new Error('expected an object JSON snapshot');
+    }
+    expect(parsed.nested).not.toBe(source.nested);
+    expect(parsed.repeated).not.toBe(parsed.nested);
+
+    source.nested[0] = 'after';
+    expect(parsed).toEqual({ nested: ['before'], repeated: ['before'] });
+    expect(() =>
+      z.toJSONSchema(createBoundedJsonValueSchema(100)),
+    ).not.toThrow();
   });
 });
 

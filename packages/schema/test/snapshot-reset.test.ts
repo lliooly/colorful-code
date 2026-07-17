@@ -282,6 +282,42 @@ describe('StreamStateSnapshot', () => {
     ).toBe(false);
   });
 
+  test('rejects wide tool content before reading every data descriptor', () => {
+    const source = Object.fromEntries(
+      Array.from({ length: 2_500 }, (_, index) => [
+        `key-${index}`,
+        'x'.repeat(1_000),
+      ]),
+    );
+    let descriptorReads = 0;
+    const observed = new Proxy(source, {
+      getOwnPropertyDescriptor: (target, key) => {
+        descriptorReads += 1;
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+
+    expect(
+      streamStateSnapshotSchema.safeParse({
+        assistantBuffers: [],
+        toolBuffers: [{ ...toolStreaming, content: observed }],
+      }).success,
+    ).toBe(false);
+    expect(descriptorReads).toBeLessThan(Object.keys(source).length);
+  });
+
+  test('returns detached tool content', () => {
+    const content = { nested: ['before'] };
+    const parsed = streamStateSnapshotSchema.parse({
+      assistantBuffers: [],
+      toolBuffers: [{ ...toolStreaming, content }],
+    });
+
+    expect(parsed.toolBuffers[0]?.content).not.toBe(content);
+    content.nested[0] = 'after';
+    expect(parsed.toolBuffers[0]?.content).toEqual({ nested: ['before'] });
+  });
+
   test('is strict and remains JSON Schema exportable', () => {
     expect(
       streamStateSnapshotSchema.safeParse({
