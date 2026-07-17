@@ -51,7 +51,7 @@ export const streamBasisSchema = strictObjectSchema({
 });
 export type StreamBasis = z.infer<typeof streamBasisSchema>;
 
-const assertJsonWirePayloadSchema = (payloadSchema: z.ZodType) => {
+const assertJsonSchemaCompatible = (payloadSchema: z.ZodType) => {
   try {
     z.toJSONSchema(payloadSchema);
   } catch (error) {
@@ -59,14 +59,34 @@ const assertJsonWirePayloadSchema = (payloadSchema: z.ZodType) => {
       cause: error,
     });
   }
-  if (payloadSchema.isOptional()) {
-    throw new TypeError('Event payload schema must be required');
-  }
+};
+
+type JsonWireOutput<Value> = 0 extends 1 & Value
+  ? JsonValue
+  : unknown extends Value
+    ? JsonValue
+    : Extract<Value, JsonValue>;
+
+const createJsonWirePayloadSchema = <PayloadSchema extends z.ZodType>(
+  payloadSchema: PayloadSchema,
+) => {
+  assertJsonSchemaCompatible(payloadSchema);
+  return payloadSchema.nonoptional().superRefine((value, context) => {
+    if (!jsonValueSchema.safeParse(value).success) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Expected a JSON wire value',
+      });
+    }
+  }) as z.ZodType<
+    JsonWireOutput<z.output<PayloadSchema>>,
+    z.input<PayloadSchema>
+  >;
 };
 
 export const createEventPayloadSchema = <
   const Kind extends string,
-  PayloadSchema extends z.ZodType<JsonValue>,
+  PayloadSchema extends z.ZodType,
 >(
   kind: Kind,
   payloadSchema: PayloadSchema,
@@ -74,17 +94,16 @@ export const createEventPayloadSchema = <
   if (kind.trim().length === 0) {
     throw new TypeError('Event kind must be a non-empty string');
   }
-  assertJsonWirePayloadSchema(payloadSchema);
 
   return strictObjectSchema({
     kind: z.literal(kind),
-    payload: payloadSchema,
+    payload: createJsonWirePayloadSchema(payloadSchema),
   });
 };
 
 type EventPayloadShape = {
   kind: z.ZodLiteral<string>;
-  payload: z.ZodType<JsonValue>;
+  payload: z.ZodType;
 };
 
 const assertSingleEventKind = (kindSchema: z.ZodLiteral<string>) => {
@@ -104,11 +123,10 @@ export const createDurableEventEnvelopeSchema = <
   eventPayloadSchema: z.ZodObject<Shape>,
 ) => {
   assertSingleEventKind(eventPayloadSchema.shape.kind);
-  assertJsonWirePayloadSchema(eventPayloadSchema.shape.payload);
   return strictObjectSchema({
     ...eventBaseShape,
     kind: eventPayloadSchema.shape.kind,
-    payload: eventPayloadSchema.shape.payload,
+    payload: createJsonWirePayloadSchema(eventPayloadSchema.shape.payload),
     durability: z.literal('durable'),
     durableSequence: durableCursorSchema,
     streamBasis: streamBasisSchema.optional(),
@@ -121,11 +139,10 @@ export const createTransientEventEnvelopeSchema = <
   eventPayloadSchema: z.ZodObject<Shape>,
 ) => {
   assertSingleEventKind(eventPayloadSchema.shape.kind);
-  assertJsonWirePayloadSchema(eventPayloadSchema.shape.payload);
   return strictObjectSchema({
     ...eventBaseShape,
     kind: eventPayloadSchema.shape.kind,
-    payload: eventPayloadSchema.shape.payload,
+    payload: createJsonWirePayloadSchema(eventPayloadSchema.shape.payload),
     durability: z.literal('transient'),
     incarnationId: incarnationIdSchema,
     streamSequence: streamCursorSchema,

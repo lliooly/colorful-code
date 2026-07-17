@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { z } from 'zod';
 
+import type { JsonValue } from '@colorful-code/schema/common';
 import {
   createDurableEventEnvelopeSchema,
   createEventPayloadSchema,
@@ -471,38 +472,44 @@ describe('event envelope factories', () => {
   });
 
   test('keeps payload required and constrained to JSON wire values', () => {
+    const optionalPayload = createEventPayloadSchema(
+      'example.optional',
+      z.string().optional(),
+    );
+    const optionalEnvelope = createDurableEventEnvelopeSchema(optionalPayload);
+    expect(
+      optionalEnvelope.safeParse({
+        ...durableBase,
+        kind: 'example.optional',
+      }).success,
+    ).toBe(false);
+    expect(
+      optionalEnvelope.safeParse({
+        ...durableBase,
+        kind: 'example.optional',
+        payload: 'present',
+      }).success,
+    ).toBe(true);
     expect(() =>
-      createEventPayloadSchema(
-        'example.optional',
-        // @ts-expect-error Optional output is not a JSON wire value.
-        z.string().optional(),
-      ),
-    ).toThrow('Event payload schema must be required');
-    expect(() =>
-      createEventPayloadSchema(
-        'example.undefined',
-        // @ts-expect-error Undefined is not a JSON wire value.
-        z.undefined(),
-      ),
+      createEventPayloadSchema('example.undefined', z.undefined()),
     ).toThrow('Event payload schema must describe JSON wire values');
-    expect(() =>
-      createEventPayloadSchema(
-        'example.date',
-        // @ts-expect-error Date is not a JSON wire value.
-        z.date(),
-      ),
-    ).toThrow('Event payload schema must describe JSON wire values');
+    expect(() => createEventPayloadSchema('example.date', z.date())).toThrow(
+      'Event payload schema must describe JSON wire values',
+    );
 
     const optionalEnvelopePayload = z.strictObject({
       kind: z.literal('example.optional-direct'),
       payload: z.string().optional(),
     });
-    expect(() =>
-      createDurableEventEnvelopeSchema(
-        // @ts-expect-error Envelope payload output must be required JSON.
-        optionalEnvelopePayload,
-      ),
-    ).toThrow('Event payload schema must be required');
+    const directEnvelope = createDurableEventEnvelopeSchema(
+      optionalEnvelopePayload,
+    );
+    expect(
+      directEnvelope.safeParse({
+        ...durableBase,
+        kind: 'example.optional-direct',
+      }).success,
+    ).toBe(false);
   });
 
   test('rejects blank and multi-value event kind declarations', () => {
@@ -527,5 +534,77 @@ describe('event envelope factories', () => {
     expect(generated).toContain('threadRevision');
     expect(generated).toContain('operationId');
     expect(generated).toContain('additionalProperties');
+  });
+
+  test('rejects non-JSON values even when a permissive payload schema accepts them', () => {
+    const permissivePayload = createEventPayloadSchema(
+      'example.permissive',
+      z.any().nonoptional(),
+    );
+    const envelope = createDurableEventEnvelopeSchema(permissivePayload);
+    const fixture = {
+      ...durableBase,
+      kind: 'example.permissive',
+      payload: { nested: ['valid', 1, true, null] },
+    };
+
+    const parsedPayload: JsonValue = envelope.parse(fixture).payload;
+    expect(parsedPayload).toEqual(fixture.payload);
+    for (const payload of [
+      new Date(0),
+      () => 'function',
+      Symbol('symbol'),
+      new Map([['key', 'value']]),
+    ]) {
+      expect(envelope.safeParse({ ...fixture, payload }).success).toBe(false);
+    }
+    expect(envelope.safeParse({ ...fixture, payload: undefined }).success).toBe(
+      false,
+    );
+  });
+
+  test('does not execute synchronous payload refinements during construction', () => {
+    let calls = 0;
+    const payload = createEventPayloadSchema(
+      'example.refined',
+      z
+        .any()
+        .refine(() => {
+          calls += 1;
+          return true;
+        })
+        .nonoptional(),
+    );
+
+    const envelope = createDurableEventEnvelopeSchema(payload);
+    expect(calls).toBe(0);
+    expect(
+      envelope.safeParse({
+        ...durableBase,
+        kind: 'example.refined',
+        payload: 'value',
+      }).success,
+    ).toBe(true);
+    expect(calls).toBe(1);
+  });
+
+  test('does not start asynchronous payload refinements during construction', () => {
+    let calls = 0;
+    const asyncSchema = z
+      .any()
+      .refine(async () => {
+        calls += 1;
+        return true;
+      })
+      .nonoptional();
+
+    expect(() => {
+      const payload = createEventPayloadSchema(
+        'example.async-refined',
+        asyncSchema,
+      );
+      createTransientEventEnvelopeSchema(payload);
+    }).not.toThrow();
+    expect(calls).toBe(0);
   });
 });
