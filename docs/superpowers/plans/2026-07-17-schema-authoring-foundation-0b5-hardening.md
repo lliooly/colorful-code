@@ -24,13 +24,14 @@
 ### 任务 1：移除 ApiError authoring tree 中的 transform
 
 **文件：**
+
 - 修改：`packages/schema/src/errors.ts`
 - 测试：`packages/schema/test/api-error.test.ts`
 - 测试：`packages/schema/test/ack-error-invariants.test.ts`
 
 - [ ] **步骤 1：编写失败的纯 Schema 测试**
 
-在 `api-error.test.ts` 导入 `z`，递归遍历 `apiErrorSchema._zod.def` 可达的 schema 节点，断言节点 type 不包含 `transform`，并运行 `z.toJSONSchema(apiErrorSchema)` 验证 details 为 object 且 `additionalProperties` 指向 JSON value schema。
+在 `api-error.test.ts` 导入 `z`，递归遍历 ApiError details 的可达 schema 节点，断言 schema def 不包含显式 `transform`/`pipe`/custom refine，并运行 `z.toJSONSchema(apiErrorSchema)` 验证 details 为 object 且 `additionalProperties` 指向 JSON value schema。不要把权威 ID 和 message schema 的 Zod 原生 string normalization overwrite check 视为本任务禁止节点。
 
 同时保留 wire fixture：递归 JSON object 成功；`null`、数组、标量、`undefined`、BigInt 和 Date 失败。删除 getter/proxy/alias snapshot 等依赖 transform 的非 wire-object 断言。
 
@@ -53,7 +54,7 @@ export const apiErrorPayloadSchema = z.strictObject({
 });
 ```
 
-不导出新的公共 helper，不删除 `common.ts` 的运行时 JSON normalizer，不增加 preprocess/refine/transform/overwrite。
+不导出新的公共 helper，不删除 `common.ts` 的运行时 JSON normalizer，不增加 preprocess/refine/transform/pipe。保留现有 ID/message schema 引用和语义，不在 errors 模块复制 ID schema。
 
 - [ ] **步骤 4：运行测试并确认绿灯**
 
@@ -71,6 +72,7 @@ git commit -m "refactor(schema): make ApiError codegen-safe"
 ### 任务 2：冻结 completion event kind 并收紧异步 Ack
 
 **文件：**
+
 - 修改：`packages/schema/src/enums.ts`
 - 修改：`packages/schema/src/ack.ts`
 - 测试：`packages/schema/test/enums.test.ts`
@@ -81,11 +83,7 @@ git commit -m "refactor(schema): make ApiError codegen-safe"
 在 `enums.test.ts` 将 `operationCompletionEventKindSchema` 加入 enum table，期望精确值：
 
 ```ts
-[
-  'operation.completed',
-  'operation.failed',
-  'operation.cancelled',
-]
+['operation.completed', 'operation.failed', 'operation.cancelled'];
 ```
 
 运行 schema tests，预期因 export 不存在而编译 FAIL；这是正确红灯。
@@ -115,10 +113,19 @@ export type OperationCompletionEventKind = z.infer<
 
 ```ts
 expect(schema.safeParse(syncAck).success).toBe(true);
-expect(schema.safeParse({ ...syncAck, operationId: 'operation-1' }).success).toBe(false);
-expect(schema.safeParse({ ...syncAck, completionEvents: ['operation.completed'] }).success).toBe(false);
-expect(schema.safeParse({ ...asyncAck, completionEvents: [] }).success).toBe(false);
-expect(schema.safeParse({ ...asyncAck, completionEvents: ['queue.failed'] }).success).toBe(false);
+expect(
+  schema.safeParse({ ...syncAck, operationId: 'operation-1' }).success,
+).toBe(false);
+expect(
+  schema.safeParse({ ...syncAck, completionEvents: ['operation.completed'] })
+    .success,
+).toBe(false);
+expect(schema.safeParse({ ...asyncAck, completionEvents: [] }).success).toBe(
+  false,
+);
+expect(
+  schema.safeParse({ ...asyncAck, completionEvents: ['queue.failed'] }).success,
+).toBe(false);
 ```
 
 另断言 `z.toJSONSchema(schema)` 使用 `anyOf` 表达同步/异步 branch，不含 custom refine。
@@ -156,6 +163,7 @@ git commit -m "feat(schema): harden asynchronous command Ack"
 ### 任务 3：适配 registry fixture 与安全不变量
 
 **文件：**
+
 - 修改：`packages/schema/test/ack-error-invariants.test.ts`
 - 修改：`packages/schema/test/command-invariants.test.ts`
 - 修改：`packages/schema/test/thread-command-contracts.test.ts`
@@ -205,6 +213,7 @@ git commit -m "test(schema): enforce 0B-5 hardening invariants"
 ### 任务 4：重新执行 0B-5 Gate
 
 **文件：**
+
 - 检查：`packages/schema/src/ack.ts`
 - 检查：`packages/schema/src/errors.ts`
 - 检查：`packages/schema/src/enums.ts`
@@ -240,7 +249,7 @@ pnpm build
 
 逐项确认：
 
-- ApiError 可达 schema tree 无 transform/pipe/overwrite/custom refine。
+- ApiError details 可达 schema tree 无显式 transform/pipe/custom refine；权威 ID/message 的原生 string normalization check 未被复制或改写。
 - Ack 只有同步和异步两个 branch；异步 pair required，事件数组非空且只含冻结 kind。
 - factory 无缓存、无共享 mutable state、无 async/lazy initialization。
 - registry 与 Error HTTP mapping 仍冻结。

@@ -16,7 +16,7 @@
 
 ## ApiError contract
 
-`ApiError.error.details` 使用纯 `z.record(z.string(), z.json())` 表达 JSON object。该 schema 直接位于 errors authoring module，不引用带 transform/overwrite/pipe 的运行时 JSON normalizer。
+`ApiError.error.details` 使用纯 `z.record(z.string(), z.json())` 表达 JSON object。该 schema 直接位于 errors authoring module，不引用带显式 transform/pipe 的运行时 JSON normalizer。
 
 ApiError 继续保持 strict envelope 和 strict payload，稳定字段、ErrorCode、关联 ID、`retryable` 语义不变。details 仍只接受 JSON object，不接受数组或 JSON 标量。
 
@@ -47,7 +47,7 @@ ApiError 继续保持 strict envelope 和 strict payload，稳定字段、ErrorC
 
 按 TDD 增加以下门禁：
 
-- ApiError schema AST 不含 transform/pipe/overwrite，并可原生导出 JSON Schema。
+- ApiError details 的可达 schema AST 不含显式 transform/pipe/custom refine，并可原生导出 JSON Schema。现有权威 ID 和 message schema 的 Zod 原生 string normalization check 保持不变，本次不复制 ID schema 或改变全局 ID 语义。
 - ApiError details 接受递归 JSON object，拒绝数组、标量和非 JSON 值。
 - 同步 Ack 接受两字段均缺失，拒绝任一字段单独出现。
 - 异步 Ack 仅在 `operationId` 与非空 `completionEvents` 同时存在时接受。
