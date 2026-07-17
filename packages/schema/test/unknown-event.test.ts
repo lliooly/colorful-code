@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'bun:test';
+import { z } from 'zod';
 
 import {
   knownDurableEventEnvelopeSchema,
   knownTransientEventEnvelopeSchema,
   parseThreadStreamFrame,
+  unknownEventEnvelopeSchema,
 } from '@colorful-code/schema/events';
 
 const occurredAt = '2026-07-17T10:30:00+08:00';
@@ -166,6 +168,80 @@ describe('parseThreadStreamFrame unknown event compatibility', () => {
         payload: null,
       });
     }
+  });
+
+  test('publishes the reserved kind exclusion in standard JSON Schema', () => {
+    const schema = z.toJSONSchema(unknownEventEnvelopeSchema);
+    const patterns: string[] = [];
+    const pending: unknown[] = [schema];
+    const visited = new Set<object>();
+
+    while (pending.length > 0) {
+      const value = pending.pop();
+      if (value === null || typeof value !== 'object' || visited.has(value)) {
+        continue;
+      }
+      visited.add(value);
+      for (const [key, child] of Object.entries(value)) {
+        if (key === 'pattern' && typeof child === 'string') {
+          patterns.push(child);
+        } else {
+          pending.push(child);
+        }
+      }
+    }
+
+    const durableKinds = knownDurableEventEnvelopeSchema.options.map(
+      (option) => option.shape.kind.value,
+    );
+    const transientKinds = knownTransientEventEnvelopeSchema.options.map(
+      (option) => option.shape.kind.value,
+    );
+    const reservedKinds = [
+      ...durableKinds,
+      ...transientKinds,
+      'stream.snapshotReset',
+    ];
+    const exclusionPattern = patterns
+      .map((pattern) => new RegExp(pattern))
+      .find(
+        (pattern) =>
+          pattern.test('plugin.futureEvent') &&
+          reservedKinds.every((kind) => !pattern.test(kind)),
+      );
+
+    expect(exclusionPattern).toBeDefined();
+    for (const kind of reservedKinds) {
+      expect(
+        unknownEventEnvelopeSchema.safeParse({ ...unknownDurable, kind })
+          .success,
+      ).toBe(false);
+    }
+  });
+
+  test('rejects edge whitespace without normalizing a valid unknown kind', () => {
+    for (const kind of [
+      ' plugin.futureDurable',
+      'plugin.futureDurable ',
+      '\tplugin.futureDurable',
+      'plugin.futureDurable\n',
+    ]) {
+      expectProtocolError({ ...unknownDurable, kind });
+    }
+
+    const kind = 'plugin future:event/v2';
+    expect(parseThreadStreamFrame({ ...unknownDurable, kind })).toEqual({
+      outcome: 'unknownNonCritical',
+      frame: { ...unknownDurable, kind },
+    });
+    expect(
+      parseThreadStreamFrame({ ...unknownDurable, kind, critical: true }),
+    ).toEqual({
+      outcome: 'resetRequired',
+      reason: 'criticalUnknownEvent',
+      eventId: unknownDurable.eventId,
+      kind,
+    });
   });
 
   test('parses known events through the known branch even when critical', () => {

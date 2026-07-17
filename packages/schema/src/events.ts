@@ -303,38 +303,41 @@ export type KnownTransientEventEnvelope = z.infer<
   typeof knownTransientEventEnvelopeSchema
 >;
 
-const isKnownOrControlEventKind = (kind: string): boolean => {
-  switch (kind) {
-    case 'stream.snapshotReset':
-    case 'thread.updated':
-    case 'thread.lifecycleChanged':
-    case 'run.statusChanged':
-    case 'queue.changed':
-    case 'operation.completed':
-    case 'operation.failed':
-    case 'operation.cancelled':
-    case 'approval.requested':
-    case 'approval.resolved':
-    case 'approval.expired':
-    case 'tool.terminal':
-    case 'assistant.textDelta':
-    case 'assistant.reasoningDelta':
-    case 'tool.stdoutDelta':
-    case 'tool.stderrDelta':
-    case 'operation.progressDelta':
-      return true;
-    default:
-      return false;
-  }
-};
+const reservedEventKinds = Object.freeze([
+  'stream.snapshotReset',
+  'thread.updated',
+  'thread.lifecycleChanged',
+  'run.statusChanged',
+  'queue.changed',
+  'operation.completed',
+  'operation.failed',
+  'operation.cancelled',
+  'approval.requested',
+  'approval.resolved',
+  'approval.expired',
+  'tool.terminal',
+  'assistant.textDelta',
+  'assistant.reasoningDelta',
+  'tool.stdoutDelta',
+  'tool.stderrDelta',
+  'operation.progressDelta',
+] as const);
+
+const escapeRegularExpression = (value: string) =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const reservedEventKindPattern = reservedEventKinds
+  .map(escapeRegularExpression)
+  .join('|');
 
 const unknownEventKindSchema = z
   .string()
-  .trim()
-  .min(1)
-  .refine((kind) => !isKnownOrControlEventKind(kind), {
-    message: 'Expected an unknown event kind',
-  });
+  .regex(
+    new RegExp(
+      `^(?!(?:${reservedEventKindPattern})$)(?!\\s)(?![\\s\\S]*\\s$)[\\s\\S]+$`,
+    ),
+    'Expected a non-blank unknown event kind without edge whitespace',
+  );
 
 export const unknownDurableEventEnvelopeSchema = strictObjectSchema({
   ...eventBaseShape,
@@ -376,7 +379,7 @@ export type ParseThreadStreamFrameResult =
   | {
       outcome: 'resetRequired';
       reason: 'criticalUnknownEvent';
-      eventId: string;
+      eventId: UnknownEventEnvelope['eventId'];
       kind: string;
     }
   | { outcome: 'protocolError'; error: ApiErrorPayload };
