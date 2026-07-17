@@ -9,6 +9,7 @@ import {
   strictObjectSchema,
   timestampSchema,
 } from './common.js';
+import { apiErrorPayloadSchema, type ApiErrorPayload } from './errors.js';
 import {
   eventIdSchema,
   incarnationIdSchema,
@@ -27,6 +28,7 @@ import {
 } from './operations.js';
 import { queueViewSchema } from './queue.js';
 import { runViewSchema } from './run.js';
+import { snapshotResetSchema, type SnapshotReset } from './snapshot.js';
 import { threadViewSchema } from './thread.js';
 
 const MAX_DELTA_CHUNK_LENGTH = 65_536;
@@ -300,3 +302,131 @@ export const knownTransientEventEnvelopeSchema = z.discriminatedUnion('kind', [
 export type KnownTransientEventEnvelope = z.infer<
   typeof knownTransientEventEnvelopeSchema
 >;
+
+const isKnownOrControlEventKind = (kind: string): boolean => {
+  switch (kind) {
+    case 'stream.snapshotReset':
+    case 'thread.updated':
+    case 'thread.lifecycleChanged':
+    case 'run.statusChanged':
+    case 'queue.changed':
+    case 'operation.completed':
+    case 'operation.failed':
+    case 'operation.cancelled':
+    case 'approval.requested':
+    case 'approval.resolved':
+    case 'approval.expired':
+    case 'tool.terminal':
+    case 'assistant.textDelta':
+    case 'assistant.reasoningDelta':
+    case 'tool.stdoutDelta':
+    case 'tool.stderrDelta':
+    case 'operation.progressDelta':
+      return true;
+    default:
+      return false;
+  }
+};
+
+const unknownEventKindSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((kind) => !isKnownOrControlEventKind(kind), {
+    message: 'Expected an unknown event kind',
+  });
+
+export const unknownDurableEventEnvelopeSchema = strictObjectSchema({
+  ...eventBaseShape,
+  kind: unknownEventKindSchema,
+  durability: z.literal('durable'),
+  durableSequence: durableCursorSchema,
+  streamBasis: streamBasisSchema.optional(),
+});
+export type UnknownDurableEventEnvelope = z.infer<
+  typeof unknownDurableEventEnvelopeSchema
+>;
+
+export const unknownTransientEventEnvelopeSchema = strictObjectSchema({
+  ...eventBaseShape,
+  kind: unknownEventKindSchema,
+  durability: z.literal('transient'),
+  incarnationId: incarnationIdSchema,
+  streamSequence: streamCursorSchema,
+  durableBasis: durableCursorSchema,
+});
+export type UnknownTransientEventEnvelope = z.infer<
+  typeof unknownTransientEventEnvelopeSchema
+>;
+
+export const unknownEventEnvelopeSchema = z.discriminatedUnion('durability', [
+  unknownDurableEventEnvelopeSchema,
+  unknownTransientEventEnvelopeSchema,
+]);
+export type UnknownEventEnvelope = z.infer<typeof unknownEventEnvelopeSchema>;
+
+export type KnownThreadStreamFrame =
+  | SnapshotReset
+  | KnownDurableEventEnvelope
+  | KnownTransientEventEnvelope;
+
+export type ParseThreadStreamFrameResult =
+  | { outcome: 'known'; frame: KnownThreadStreamFrame }
+  | { outcome: 'unknownNonCritical'; frame: UnknownEventEnvelope }
+  | {
+      outcome: 'resetRequired';
+      reason: 'criticalUnknownEvent';
+      eventId: string;
+      kind: string;
+    }
+  | { outcome: 'protocolError'; error: ApiErrorPayload };
+
+const protocolError = (): ParseThreadStreamFrameResult => ({
+  outcome: 'protocolError',
+  error: apiErrorPayloadSchema.parse({
+    code: 'VALIDATION_ERROR',
+    message: 'Invalid thread stream frame',
+    retryable: false,
+  }),
+});
+
+export const parseThreadStreamFrame = (
+  input: unknown,
+): ParseThreadStreamFrameResult => {
+  try {
+    const normalized = jsonValueSchema.safeParse(input);
+    if (!normalized.success) return protocolError();
+
+    const reset = snapshotResetSchema.safeParse(normalized.data);
+    if (reset.success) return { outcome: 'known', frame: reset.data };
+
+    const knownDurable = knownDurableEventEnvelopeSchema.safeParse(
+      normalized.data,
+    );
+    if (knownDurable.success) {
+      return { outcome: 'known', frame: knownDurable.data };
+    }
+
+    const knownTransient = knownTransientEventEnvelopeSchema.safeParse(
+      normalized.data,
+    );
+    if (knownTransient.success) {
+      return { outcome: 'known', frame: knownTransient.data };
+    }
+
+    const unknown = unknownEventEnvelopeSchema.safeParse(normalized.data);
+    if (!unknown.success) return protocolError();
+    if (unknown.data.critical) {
+      return {
+        outcome: 'resetRequired',
+        reason: 'criticalUnknownEvent',
+        eventId: unknown.data.eventId,
+        kind: unknown.data.kind,
+      };
+    }
+
+    return { outcome: 'unknownNonCritical', frame: unknown.data };
+  } catch {
+    return protocolError();
+  }
+};
