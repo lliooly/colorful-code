@@ -34,11 +34,13 @@ import { threadViewSchema } from './thread.js';
 
 const MAX_DELTA_CHUNK_LENGTH = 65_536;
 const MAX_THREAD_STREAM_FRAME_SERIALIZED_LENGTH = 16 * 1024 * 1024;
+const MAX_THREAD_STREAM_FRAME_TOKEN_COUNT = 250_000;
 
-// Transports must still enforce their own byte limit. This parser-side budget
-// provides defense in depth before any frame-specific schema routing begins.
+// Transports must still enforce their own byte limit. These parser-side length
+// and token budgets provide defense in depth before frame-specific routing.
 const threadStreamFrameInputSchema = createBoundedJsonValueSchema(
   MAX_THREAD_STREAM_FRAME_SERIALIZED_LENGTH,
+  MAX_THREAD_STREAM_FRAME_TOKEN_COUNT,
 );
 
 const eventBaseShape = {

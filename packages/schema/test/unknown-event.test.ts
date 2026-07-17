@@ -12,6 +12,7 @@ import { snapshotResetKindSchema } from '@colorful-code/schema/snapshot';
 
 const occurredAt = '2026-07-17T10:30:00+08:00';
 const THREAD_STREAM_FRAME_BUDGET = 16 * 1024 * 1024;
+const THREAD_STREAM_FRAME_TOKEN_BUDGET = 250_000;
 
 const unknownDurable = {
   eventId: 'event-unknown-durable',
@@ -144,6 +145,33 @@ describe('parseThreadStreamFrame unknown event compatibility', () => {
       },
     });
     expect(parseThreadStreamFrameResultSchema.parse(result)).toEqual(result);
+  });
+
+  test('rejects a schema-valid low-byte frame beyond the token budget', () => {
+    const frame = {
+      ...unknownDurable,
+      payload: new Array(THREAD_STREAM_FRAME_TOKEN_BUDGET + 1).fill(0),
+    };
+
+    expect(unknownEventEnvelopeSchema.safeParse(frame).success).toBe(true);
+    expect(parseThreadStreamFrame(frame).outcome).toBe('protocolError');
+  });
+
+  test('keeps parser budgets isolated across successive calls', () => {
+    const overComplexity = {
+      ...unknownDurable,
+      payload: new Array(THREAD_STREAM_FRAME_TOKEN_BUDGET + 1).fill(null),
+    };
+
+    expect(parseThreadStreamFrame(overComplexity).outcome).toBe(
+      'protocolError',
+    );
+    expect(parseThreadStreamFrame(unknownDurable).outcome).toBe(
+      'unknownNonCritical',
+    );
+    expect(parseThreadStreamFrame(unknownTransient).outcome).toBe(
+      'unknownNonCritical',
+    );
   });
 
   test('accepts and detaches a comfortably in-budget unknown frame', () => {
