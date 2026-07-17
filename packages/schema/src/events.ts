@@ -9,7 +9,7 @@ import {
   strictObjectSchema,
   timestampSchema,
 } from './common.js';
-import { apiErrorPayloadSchema, type ApiErrorPayload } from './errors.js';
+import { apiErrorPayloadSchema } from './errors.js';
 import {
   eventIdSchema,
   incarnationIdSchema,
@@ -28,11 +28,7 @@ import {
 } from './operations.js';
 import { queueViewSchema } from './queue.js';
 import { runViewSchema } from './run.js';
-import {
-  snapshotResetKindSchema,
-  snapshotResetSchema,
-  type SnapshotReset,
-} from './snapshot.js';
+import { snapshotResetKindSchema, snapshotResetSchema } from './snapshot.js';
 import { threadViewSchema } from './thread.js';
 
 const MAX_DELTA_CHUNK_LENGTH = 65_536;
@@ -54,8 +50,14 @@ export type EventBase = z.infer<typeof eventBaseSchema>;
 export const streamBasisSchema = strictObjectSchema({
   incarnationId: incarnationIdSchema,
   streamSequence: streamCursorSchema,
-});
+}).describe(
+  'streamBasis references a pre-existing high-watermark in a specific incarnation stream space. It must not be compared with durableSequence or any durable cursor; it is a causal basis, not a third cursor.',
+);
 export type StreamBasis = z.infer<typeof streamBasisSchema>;
+
+const durableBasisSchema = durableCursorSchema.describe(
+  'durableBasis references a pre-existing high-watermark in the durable cursor space. It must not be compared with streamSequence or any incarnation stream cursor; it is a causal basis, not a third cursor.',
+);
 
 const assertJsonSchemaCompatible = (payloadSchema: z.ZodType) => {
   try {
@@ -162,7 +164,7 @@ export const createTransientEventEnvelopeSchema = <
     durability: z.literal('transient'),
     incarnationId: incarnationIdSchema,
     streamSequence: streamCursorSchema,
-    durableBasis: durableCursorSchema,
+    durableBasis: durableBasisSchema,
   });
 };
 
@@ -360,7 +362,7 @@ export const unknownTransientEventEnvelopeSchema = strictObjectSchema({
   durability: z.literal('transient'),
   incarnationId: incarnationIdSchema,
   streamSequence: streamCursorSchema,
-  durableBasis: durableCursorSchema,
+  durableBasis: durableBasisSchema,
 });
 export type UnknownTransientEventEnvelope = z.infer<
   typeof unknownTransientEventEnvelopeSchema
@@ -372,21 +374,59 @@ export const unknownEventEnvelopeSchema = z.discriminatedUnion('durability', [
 ]);
 export type UnknownEventEnvelope = z.infer<typeof unknownEventEnvelopeSchema>;
 
-export type KnownThreadStreamFrame =
-  | SnapshotReset
-  | KnownDurableEventEnvelope
-  | KnownTransientEventEnvelope;
+export const knownThreadStreamFrameSchema = z.union([
+  snapshotResetSchema,
+  knownDurableEventEnvelopeSchema,
+  knownTransientEventEnvelopeSchema,
+]);
+export type KnownThreadStreamFrame = z.infer<
+  typeof knownThreadStreamFrameSchema
+>;
 
-export type ParseThreadStreamFrameResult =
-  | { outcome: 'known'; frame: KnownThreadStreamFrame }
-  | { outcome: 'unknownNonCritical'; frame: UnknownEventEnvelope }
-  | {
-      outcome: 'resetRequired';
-      reason: 'criticalUnknownEvent';
-      eventId: UnknownEventEnvelope['eventId'];
-      kind: string;
-    }
-  | { outcome: 'protocolError'; error: ApiErrorPayload };
+export const threadStreamFrameSchema = z.union([
+  knownThreadStreamFrameSchema,
+  unknownEventEnvelopeSchema,
+]);
+export type ThreadStreamFrame = z.infer<typeof threadStreamFrameSchema>;
+
+const unknownNonCriticalEventEnvelopeSchema = z.discriminatedUnion(
+  'durability',
+  [
+    unknownDurableEventEnvelopeSchema.safeExtend({
+      critical: z.literal(false),
+    }),
+    unknownTransientEventEnvelopeSchema.safeExtend({
+      critical: z.literal(false),
+    }),
+  ],
+);
+
+export const parseThreadStreamFrameResultSchema = z.discriminatedUnion(
+  'outcome',
+  [
+    strictObjectSchema({
+      outcome: z.literal('known'),
+      frame: knownThreadStreamFrameSchema,
+    }),
+    strictObjectSchema({
+      outcome: z.literal('unknownNonCritical'),
+      frame: unknownNonCriticalEventEnvelopeSchema,
+    }),
+    strictObjectSchema({
+      outcome: z.literal('resetRequired'),
+      reason: z.literal('criticalUnknownEvent'),
+      eventId: eventIdSchema,
+      kind: unknownEventKindSchema,
+    }),
+    strictObjectSchema({
+      outcome: z.literal('protocolError'),
+      error: apiErrorPayloadSchema,
+    }),
+  ],
+);
+export type ParseThreadStreamFrameResult = z.infer<
+  typeof parseThreadStreamFrameResultSchema
+>;
 
 const protocolError = (): ParseThreadStreamFrameResult => ({
   outcome: 'protocolError',
@@ -432,7 +472,10 @@ export const parseThreadStreamFrame = (
       };
     }
 
-    return { outcome: 'unknownNonCritical', frame: unknown.data };
+    const nonCritical = unknownNonCriticalEventEnvelopeSchema.parse(
+      unknown.data,
+    );
+    return { outcome: 'unknownNonCritical', frame: nonCritical };
   } catch {
     return protocolError();
   }

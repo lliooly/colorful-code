@@ -37,7 +37,7 @@ import { approvalViewSchema, operationViewSchema } from './operations.js';
 import { policyPatchSchema, policyRevisionResultSchema } from './policy.js';
 import { queueItemViewSchema, queueViewSchema } from './queue.js';
 import { runViewSchema } from './run.js';
-import { threadSnapshotSchema } from './snapshot.js';
+import { snapshotResetSchema, threadSnapshotSchema } from './snapshot.js';
 import {
   inputContentSchema,
   threadViewSchema,
@@ -242,16 +242,58 @@ export const applyCheckpointBodySchema = strictObjectSchema({
 });
 export type ApplyCheckpointBody = z.infer<typeof applyCheckpointBodySchema>;
 
-export const eventAttachQuerySchema = strictObjectSchema({
+const durableOnlyEventAttachParamsSchema = strictObjectSchema({
   durableAfter: durableCursorSchema.optional(),
-  incarnationId: incarnationIdSchema.optional(),
-  streamAfter: streamCursorSchema.optional(),
-}).refine(
-  ({ incarnationId, streamAfter }) =>
-    (incarnationId === undefined) === (streamAfter === undefined),
-  { message: 'incarnationId and streamAfter must be provided together' },
-);
+});
+
+const runtimeEventAttachParamsSchema = strictObjectSchema({
+  durableAfter: durableCursorSchema.optional(),
+  incarnationId: incarnationIdSchema,
+  streamAfter: streamCursorSchema,
+});
+
+export const eventAttachParamsSchema = z.union([
+  durableOnlyEventAttachParamsSchema,
+  runtimeEventAttachParamsSchema,
+]);
+export type EventAttachParams = z.infer<typeof eventAttachParamsSchema>;
+
+export const eventAttachQuerySchema = eventAttachParamsSchema;
 export type EventAttachQuery = z.infer<typeof eventAttachQuerySchema>;
+
+const durableOnlyEventAttachAcceptedResponseSchema = strictObjectSchema({
+  outcome: z.literal('accepted'),
+  durableCursor: durableCursorSchema,
+});
+
+const runtimeEventAttachAcceptedResponseSchema = strictObjectSchema({
+  outcome: z.literal('accepted'),
+  durableCursor: durableCursorSchema,
+  incarnationId: incarnationIdSchema,
+  streamCursor: streamCursorSchema,
+});
+
+export const eventAttachAcceptedResponseSchema = z.union([
+  durableOnlyEventAttachAcceptedResponseSchema,
+  runtimeEventAttachAcceptedResponseSchema,
+]);
+export type EventAttachAcceptedResponse = z.infer<
+  typeof eventAttachAcceptedResponseSchema
+>;
+
+export const eventAttachResetResponseSchema = strictObjectSchema({
+  outcome: z.literal('reset'),
+  frame: snapshotResetSchema,
+});
+export type EventAttachResetResponse = z.infer<
+  typeof eventAttachResetResponseSchema
+>;
+
+export const eventAttachResponseSchema = z.union([
+  eventAttachAcceptedResponseSchema,
+  eventAttachResetResponseSchema,
+]);
+export type EventAttachResponse = z.infer<typeof eventAttachResponseSchema>;
 
 export const queueMutationBodySchema = strictObjectSchema({
   commandId: commandIdSchema,
