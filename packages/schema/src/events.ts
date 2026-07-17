@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import {
+  createBoundedJsonValueSchema,
   durableCursorSchema,
   jsonValueSchema,
   type JsonValue,
@@ -32,6 +33,13 @@ import { snapshotResetKindSchema, snapshotResetSchema } from './snapshot.js';
 import { threadViewSchema } from './thread.js';
 
 const MAX_DELTA_CHUNK_LENGTH = 65_536;
+const MAX_THREAD_STREAM_FRAME_SERIALIZED_LENGTH = 16 * 1024 * 1024;
+
+// Transports must still enforce their own byte limit. This parser-side budget
+// provides defense in depth before any frame-specific schema routing begins.
+const threadStreamFrameInputSchema = createBoundedJsonValueSchema(
+  MAX_THREAD_STREAM_FRAME_SERIALIZED_LENGTH,
+);
 
 const eventBaseShape = {
   eventId: eventIdSchema,
@@ -441,7 +449,7 @@ export const parseThreadStreamFrame = (
   input: unknown,
 ): ParseThreadStreamFrameResult => {
   try {
-    const normalized = jsonValueSchema.safeParse(input);
+    const normalized = threadStreamFrameInputSchema.safeParse(input);
     if (!normalized.success) return protocolError();
 
     const reset = snapshotResetSchema.safeParse(normalized.data);

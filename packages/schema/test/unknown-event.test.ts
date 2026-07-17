@@ -5,11 +5,13 @@ import {
   knownDurableEventEnvelopeSchema,
   knownTransientEventEnvelopeSchema,
   parseThreadStreamFrame,
+  parseThreadStreamFrameResultSchema,
   unknownEventEnvelopeSchema,
 } from '@colorful-code/schema/events';
 import { snapshotResetKindSchema } from '@colorful-code/schema/snapshot';
 
 const occurredAt = '2026-07-17T10:30:00+08:00';
+const THREAD_STREAM_FRAME_BUDGET = 16 * 1024 * 1024;
 
 const unknownDurable = {
   eventId: 'event-unknown-durable',
@@ -123,6 +125,64 @@ describe('parseThreadStreamFrame unknown event compatibility', () => {
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
     expectProtocolError({ ...unknownDurable, payload: cyclic });
+  });
+
+  test('rejects a JSON frame beyond the parser budget without leaking details', () => {
+    const result = parseThreadStreamFrame({
+      ...unknownDurable,
+      payload: 'x'.repeat(THREAD_STREAM_FRAME_BUDGET),
+    });
+
+    expect(result.outcome).toBe('protocolError');
+    if (result.outcome !== 'protocolError') return;
+    expect(result).toEqual({
+      outcome: 'protocolError',
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid thread stream frame',
+        retryable: false,
+      },
+    });
+    expect(parseThreadStreamFrameResultSchema.parse(result)).toEqual(result);
+  });
+
+  test('accepts and detaches a comfortably in-budget unknown frame', () => {
+    const nested = { value: 'before' };
+    const payload = {
+      content: 'x'.repeat(1024 * 1024),
+      nested,
+    };
+    const result = parseThreadStreamFrame({ ...unknownDurable, payload });
+
+    expect(result.outcome).toBe('unknownNonCritical');
+    if (result.outcome !== 'unknownNonCritical') return;
+    expect(result.frame.payload).not.toBe(payload);
+    nested.value = 'after';
+    expect(result.frame.payload).toEqual({
+      content: payload.content,
+      nested: { value: 'before' },
+    });
+  });
+
+  test('stops an oversized sparse container before enumerating its keys', () => {
+    let ownKeysCalled = false;
+    const sparsePayload = new Proxy(new Array(THREAD_STREAM_FRAME_BUDGET), {
+      ownKeys: (target) => {
+        ownKeysCalled = true;
+        return Reflect.ownKeys(target);
+      },
+    });
+
+    let outcome: ReturnType<typeof parseThreadStreamFrame>['outcome'] | null =
+      null;
+    expect(() => {
+      outcome = parseThreadStreamFrame({
+        ...unknownDurable,
+        payload: sparsePayload,
+      }).outcome;
+    }).not.toThrow();
+    expect(outcome).toBe('protocolError');
+    expect(ownKeysCalled).toBe(false);
   });
 
   test('returns resetRequired without exposing a critical unknown frame', () => {
