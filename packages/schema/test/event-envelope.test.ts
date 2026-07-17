@@ -469,4 +469,63 @@ describe('event envelope factories', () => {
       }).success,
     ).toBe(false);
   });
+
+  test('keeps payload required and constrained to JSON wire values', () => {
+    expect(() =>
+      createEventPayloadSchema(
+        'example.optional',
+        // @ts-expect-error Optional output is not a JSON wire value.
+        z.string().optional(),
+      ),
+    ).toThrow('Event payload schema must be required');
+    expect(() =>
+      createEventPayloadSchema(
+        'example.undefined',
+        // @ts-expect-error Undefined is not a JSON wire value.
+        z.undefined(),
+      ),
+    ).toThrow('Event payload schema must describe JSON wire values');
+    expect(() =>
+      createEventPayloadSchema(
+        'example.date',
+        // @ts-expect-error Date is not a JSON wire value.
+        z.date(),
+      ),
+    ).toThrow('Event payload schema must describe JSON wire values');
+
+    const optionalEnvelopePayload = z.strictObject({
+      kind: z.literal('example.optional-direct'),
+      payload: z.string().optional(),
+    });
+    expect(() =>
+      createDurableEventEnvelopeSchema(
+        // @ts-expect-error Envelope payload output must be required JSON.
+        optionalEnvelopePayload,
+      ),
+    ).toThrow('Event payload schema must be required');
+  });
+
+  test('rejects blank and multi-value event kind declarations', () => {
+    const multiKindPayload = z.strictObject({
+      kind: z.literal(['example.alpha', 'example.beta']),
+      payload: z.strictObject({ value: z.string() }),
+    });
+
+    expect(() =>
+      createEventPayloadSchema('   ', z.strictObject({ value: z.string() })),
+    ).toThrow('Event kind must be a non-empty string');
+    expect(() => createDurableEventEnvelopeSchema(multiKindPayload)).toThrow(
+      'Event kind must be one non-empty string literal',
+    );
+  });
+
+  test('keeps generated JSON Schema payload definitions specific', () => {
+    const generated = JSON.stringify(
+      z.toJSONSchema(knownDurableEventEnvelopeSchema),
+    );
+
+    expect(generated).toContain('threadRevision');
+    expect(generated).toContain('operationId');
+    expect(generated).toContain('additionalProperties');
+  });
 });

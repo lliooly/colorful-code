@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   durableCursorSchema,
   jsonValueSchema,
+  type JsonValue,
   planGenerationSchema,
   streamCursorSchema,
   strictObjectSchema,
@@ -17,8 +18,10 @@ import {
   toolExecutionIdSchema,
 } from './ids.js';
 import {
+  operationCancelledEventPayloadSchema as cancelledOperationPayloadSchema,
+  operationCompletedEventPayloadSchema as completedOperationPayloadSchema,
+  operationFailedEventPayloadSchema as failedOperationPayloadSchema,
   operationProgressSchema,
-  operationTerminalEventPayloadSchema,
   approvalViewSchema,
   toolExecutionSummarySchema,
 } from './operations.js';
@@ -48,29 +51,61 @@ export const streamBasisSchema = strictObjectSchema({
 });
 export type StreamBasis = z.infer<typeof streamBasisSchema>;
 
+const assertJsonWirePayloadSchema = (payloadSchema: z.ZodType) => {
+  try {
+    z.toJSONSchema(payloadSchema);
+  } catch (error) {
+    throw new TypeError('Event payload schema must describe JSON wire values', {
+      cause: error,
+    });
+  }
+  if (payloadSchema.isOptional()) {
+    throw new TypeError('Event payload schema must be required');
+  }
+};
+
 export const createEventPayloadSchema = <
   const Kind extends string,
-  PayloadSchema extends z.ZodType,
+  PayloadSchema extends z.ZodType<JsonValue>,
 >(
   kind: Kind,
   payloadSchema: PayloadSchema,
-) =>
-  strictObjectSchema({
+) => {
+  if (kind.trim().length === 0) {
+    throw new TypeError('Event kind must be a non-empty string');
+  }
+  assertJsonWirePayloadSchema(payloadSchema);
+
+  return strictObjectSchema({
     kind: z.literal(kind),
     payload: payloadSchema,
   });
+};
 
 type EventPayloadShape = {
   kind: z.ZodLiteral<string>;
-  payload: z.ZodType;
+  payload: z.ZodType<JsonValue>;
+};
+
+const assertSingleEventKind = (kindSchema: z.ZodLiteral<string>) => {
+  const kinds = [...kindSchema.values];
+  if (
+    kinds.length !== 1 ||
+    typeof kinds[0] !== 'string' ||
+    kinds[0].trim().length === 0
+  ) {
+    throw new TypeError('Event kind must be one non-empty string literal');
+  }
 };
 
 export const createDurableEventEnvelopeSchema = <
   Shape extends EventPayloadShape,
 >(
   eventPayloadSchema: z.ZodObject<Shape>,
-) =>
-  strictObjectSchema({
+) => {
+  assertSingleEventKind(eventPayloadSchema.shape.kind);
+  assertJsonWirePayloadSchema(eventPayloadSchema.shape.payload);
+  return strictObjectSchema({
     ...eventBaseShape,
     kind: eventPayloadSchema.shape.kind,
     payload: eventPayloadSchema.shape.payload,
@@ -78,13 +113,16 @@ export const createDurableEventEnvelopeSchema = <
     durableSequence: durableCursorSchema,
     streamBasis: streamBasisSchema.optional(),
   });
+};
 
 export const createTransientEventEnvelopeSchema = <
   Shape extends EventPayloadShape,
 >(
   eventPayloadSchema: z.ZodObject<Shape>,
-) =>
-  strictObjectSchema({
+) => {
+  assertSingleEventKind(eventPayloadSchema.shape.kind);
+  assertJsonWirePayloadSchema(eventPayloadSchema.shape.payload);
+  return strictObjectSchema({
     ...eventBaseShape,
     kind: eventPayloadSchema.shape.kind,
     payload: eventPayloadSchema.shape.payload,
@@ -93,6 +131,7 @@ export const createTransientEventEnvelopeSchema = <
     streamSequence: streamCursorSchema,
     durableBasis: durableCursorSchema,
   });
+};
 
 const threadUpdatedEventPayloadSchema = createEventPayloadSchema(
   'thread.updated',
@@ -110,12 +149,6 @@ const queueChangedEventPayloadSchema = createEventPayloadSchema(
   'queue.changed',
   queueViewSchema,
 );
-
-const [
-  completedOperationPayloadSchema,
-  failedOperationPayloadSchema,
-  cancelledOperationPayloadSchema,
-] = operationTerminalEventPayloadSchema.options;
 
 const operationCompletedEventPayloadSchema = createEventPayloadSchema(
   'operation.completed',
