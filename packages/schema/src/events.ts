@@ -11,6 +11,7 @@ import {
   timestampSchema,
 } from './common.js';
 import { apiErrorPayloadSchema } from './errors.js';
+import { operationCompletionEventKindSchema } from './enums.js';
 import {
   eventIdSchema,
   incarnationIdSchema,
@@ -230,16 +231,22 @@ const queueChangedEventPayloadSchema = createEventPayloadSchema(
   queueViewSchema,
 );
 
+const [
+  operationCompletedEventKind,
+  operationFailedEventKind,
+  operationCancelledEventKind,
+] = operationCompletionEventKindSchema.options;
+
 const operationCompletedEventPayloadSchema = createEventPayloadSchema(
-  'operation.completed',
+  operationCompletedEventKind,
   completedOperationPayloadSchema,
 );
 const operationFailedEventPayloadSchema = createEventPayloadSchema(
-  'operation.failed',
+  operationFailedEventKind,
   failedOperationPayloadSchema,
 );
 const operationCancelledEventPayloadSchema = createEventPayloadSchema(
-  'operation.cancelled',
+  operationCancelledEventKind,
   cancelledOperationPayloadSchema,
 );
 
@@ -357,23 +364,13 @@ export type KnownTransientEventEnvelope = z.infer<
 
 const reservedEventKinds = Object.freeze([
   snapshotResetKindSchema.value,
-  'thread.updated',
-  'thread.lifecycleChanged',
-  'run.statusChanged',
-  'queue.changed',
-  'operation.completed',
-  'operation.failed',
-  'operation.cancelled',
-  'approval.requested',
-  'approval.resolved',
-  'approval.expired',
-  'tool.terminal',
-  'assistant.textDelta',
-  'assistant.reasoningDelta',
-  'tool.stdoutDelta',
-  'tool.stderrDelta',
-  'operation.progressDelta',
-] as const);
+  ...knownDurableEventEnvelopeSchema.options.map(
+    (option) => option.shape.kind.value,
+  ),
+  ...knownTransientEventEnvelopeSchema.options.map(
+    (option) => option.shape.kind.value,
+  ),
+]);
 
 const escapeRegularExpression = (value: string) =>
   value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

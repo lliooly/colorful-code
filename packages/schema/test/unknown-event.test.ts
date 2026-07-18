@@ -8,6 +8,7 @@ import {
   parseThreadStreamFrameResultSchema,
   unknownEventEnvelopeSchema,
 } from '@colorful-code/schema/events';
+import { operationCompletionEventKindSchema } from '@colorful-code/schema/enums';
 import { snapshotResetKindSchema } from '@colorful-code/schema/snapshot';
 
 const occurredAt = '2026-07-17T10:30:00+08:00';
@@ -257,6 +258,20 @@ describe('parseThreadStreamFrame unknown event compatibility', () => {
         payload: null,
       });
     }
+  });
+
+  test('includes every authoritative operation completion kind', () => {
+    const durableKinds = new Set(
+      knownDurableEventEnvelopeSchema.options.map(
+        (option) => option.shape.kind.value,
+      ),
+    );
+
+    expect(
+      operationCompletionEventKindSchema.options.every((kind) =>
+        durableKinds.has(kind),
+      ),
+    ).toBe(true);
   });
 
   test('publishes the reserved kind exclusion in standard JSON Schema', () => {
