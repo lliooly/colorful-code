@@ -512,11 +512,7 @@ export const createBoundedJsonObjectSchema = (
   }
 
   const normalizer = z.unknown().transform((value, context) => {
-    const encoded = encodeJsonValue(
-      value,
-      maxSerializedLength,
-      maxTokenCount,
-    );
+    const encoded = encodeJsonValue(value, maxSerializedLength, maxTokenCount);
     if (encoded === invalidJsonValue) {
       context.addIssue({ code: 'custom', message: 'Expected a JSON object' });
       return z.NEVER;

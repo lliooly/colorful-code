@@ -27,6 +27,7 @@
 ### 任务 1：普通 prototype 与 bounded JSON object
 
 **文件：**
+
 - 修改：`packages/schema/test/common-types.test.ts`
 - 修改：`packages/schema/src/common.ts`
 
@@ -75,9 +76,10 @@ const value: JsonValue = kind === 'array' ? [] : ({} as JsonObject);
 export const createBoundedJsonObjectSchema = (
   maxSerializedLength: number,
   maxTokenCount?: number,
-) => boundedJsonObjectNormalizer(maxSerializedLength, maxTokenCount)
-  .pipe(jsonObjectOutputSchema)
-  .overwrite((value) => decodeJsonValue(value['\u0000']) as JsonObject);
+) =>
+  boundedJsonObjectNormalizer(maxSerializedLength, maxTokenCount)
+    .pipe(jsonObjectOutputSchema)
+    .overwrite((value) => decodeJsonValue(value['\u0000']) as JsonObject);
 ```
 
 bounded normalizer 必须调用 `encodeJsonValue(value, maxSerializedLength, maxTokenCount)`，确认根 token 为 object，并沿用 value schema 的三类错误消息。
@@ -91,6 +93,7 @@ bounded normalizer 必须调用 `encodeJsonValue(value, maxSerializedLength, max
 ### 任务 2：限制 ApiError.details
 
 **文件：**
+
 - 修改：`packages/schema/test/api-error.test.ts`
 - 修改：`packages/schema/src/errors.ts`
 
@@ -143,6 +146,7 @@ const apiErrorDetailsSchema = createBoundedJsonObjectSchema(65_536, 10_000);
 ### 任务 3：对齐 frame、stream state 与 SnapshotReset 预算
 
 **文件：**
+
 - 创建：`packages/schema/src/stream-limits.ts`
 - 修改：`packages/schema/src/events.ts`
 - 修改：`packages/schema/src/snapshot.ts`
@@ -202,6 +206,7 @@ export const MAX_STREAM_STATE_TOKEN_COUNT = 100_000;
 ### 任务 4：修复 envelope 工厂泛型推断
 
 **文件：**
+
 - 创建：`packages/schema/test/event-envelope.typecheck.ts`
 - 修改：`packages/schema/src/events.ts`
 
@@ -216,8 +221,11 @@ import {
 } from '@colorful-code/schema/events';
 
 type Equal<Left, Right> =
-  (<Value>() => Value extends Left ? 1 : 2) extends
-  (<Value>() => Value extends Right ? 1 : 2) ? true : false;
+  (<Value>() => Value extends Left ? 1 : 2) extends <
+    Value,
+  >() => Value extends Right ? 1 : 2
+    ? true
+    : false;
 type Expect<Value extends true> = Value;
 
 const payload = createEventPayloadSchema(
@@ -257,6 +265,7 @@ export type TransientKindIsLiteral = Expect<
 ### 任务 5：添加 assistant delta 关联键
 
 **文件：**
+
 - 修改：`packages/schema/test/event-envelope.test.ts`
 - 修改：`packages/schema/test/thread-stream-frame.test.ts`
 - 修改：`packages/schema/test/unknown-event.test.ts`
@@ -267,12 +276,16 @@ export type TransientKindIsLiteral = Expect<
 所有合法 assistant delta fixture 增加 `transcriptItemId: 'transcript-1'`，并新增：
 
 ```ts
-for (const kind of ['assistant.textDelta', 'assistant.reasoningDelta'] as const) {
+for (const kind of [
+  'assistant.textDelta',
+  'assistant.reasoningDelta',
+] as const) {
   const schema = knownTransientEventPayloadSchema.options.find(
     (option) => option.shape.kind.value === kind,
   );
-  expect(schema?.safeParse({ kind, payload: { chunk: 'delta' } }).success)
-    .toBe(false);
+  expect(schema?.safeParse({ kind, payload: { chunk: 'delta' } }).success).toBe(
+    false,
+  );
 }
 ```
 
@@ -302,6 +315,7 @@ const assistantDeltaPayloadSchema = strictObjectSchema({
 ### 任务 6：从权威 Schema 派生 operation 与 reserved kinds
 
 **文件：**
+
 - 修改：`packages/schema/test/unknown-event.test.ts`
 - 修改：`packages/schema/src/events.ts`
 
@@ -309,11 +323,15 @@ const assistantDeltaPayloadSchema = strictObjectSchema({
 
 ```ts
 const durableKinds = new Set(
-  knownDurableEventEnvelopeSchema.options.map((option) => option.shape.kind.value),
+  knownDurableEventEnvelopeSchema.options.map(
+    (option) => option.shape.kind.value,
+  ),
 );
-expect(operationCompletionEventKindSchema.options.every((kind) =>
-  durableKinds.has(kind),
-)).toBe(true);
+expect(
+  operationCompletionEventKindSchema.options.every((kind) =>
+    durableKinds.has(kind),
+  ),
+).toBe(true);
 ```
 
 保留现有 unknown exclusion 测试作为 reserved kind 行为特征测试；它枚举 known union，而不是在测试中复制 kind 字符串。
@@ -334,8 +352,12 @@ const [operationCompletedKind, operationFailedKind, operationCancelledKind] =
 
 const reservedEventKinds = Object.freeze([
   snapshotResetKindSchema.value,
-  ...knownDurableEventEnvelopeSchema.options.map((option) => option.shape.kind.value),
-  ...knownTransientEventEnvelopeSchema.options.map((option) => option.shape.kind.value),
+  ...knownDurableEventEnvelopeSchema.options.map(
+    (option) => option.shape.kind.value,
+  ),
+  ...knownTransientEventEnvelopeSchema.options.map(
+    (option) => option.shape.kind.value,
+  ),
 ]);
 ```
 
@@ -350,6 +372,7 @@ const reservedEventKinds = Object.freeze([
 ### 任务 7：完整验证与提交
 
 **文件：**
+
 - 检查：本计划列出的全部源文件、测试与文档
 
 - [ ] **步骤 1：运行 Schema 包完整验证**

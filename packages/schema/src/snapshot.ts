@@ -100,15 +100,14 @@ const boundedStreamStateJsonSchema = createBoundedJsonValueSchema(
   MAX_STREAM_STATE_TOKEN_COUNT,
 );
 
-export const streamStateSnapshotSchema = rawStreamStateSnapshotSchema.superRefine(
-  (streamState, context) => {
+export const streamStateSnapshotSchema =
+  rawStreamStateSnapshotSchema.superRefine((streamState, context) => {
     if (boundedStreamStateJsonSchema.safeParse(streamState).success) return;
     context.addIssue({
       code: 'custom',
       message: 'Stream state exceeds the aggregate frame budget',
     });
-  },
-);
+  });
 export type StreamStateSnapshot = z.infer<typeof streamStateSnapshotSchema>;
 
 const snapshotBaseShape = {
