@@ -4,7 +4,6 @@ import type { ZodType } from 'zod';
 import {
   httpContractRegistry,
   runPageSchema,
-  undefinedResultSchema,
   type HttpContractRegistry,
 } from '@colorful-code/schema/commands';
 import { queueViewSchema } from '@colorful-code/schema/queue';
@@ -32,6 +31,17 @@ const commandId = 'command-1';
 const threadPath = { threadId: 'thread-1' };
 const runPath = { ...threadPath, runId: 'run-1' };
 const queueItemPath = { ...threadPath, queueItemId: 'queue-item-1' };
+const operationAck = {
+  commandId,
+  operationId: 'operation-1',
+  status: 'accepted',
+  replayed: false,
+  threadId: 'thread-1',
+  completionEvents: ['operation.completed'],
+  currentDurableCursor: '1',
+  acceptedAt: '2026-07-16T00:00:00Z',
+};
+const ackWithResult = (result: unknown) => ({ ...operationAck, result });
 
 describe('submission and run HTTP contracts', () => {
   test('publishes the exact submission and run endpoints', () => {
@@ -107,7 +117,7 @@ describe('submission and run HTTP contracts', () => {
         queueItemId: 'queue-item-1',
       },
     ]) {
-      expect(result.safeParse(value).success).toBe(true);
+      expect(result.safeParse(ackWithResult(value)).success).toBe(true);
     }
     for (const value of [
       { kind: 'runCreated', inputItemId: 'input-1' },
@@ -124,7 +134,7 @@ describe('submission and run HTTP contracts', () => {
       },
       { kind: 'unknown', inputItemId: 'input-1' },
     ]) {
-      expect(result.safeParse(value).success).toBe(false);
+      expect(result.safeParse(ackWithResult(value)).success).toBe(false);
     }
   });
 
@@ -205,7 +215,10 @@ describe('submission and run HTTP contracts', () => {
       expect(body.safeParse(candidate).success).toBe(false);
     }
     expect(descriptor.responseKind).toBe('commandAck');
-    expect(descriptor.resultSchema).toBe(undefinedResultSchema);
+    expect(descriptor.resultSchema.parse(operationAck)).toEqual(operationAck);
+    expect(descriptor.resultSchema.safeParse(ackWithResult(null)).success).toBe(
+      false,
+    );
   });
 
   test('defaults stop to atomically pausing the queue', () => {
@@ -219,7 +232,11 @@ describe('submission and run HTTP contracts', () => {
       pauseQueue: false,
     });
     expect(descriptor.responseKind).toBe('commandAck');
-    expect(descriptor.resultSchema).toBe(undefinedResultSchema);
+    expect(descriptor.resultSchema.parse(operationAck)).toEqual(operationAck);
+    expect(
+      descriptor.resultSchema.safeParse(ackWithResult({ stopped: true }))
+        .success,
+    ).toBe(false);
   });
 
   test('rejects spoofed metadata and path identity in run command bodies', () => {
@@ -439,17 +456,22 @@ describe('queue HTTP contracts', () => {
       updatedAt: '2026-07-16T00:00:00Z',
     };
 
-    expect(patchResult.safeParse({ queueRevision: 8, item }).success).toBe(
-      true,
-    );
     expect(
-      patchResult.safeParse({ queueRevision: 8, item, unknown: true }).success,
+      patchResult.safeParse(ackWithResult({ queueRevision: 8, item })).success,
+    ).toBe(true);
+    expect(
+      patchResult.safeParse(
+        ackWithResult({ queueRevision: 8, item, unknown: true }),
+      ).success,
     ).toBe(false);
     for (const operationId of revisionResultOperations) {
       const result = endpoint(operationId).resultSchema;
-      expect(result.safeParse({ queueRevision: 8 }).success).toBe(true);
       expect(
-        result.safeParse({ queueRevision: 8, unknown: true }).success,
+        result.safeParse(ackWithResult({ queueRevision: 8 })).success,
+      ).toBe(true);
+      expect(
+        result.safeParse(ackWithResult({ queueRevision: 8, unknown: true }))
+          .success,
       ).toBe(false);
     }
   });

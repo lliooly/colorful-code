@@ -63,9 +63,7 @@ describe('ThreadSnapshot', () => {
       threadSnapshotSchema.safeParse({
         ...snapshot,
         streamState: {
-          status: 'streaming',
-          interruptionReason: null,
-          messageBuffers: [],
+          assistantBuffers: [],
           toolBuffers: [],
         },
       }).success,
@@ -74,10 +72,17 @@ describe('ThreadSnapshot', () => {
       threadSnapshotSchema.safeParse({
         ...runtime,
         streamState: {
-          status: 'interrupted',
-          interruptionReason: 'daemonLost',
-          messageBuffers: [
-            { transcriptItemId: 'transcript-1', text: 'partial' },
+          assistantBuffers: [
+            {
+              transcriptItemId: 'transcript-1',
+              runId: 'run-1',
+              incarnationId: 'inc-1',
+              lastStreamSequence: '1',
+              status: 'interrupted',
+              terminalAt: at,
+              interruptionReason: 'daemonLost',
+              text: 'partial',
+            },
           ],
           toolBuffers: [],
         },

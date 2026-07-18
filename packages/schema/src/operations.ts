@@ -25,11 +25,61 @@ import {
   threadIdSchema,
   toolExecutionIdSchema,
 } from './ids.js';
+import { apiErrorPayloadSchema } from './errors.js';
+
+const operationTerminalCommonShape = () => ({
+  operationId: operationIdSchema,
+  kind: operationKindSchema,
+  runId: runIdSchema.nullable(),
+  revision: revisionSchema,
+});
+
+export const operationCompletedEventPayloadSchema = strictObjectSchema({
+  ...operationTerminalCommonShape(),
+  status: z.literal('completed'),
+  completedAt: timestampSchema,
+  result: jsonValueSchema.optional(),
+});
+export type OperationCompletedEventPayload = z.infer<
+  typeof operationCompletedEventPayloadSchema
+>;
+
+export const operationFailedEventPayloadSchema = strictObjectSchema({
+  ...operationTerminalCommonShape(),
+  status: z.literal('failed'),
+  error: apiErrorPayloadSchema,
+});
+export type OperationFailedEventPayload = z.infer<
+  typeof operationFailedEventPayloadSchema
+>;
+
+export const operationCancelledEventPayloadSchema = strictObjectSchema({
+  ...operationTerminalCommonShape(),
+  status: z.literal('cancelled'),
+  reason: z.string().trim().min(1),
+  cancelledAt: timestampSchema,
+  result: jsonValueSchema.optional(),
+});
+export type OperationCancelledEventPayload = z.infer<
+  typeof operationCancelledEventPayloadSchema
+>;
+
+export const operationTerminalEventPayloadSchema = z.discriminatedUnion(
+  'status',
+  [
+    operationCompletedEventPayloadSchema,
+    operationFailedEventPayloadSchema,
+    operationCancelledEventPayloadSchema,
+  ],
+);
+export type OperationTerminalEventPayload = z.infer<
+  typeof operationTerminalEventPayloadSchema
+>;
 
 export const operationProgressSchema = strictObjectSchema({
   phase: z.string().trim().min(1),
-  completedUnits: z.number().int().nonnegative().safe().optional(),
-  totalUnits: z.number().int().nonnegative().safe().optional(),
+  completedUnits: z.number().int().safe().nonnegative().optional(),
+  totalUnits: z.number().int().safe().nonnegative().optional(),
   message: z.string().optional(),
 });
 export type OperationProgress = z.infer<typeof operationProgressSchema>;
@@ -83,7 +133,7 @@ export type ApprovalView = z.infer<typeof approvalViewSchema>;
 export const artifactReferenceSchema = strictObjectSchema({
   artifactId: artifactIdSchema,
   mediaType: z.string().trim().min(1),
-  byteLength: z.number().int().nonnegative().safe(),
+  byteLength: z.number().int().safe().nonnegative(),
   label: z.string().nullable(),
 });
 export type ArtifactReference = z.infer<typeof artifactReferenceSchema>;

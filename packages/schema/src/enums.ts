@@ -65,6 +65,15 @@ export const operationStatusSchema = z.enum([
 ]);
 export type OperationStatus = z.infer<typeof operationStatusSchema>;
 
+export const operationCompletionEventKindSchema = z.enum([
+  'operation.completed',
+  'operation.failed',
+  'operation.cancelled',
+]);
+export type OperationCompletionEventKind = z.infer<
+  typeof operationCompletionEventKindSchema
+>;
+
 export const operationKindSchema = z.enum([
   'steer',
   'stop',

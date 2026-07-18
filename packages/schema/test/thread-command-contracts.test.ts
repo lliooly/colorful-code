@@ -3,7 +3,6 @@ import { describe, expect, test } from 'bun:test';
 import {
   httpContractRegistry,
   threadPageSchema,
-  undefinedResultSchema,
   type HttpContractRegistry,
 } from '@colorful-code/schema/commands';
 import { threadViewSchema } from '@colorful-code/schema/thread';
@@ -20,6 +19,38 @@ const command = {
   commandId: 'command-1',
   expectedThreadRevision: 3,
 };
+const operationAck = {
+  commandId: 'command-1',
+  operationId: 'operation-1',
+  status: 'accepted',
+  replayed: false,
+  threadId: 'thread-1',
+  completionEvents: ['operation.completed'],
+  currentDurableCursor: '1',
+  acceptedAt: '2026-07-16T00:00:00Z',
+};
+const threadResult = {
+  threadId: 'thread-1',
+  lineageId: 'lineage-1',
+  parentThreadId: null,
+  lifecycle: 'available',
+  runtimeStatus: 'idle',
+  title: null,
+  goal: null,
+  workspaceBinding: {
+    workspaceId: 'workspace-1',
+    displayPath: '/workspace/project',
+    trust: 'trusted',
+  },
+  activeRunId: null,
+  threadRevision: 1,
+  queueRevision: 2,
+  configRevision: 3,
+  policyRevision: 4,
+  createdAt: '2026-07-16T00:00:00Z',
+  updatedAt: '2026-07-16T00:00:00Z',
+};
+const ackWithResult = (result: unknown) => ({ ...operationAck, result });
 
 describe('thread HTTP contract registry', () => {
   test('publishes the complete thread lifecycle and query surface', () => {
@@ -177,23 +208,43 @@ describe('thread HTTP contract registry', () => {
     expect(endpoint('thread.list').resultSchema).toBe(threadPageSchema);
   });
 
-  test('uses command acknowledgements with concrete mutation result schemas', () => {
-    const mutationResultSchemas = {
-      'thread.create': threadViewSchema,
-      'thread.patch': threadViewSchema,
-      'thread.delete': threadViewSchema,
-      'thread.resume': undefinedResultSchema,
-      'thread.archive': threadViewSchema,
-      'thread.unarchive': threadViewSchema,
-      'thread.undelete': undefinedResultSchema,
-      'thread.fork': threadViewSchema,
+  test('binds result-bearing mutations to the complete ThreadView', () => {
+    const resultSchemas = {
+      'thread.create': endpoint('thread.create').resultSchema,
+      'thread.patch': endpoint('thread.patch').resultSchema,
+      'thread.delete': endpoint('thread.delete').resultSchema,
+      'thread.archive': endpoint('thread.archive').resultSchema,
+      'thread.unarchive': endpoint('thread.unarchive').resultSchema,
+      'thread.fork': endpoint('thread.fork').resultSchema,
     } as const;
 
-    for (const operationId of typedKeys(mutationResultSchemas)) {
-      const resultSchema = mutationResultSchemas[operationId];
+    for (const operationId of typedKeys(resultSchemas)) {
       const descriptor = endpoint(operationId);
+      const resultSchema = resultSchemas[operationId];
       expect(descriptor.responseKind).toBe('commandAck');
-      expect(descriptor.resultSchema).toBe(resultSchema);
+      expect(resultSchema.safeParse(ackWithResult(threadResult)).success).toBe(
+        true,
+      );
+      expect(
+        resultSchema.safeParse(
+          ackWithResult({ ...threadResult, lifecycle: undefined }),
+        ).success,
+      ).toBe(false);
+      expect(
+        resultSchema.safeParse(
+          ackWithResult({ ...threadResult, unknown: true }),
+        ).success,
+      ).toBe(false);
+    }
+  });
+
+  test('forbids result on no-result lifecycle mutations', () => {
+    for (const operationId of ['thread.resume', 'thread.undelete'] as const) {
+      const descriptor = endpoint(operationId);
+      expect(descriptor.resultSchema.parse(operationAck)).toEqual(operationAck);
+      expect(
+        descriptor.resultSchema.safeParse(ackWithResult(null)).success,
+      ).toBe(false);
     }
   });
 

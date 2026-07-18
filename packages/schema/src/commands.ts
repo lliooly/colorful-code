@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { commandAckSchema } from './ack.js';
 import {
   configRevisionSchema,
   durableCursorSchema,
@@ -36,7 +37,7 @@ import { approvalViewSchema, operationViewSchema } from './operations.js';
 import { policyPatchSchema, policyRevisionResultSchema } from './policy.js';
 import { queueItemViewSchema, queueViewSchema } from './queue.js';
 import { runViewSchema } from './run.js';
-import { threadSnapshotSchema } from './snapshot.js';
+import { snapshotResetSchema, threadSnapshotSchema } from './snapshot.js';
 import {
   inputContentSchema,
   threadViewSchema,
@@ -241,16 +242,58 @@ export const applyCheckpointBodySchema = strictObjectSchema({
 });
 export type ApplyCheckpointBody = z.infer<typeof applyCheckpointBodySchema>;
 
-export const eventAttachQuerySchema = strictObjectSchema({
+const durableOnlyEventAttachParamsSchema = strictObjectSchema({
   durableAfter: durableCursorSchema.optional(),
-  incarnationId: incarnationIdSchema.optional(),
-  streamAfter: streamCursorSchema.optional(),
-}).refine(
-  ({ incarnationId, streamAfter }) =>
-    (incarnationId === undefined) === (streamAfter === undefined),
-  { message: 'incarnationId and streamAfter must be provided together' },
-);
+});
+
+const runtimeEventAttachParamsSchema = strictObjectSchema({
+  durableAfter: durableCursorSchema.optional(),
+  incarnationId: incarnationIdSchema,
+  streamAfter: streamCursorSchema,
+});
+
+export const eventAttachParamsSchema = z.union([
+  durableOnlyEventAttachParamsSchema,
+  runtimeEventAttachParamsSchema,
+]);
+export type EventAttachParams = z.infer<typeof eventAttachParamsSchema>;
+
+export const eventAttachQuerySchema = eventAttachParamsSchema;
 export type EventAttachQuery = z.infer<typeof eventAttachQuerySchema>;
+
+const durableOnlyEventAttachAcceptedResponseSchema = strictObjectSchema({
+  outcome: z.literal('accepted'),
+  durableCursor: durableCursorSchema,
+});
+
+const runtimeEventAttachAcceptedResponseSchema = strictObjectSchema({
+  outcome: z.literal('accepted'),
+  durableCursor: durableCursorSchema,
+  incarnationId: incarnationIdSchema,
+  streamCursor: streamCursorSchema,
+});
+
+export const eventAttachAcceptedResponseSchema = z.union([
+  durableOnlyEventAttachAcceptedResponseSchema,
+  runtimeEventAttachAcceptedResponseSchema,
+]);
+export type EventAttachAcceptedResponse = z.infer<
+  typeof eventAttachAcceptedResponseSchema
+>;
+
+export const eventAttachResetResponseSchema = strictObjectSchema({
+  outcome: z.literal('reset'),
+  frame: snapshotResetSchema,
+});
+export type EventAttachResetResponse = z.infer<
+  typeof eventAttachResetResponseSchema
+>;
+
+export const eventAttachResponseSchema = z.union([
+  eventAttachAcceptedResponseSchema,
+  eventAttachResetResponseSchema,
+]);
+export type EventAttachResponse = z.infer<typeof eventAttachResponseSchema>;
 
 export const queueMutationBodySchema = strictObjectSchema({
   commandId: commandIdSchema,
@@ -347,7 +390,7 @@ export const httpContractRegistry = defineRegistry({
     path: '/v2/threads',
     operationId: 'thread.create',
     bodySchema: createThreadBodySchema,
-    resultSchema: threadViewSchema,
+    resultSchema: commandAckSchema(threadViewSchema),
     responseKind: 'commandAck',
   }),
   'thread.list': endpoint({
@@ -373,7 +416,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'thread.patch',
     pathSchema: threadPathSchema,
     bodySchema: patchThreadBodySchema,
-    resultSchema: threadViewSchema,
+    resultSchema: commandAckSchema(threadViewSchema),
     responseKind: 'commandAck',
   }),
   'thread.delete': endpoint({
@@ -382,7 +425,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'thread.delete',
     pathSchema: threadPathSchema,
     bodySchema: threadLifecycleBodySchema,
-    resultSchema: threadViewSchema,
+    resultSchema: commandAckSchema(threadViewSchema),
     responseKind: 'commandAck',
   }),
   'thread.resume': endpoint({
@@ -391,7 +434,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'thread.resume',
     pathSchema: threadPathSchema,
     bodySchema: threadLifecycleBodySchema,
-    resultSchema: undefinedResultSchema,
+    resultSchema: commandAckSchema(),
     responseKind: 'commandAck',
   }),
   'thread.archive': endpoint({
@@ -400,7 +443,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'thread.archive',
     pathSchema: threadPathSchema,
     bodySchema: threadLifecycleBodySchema,
-    resultSchema: threadViewSchema,
+    resultSchema: commandAckSchema(threadViewSchema),
     responseKind: 'commandAck',
   }),
   'thread.unarchive': endpoint({
@@ -409,7 +452,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'thread.unarchive',
     pathSchema: threadPathSchema,
     bodySchema: threadLifecycleBodySchema,
-    resultSchema: threadViewSchema,
+    resultSchema: commandAckSchema(threadViewSchema),
     responseKind: 'commandAck',
   }),
   'thread.undelete': endpoint({
@@ -418,7 +461,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'thread.undelete',
     pathSchema: threadPathSchema,
     bodySchema: threadLifecycleBodySchema,
-    resultSchema: undefinedResultSchema,
+    resultSchema: commandAckSchema(),
     responseKind: 'commandAck',
   }),
   'thread.fork': endpoint({
@@ -427,7 +470,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'thread.fork',
     pathSchema: threadPathSchema,
     bodySchema: forkThreadBodySchema,
-    resultSchema: threadViewSchema,
+    resultSchema: commandAckSchema(threadViewSchema),
     responseKind: 'commandAck',
   }),
   'submission.create': endpoint({
@@ -436,7 +479,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'submission.create',
     pathSchema: threadPathSchema,
     bodySchema: createSubmissionBodySchema,
-    resultSchema: submissionResultSchema,
+    resultSchema: commandAckSchema(submissionResultSchema),
     responseKind: 'commandAck',
   }),
   'run.list': endpoint({
@@ -463,7 +506,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'run.steer',
     pathSchema: runPathSchema,
     bodySchema: steerRunBodySchema,
-    resultSchema: undefinedResultSchema,
+    resultSchema: commandAckSchema(),
     responseKind: 'commandAck',
   }),
   'run.stop': endpoint({
@@ -472,7 +515,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'run.stop',
     pathSchema: runPathSchema,
     bodySchema: stopRunBodySchema,
-    resultSchema: undefinedResultSchema,
+    resultSchema: commandAckSchema(),
     responseKind: 'commandAck',
   }),
   'queue.get': endpoint({
@@ -490,7 +533,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'queue.item.patch',
     pathSchema: queueItemPathSchema,
     bodySchema: patchQueueItemBodySchema,
-    resultSchema: patchQueueItemResultSchema,
+    resultSchema: commandAckSchema(patchQueueItemResultSchema),
     responseKind: 'commandAck',
   }),
   'queue.item.delete': endpoint({
@@ -499,7 +542,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'queue.item.delete',
     pathSchema: queueItemPathSchema,
     bodySchema: queueMutationBodySchema,
-    resultSchema: queueRevisionResultSchema,
+    resultSchema: commandAckSchema(queueRevisionResultSchema),
     responseKind: 'commandAck',
   }),
   'queue.reorder': endpoint({
@@ -508,7 +551,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'queue.reorder',
     pathSchema: threadPathSchema,
     bodySchema: reorderQueueBodySchema,
-    resultSchema: queueRevisionResultSchema,
+    resultSchema: commandAckSchema(queueRevisionResultSchema),
     responseKind: 'commandAck',
   }),
   'queue.pause': endpoint({
@@ -517,7 +560,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'queue.pause',
     pathSchema: threadPathSchema,
     bodySchema: queueMutationBodySchema,
-    resultSchema: queueRevisionResultSchema,
+    resultSchema: commandAckSchema(queueRevisionResultSchema),
     responseKind: 'commandAck',
   }),
   'queue.resume': endpoint({
@@ -526,7 +569,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'queue.resume',
     pathSchema: threadPathSchema,
     bodySchema: queueMutationBodySchema,
-    resultSchema: queueRevisionResultSchema,
+    resultSchema: commandAckSchema(queueRevisionResultSchema),
     responseKind: 'commandAck',
   }),
   'approval.decide': endpoint({
@@ -535,7 +578,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'approval.decide',
     pathSchema: approvalDecisionPathSchema,
     bodySchema: approvalDecisionBodySchema,
-    resultSchema: approvalViewSchema,
+    resultSchema: commandAckSchema(approvalViewSchema),
     responseKind: 'commandAck',
   }),
   'config.change': endpoint({
@@ -544,7 +587,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'config.change',
     pathSchema: threadPathSchema,
     bodySchema: configChangeBodySchema,
-    resultSchema: configRevisionResultSchema,
+    resultSchema: commandAckSchema(configRevisionResultSchema),
     responseKind: 'commandAck',
   }),
   'policy.change': endpoint({
@@ -553,7 +596,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'policy.change',
     pathSchema: threadPathSchema,
     bodySchema: policyChangeBodySchema,
-    resultSchema: policyRevisionResultSchema,
+    resultSchema: commandAckSchema(policyRevisionResultSchema),
     responseKind: 'commandAck',
   }),
   'operation.list': endpoint({
@@ -589,7 +632,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'checkpoint.apply',
     pathSchema: checkpointPathSchema,
     bodySchema: applyCheckpointBodySchema,
-    resultSchema: undefinedResultSchema,
+    resultSchema: commandAckSchema(),
     responseKind: 'commandAck',
   }),
   'snapshot.get': endpoint({
