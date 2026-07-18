@@ -18,6 +18,7 @@ import {
   runIdSchema,
   threadIdSchema,
   toolExecutionIdSchema,
+  transcriptItemIdSchema,
 } from './ids.js';
 import {
   operationCancelledEventPayloadSchema as cancelledOperationPayloadSchema,
@@ -299,6 +300,7 @@ export type KnownDurableEventEnvelope = z.infer<
 
 const deltaChunkSchema = z.string().min(1).max(MAX_DELTA_CHUNK_LENGTH);
 const assistantDeltaPayloadSchema = strictObjectSchema({
+  transcriptItemId: transcriptItemIdSchema,
   chunk: deltaChunkSchema,
 });
 const toolDeltaPayloadSchema = strictObjectSchema({

@@ -338,7 +338,7 @@ describe('parseThreadStreamFrame unknown event compatibility', () => {
       ...unknownTransient,
       kind: 'assistant.textDelta',
       critical: true,
-      payload: { chunk: 'hello' },
+      payload: { transcriptItemId: 'transcript-1', chunk: 'hello' },
     } as const;
 
     expect(parseThreadStreamFrame(known)).toEqual({

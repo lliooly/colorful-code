@@ -23,7 +23,7 @@ const knownTransient = {
   kind: 'assistant.textDelta',
   critical: false,
   occurredAt,
-  payload: { chunk: 'hello' },
+  payload: { transcriptItemId: 'transcript-1', chunk: 'hello' },
   durability: 'transient',
   incarnationId: 'incarnation-1',
   streamSequence: '43',

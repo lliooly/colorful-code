@@ -152,8 +152,14 @@ const durableBase = {
 } as const;
 
 const transientPayloads = {
-  'assistant.textDelta': { chunk: ' hello ' },
-  'assistant.reasoningDelta': { chunk: '\nreasoning\n' },
+  'assistant.textDelta': {
+    transcriptItemId: 'transcript-1',
+    chunk: ' hello ',
+  },
+  'assistant.reasoningDelta': {
+    transcriptItemId: 'transcript-1',
+    chunk: '\nreasoning\n',
+  },
   'tool.stdoutDelta': {
     toolExecutionId: 'tool-execution-1',
     chunk: ' stdout ',
@@ -393,22 +399,45 @@ describe('known transient event envelopes', () => {
     const fixture = {
       ...transientBase,
       kind: 'assistant.textDelta',
-      payload: { chunk: 'x' },
+      payload: { transcriptItemId: 'transcript-1', chunk: 'x' },
     };
 
     expect(knownTransientEventEnvelopeSchema.safeParse(fixture).success).toBe(
       true,
     );
     for (const payload of [
-      { chunk: '' },
-      { chunk: 'x'.repeat(65_537) },
-      { chunk: 'safe', secret: 'credential-material' },
-      { chunk: 'safe', rawCredential: 'credential-material' },
+      { transcriptItemId: 'transcript-1', chunk: '' },
+      { transcriptItemId: 'transcript-1', chunk: 'x'.repeat(65_537) },
+      {
+        transcriptItemId: 'transcript-1',
+        chunk: 'safe',
+        secret: 'credential-material',
+      },
+      {
+        transcriptItemId: 'transcript-1',
+        chunk: 'safe',
+        rawCredential: 'credential-material',
+      },
     ]) {
       expect(
         knownTransientEventEnvelopeSchema.safeParse({
           ...fixture,
           payload,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  test('requires assistant deltas to identify their transcript item', () => {
+    for (const kind of [
+      'assistant.textDelta',
+      'assistant.reasoningDelta',
+    ] as const) {
+      expect(
+        knownTransientEventEnvelopeSchema.safeParse({
+          ...transientBase,
+          kind,
+          payload: { chunk: 'delta' },
         }).success,
       ).toBe(false);
     }
