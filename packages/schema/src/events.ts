@@ -89,9 +89,14 @@ type JsonWireOutput<Value> = 0 extends 1 & Value
 
 const invalidJsonWirePayload = Symbol('invalidJsonWirePayload');
 
+type JsonWirePayloadSchema<PayloadSchema extends z.ZodType> = z.ZodType<
+  JsonWireOutput<z.output<PayloadSchema>>,
+  z.input<PayloadSchema>
+>;
+
 const createJsonWirePayloadSchema = <PayloadSchema extends z.ZodType>(
   payloadSchema: PayloadSchema,
-) => {
+): JsonWirePayloadSchema<PayloadSchema> => {
   assertJsonSchemaCompatible(payloadSchema);
   return payloadSchema
     .nonoptional()
@@ -136,6 +141,29 @@ type EventPayloadShape = {
   payload: z.ZodType;
 };
 
+type DurableEventEnvelopeShape<Shape extends EventPayloadShape> = Omit<
+  typeof eventBaseShape,
+  'kind' | 'payload'
+> & {
+  kind: Shape['kind'];
+  payload: JsonWirePayloadSchema<Shape['payload']>;
+  durability: z.ZodLiteral<'durable'>;
+  durableSequence: typeof durableCursorSchema;
+  streamBasis: z.ZodOptional<typeof streamBasisSchema>;
+};
+
+type TransientEventEnvelopeShape<Shape extends EventPayloadShape> = Omit<
+  typeof eventBaseShape,
+  'kind' | 'payload'
+> & {
+  kind: Shape['kind'];
+  payload: JsonWirePayloadSchema<Shape['payload']>;
+  durability: z.ZodLiteral<'transient'>;
+  incarnationId: typeof incarnationIdSchema;
+  streamSequence: typeof streamCursorSchema;
+  durableBasis: typeof durableBasisSchema;
+};
+
 const assertSingleEventKind = (kindSchema: z.ZodLiteral<string>) => {
   const kinds = [...kindSchema.values];
   if (
@@ -148,36 +176,40 @@ const assertSingleEventKind = (kindSchema: z.ZodLiteral<string>) => {
 };
 
 export const createDurableEventEnvelopeSchema = <
-  Shape extends EventPayloadShape,
+  const Shape extends EventPayloadShape,
 >(
   eventPayloadSchema: z.ZodObject<Shape>,
 ) => {
   assertSingleEventKind(eventPayloadSchema.shape.kind);
-  return strictObjectSchema({
+  const payloadSchema = eventPayloadSchema.shape.payload as Shape['payload'];
+  const shape: DurableEventEnvelopeShape<Shape> = {
     ...eventBaseShape,
     kind: eventPayloadSchema.shape.kind,
-    payload: createJsonWirePayloadSchema(eventPayloadSchema.shape.payload),
+    payload: createJsonWirePayloadSchema(payloadSchema),
     durability: z.literal('durable'),
     durableSequence: durableCursorSchema,
     streamBasis: streamBasisSchema.optional(),
-  });
+  };
+  return strictObjectSchema(shape);
 };
 
 export const createTransientEventEnvelopeSchema = <
-  Shape extends EventPayloadShape,
+  const Shape extends EventPayloadShape,
 >(
   eventPayloadSchema: z.ZodObject<Shape>,
 ) => {
   assertSingleEventKind(eventPayloadSchema.shape.kind);
-  return strictObjectSchema({
+  const payloadSchema = eventPayloadSchema.shape.payload as Shape['payload'];
+  const shape: TransientEventEnvelopeShape<Shape> = {
     ...eventBaseShape,
     kind: eventPayloadSchema.shape.kind,
-    payload: createJsonWirePayloadSchema(eventPayloadSchema.shape.payload),
+    payload: createJsonWirePayloadSchema(payloadSchema),
     durability: z.literal('transient'),
     incarnationId: incarnationIdSchema,
     streamSequence: streamCursorSchema,
     durableBasis: durableBasisSchema,
-  });
+  };
+  return strictObjectSchema(shape);
 };
 
 const threadUpdatedEventPayloadSchema = createEventPayloadSchema(
