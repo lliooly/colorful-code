@@ -34,27 +34,42 @@ const operationTerminalCommonShape = () => ({
   revision: revisionSchema,
 });
 
+export const operationCompletedEventPayloadSchema = strictObjectSchema({
+  ...operationTerminalCommonShape(),
+  status: z.literal('completed'),
+  completedAt: timestampSchema,
+  result: jsonValueSchema.optional(),
+});
+export type OperationCompletedEventPayload = z.infer<
+  typeof operationCompletedEventPayloadSchema
+>;
+
+export const operationFailedEventPayloadSchema = strictObjectSchema({
+  ...operationTerminalCommonShape(),
+  status: z.literal('failed'),
+  error: apiErrorPayloadSchema,
+});
+export type OperationFailedEventPayload = z.infer<
+  typeof operationFailedEventPayloadSchema
+>;
+
+export const operationCancelledEventPayloadSchema = strictObjectSchema({
+  ...operationTerminalCommonShape(),
+  status: z.literal('cancelled'),
+  reason: z.string().trim().min(1),
+  cancelledAt: timestampSchema,
+  result: jsonValueSchema.optional(),
+});
+export type OperationCancelledEventPayload = z.infer<
+  typeof operationCancelledEventPayloadSchema
+>;
+
 export const operationTerminalEventPayloadSchema = z.discriminatedUnion(
   'status',
   [
-    strictObjectSchema({
-      ...operationTerminalCommonShape(),
-      status: z.literal('completed'),
-      completedAt: timestampSchema,
-      result: jsonValueSchema.optional(),
-    }),
-    strictObjectSchema({
-      ...operationTerminalCommonShape(),
-      status: z.literal('failed'),
-      error: apiErrorPayloadSchema,
-    }),
-    strictObjectSchema({
-      ...operationTerminalCommonShape(),
-      status: z.literal('cancelled'),
-      reason: z.string().trim().min(1),
-      cancelledAt: timestampSchema,
-      result: jsonValueSchema.optional(),
-    }),
+    operationCompletedEventPayloadSchema,
+    operationFailedEventPayloadSchema,
+    operationCancelledEventPayloadSchema,
   ],
 );
 export type OperationTerminalEventPayload = z.infer<

@@ -3,6 +3,8 @@ import { z } from 'zod';
 
 import {
   configRevisionSchema,
+  createBoundedJsonObjectSchema,
+  createBoundedJsonValueSchema,
   durableCursorSchema,
   jsonObjectSchema,
   jsonValueSchema,
@@ -267,6 +269,20 @@ describe('jsonValueSchema', () => {
     expect(Object.prototype).not.toHaveProperty('polluted');
   });
 
+  test('returns ordinary objects without weakening prototype pollution defenses', () => {
+    const input = JSON.parse(
+      '{"value":1,"__proto__":{"polluted":true}}',
+    ) as Record<string, unknown>;
+    const parsed = jsonValueSchema.parse(input) as Record<string, unknown>;
+
+    expect(Object.getPrototypeOf(parsed)).toBe(Object.prototype);
+    expect(parsed.hasOwnProperty('value')).toBe(true);
+    expect(parsed.toString()).toBe('[object Object]');
+    expect(`${parsed}`).toBe('[object Object]');
+    expect(Object.hasOwn(parsed, '__proto__')).toBe(true);
+    expect(Object.prototype).not.toHaveProperty('polluted');
+  });
+
   test('preserves prefixed, proto and nested object keys without collisions', () => {
     const nested = Object.create(null) as Record<string, unknown>;
     Object.defineProperty(nested, '__proto__', {
@@ -317,6 +333,258 @@ describe('jsonValueSchema', () => {
     expect(JSON.stringify(valueJsonSchema)).not.toBe(
       '{"$schema":"https://json-schema.org/draft/2020-12/schema"}',
     );
+  });
+});
+
+describe('createBoundedJsonValueSchema', () => {
+  test('rejects invalid serialized-length budgets at construction', () => {
+    for (const invalid of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => createBoundedJsonValueSchema(invalid)).toThrow(
+        'Maximum serialized JSON length must be a non-negative safe integer',
+      );
+    }
+
+    for (const invalid of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => createBoundedJsonValueSchema(100, invalid)).toThrow(
+        'Maximum JSON token count must be a non-negative safe integer',
+      );
+    }
+  });
+
+  test('keeps invalid, over-length and over-complexity issues distinct', () => {
+    const invalid = createBoundedJsonValueSchema(100, 10).safeParse(undefined);
+    const overLength = createBoundedJsonValueSchema(0, 10).safeParse(null);
+    const overComplexity = createBoundedJsonValueSchema(100, 0).safeParse(null);
+
+    expect(invalid.success).toBe(false);
+    expect(overLength.success).toBe(false);
+    expect(overComplexity.success).toBe(false);
+    if (!invalid.success && !overLength.success && !overComplexity.success) {
+      expect(invalid.error.issues.map((issue) => issue.message)).toContain(
+        'Expected a JSON value',
+      );
+      expect(overLength.error.issues.map((issue) => issue.message)).toContain(
+        'JSON value exceeds the maximum serialized length',
+      );
+      expect(
+        overComplexity.error.issues.map((issue) => issue.message),
+      ).toContain('JSON value exceeds the maximum token count');
+    }
+  });
+
+  test('rejects an object before ownKeys when braces exceed the budget', () => {
+    let ownKeysCalls = 0;
+    const observed = new Proxy(
+      {},
+      {
+        ownKeys: (target) => {
+          ownKeysCalls += 1;
+          return Reflect.ownKeys(target);
+        },
+      },
+    );
+
+    expect(createBoundedJsonValueSchema(0).safeParse(observed).success).toBe(
+      false,
+    );
+    expect(ownKeysCalls).toBe(0);
+  });
+
+  test('counts every JSON wire token at an exact serialized boundary', () => {
+    const fixtures: Array<[unknown, number]> = [
+      ['"', 4],
+      ['\\', 4],
+      ['\u0000\b\t\n\f\r\u001f', 24],
+      ['\ud800', 8],
+      ['你😀', 5],
+      [-0, 1],
+      [1e21, 5],
+      [true, 4],
+      [false, 5],
+      [null, 4],
+      [[], 2],
+      [{}, 2],
+      [{ ['"\\\n']: 0 }, 12],
+      [[null, true, { a: 'b' }], 21],
+    ];
+
+    for (const [value, serializedLength] of fixtures) {
+      expect(
+        createBoundedJsonValueSchema(serializedLength).safeParse(value).success,
+      ).toBe(true);
+      const rejected = createBoundedJsonValueSchema(
+        serializedLength - 1,
+      ).safeParse(value);
+      expect(rejected.success).toBe(false);
+      if (!rejected.success) {
+        expect(rejected.error.issues.map((issue) => issue.message)).toContain(
+          'JSON value exceeds the maximum serialized length',
+        );
+      }
+    }
+  });
+
+  test('counts primitive, container and key tokens at exact boundaries', () => {
+    const fixtures: Array<[unknown, number]> = [
+      [null, 1],
+      [[], 1],
+      [[null], 2],
+      [{}, 1],
+      [{ a: null }, 3],
+      [{ a: [true] }, 4],
+    ];
+
+    for (const [value, tokenCount] of fixtures) {
+      expect(
+        createBoundedJsonValueSchema(1_000, tokenCount).safeParse(value)
+          .success,
+      ).toBe(true);
+      expect(
+        createBoundedJsonValueSchema(1_000, tokenCount - 1).safeParse(value)
+          .success,
+      ).toBe(false);
+    }
+  });
+
+  test('prechecks dense arrays and objects before enumerating their values', () => {
+    const arraySource = Array.from({ length: 100 }, () => null);
+    let arrayOwnKeysCalls = 0;
+    let arrayLengthDescriptorReads = 0;
+    let arrayElementDescriptorReads = 0;
+    const observedArray = new Proxy(arraySource, {
+      ownKeys: (target) => {
+        arrayOwnKeysCalls += 1;
+        return Reflect.ownKeys(target);
+      },
+      getOwnPropertyDescriptor: (target, key) => {
+        if (key === 'length') arrayLengthDescriptorReads += 1;
+        else arrayElementDescriptorReads += 1;
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+
+    const objectSource = Object.fromEntries(
+      Array.from({ length: 100 }, (_, index) => [`key-${index}`, null]),
+    );
+    let objectOwnKeysCalls = 0;
+    let objectDescriptorReads = 0;
+    const observedObject = new Proxy(objectSource, {
+      ownKeys: (target) => {
+        objectOwnKeysCalls += 1;
+        return Reflect.ownKeys(target);
+      },
+      getOwnPropertyDescriptor: (target, key) => {
+        objectDescriptorReads += 1;
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+
+    expect(
+      createBoundedJsonValueSchema(10_000, 100).safeParse(observedArray)
+        .success,
+    ).toBe(false);
+    expect(arrayLengthDescriptorReads).toBe(1);
+    expect(arrayOwnKeysCalls).toBe(0);
+    expect(arrayElementDescriptorReads).toBe(0);
+
+    expect(
+      createBoundedJsonValueSchema(10_000, 200).safeParse(observedObject)
+        .success,
+    ).toBe(false);
+    expect(objectOwnKeysCalls).toBe(1);
+    expect(objectDescriptorReads).toBe(0);
+
+    expect(
+      createBoundedJsonValueSchema(10_000).safeParse(arraySource).success,
+    ).toBe(true);
+  });
+
+  test('counts a large escaped string without constructing a serialized copy', () => {
+    const limit = 1_048_576;
+    const escapedUnit = '"\\\n\ud800';
+    const value = `${escapedUnit.repeat(87_381)}xx`;
+    const schema = createBoundedJsonValueSchema(limit);
+
+    expect(schema.safeParse(value).success).toBe(true);
+    expect(schema.safeParse(`${value}x`).success).toBe(false);
+  });
+
+  test('stops reading wide container descriptors when the budget is exhausted', () => {
+    const wideArraySource = Array.from({ length: 10_000 }, () => 'x');
+    let arrayOwnKeysCalls = 0;
+    let arrayLengthDescriptorReads = 0;
+    let arrayElementDescriptorReads = 0;
+    const wideArray = new Proxy(wideArraySource, {
+      ownKeys: (target) => {
+        arrayOwnKeysCalls += 1;
+        return Reflect.ownKeys(target);
+      },
+      getOwnPropertyDescriptor: (target, key) => {
+        if (key === 'length') {
+          arrayLengthDescriptorReads += 1;
+        } else {
+          arrayElementDescriptorReads += 1;
+        }
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+
+    const wideObjectSource = Object.fromEntries(
+      Array.from({ length: 10_000 }, (_, index) => [`key-${index}`, 'x']),
+    );
+    let objectDescriptorReads = 0;
+    const wideObject = new Proxy(wideObjectSource, {
+      getOwnPropertyDescriptor: (target, key) => {
+        objectDescriptorReads += 1;
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+
+    const schema = createBoundedJsonValueSchema(100);
+    expect(schema.safeParse(wideArray).success).toBe(false);
+    expect(schema.safeParse(wideObject).success).toBe(false);
+    expect(arrayLengthDescriptorReads).toBe(1);
+    expect(arrayOwnKeysCalls).toBe(0);
+    expect(arrayElementDescriptorReads).toBe(0);
+    expect(objectDescriptorReads).toBe(0);
+  });
+
+  test('returns a detached bounded snapshot', () => {
+    const shared = ['before'];
+    const source = { nested: shared, repeated: shared };
+    const parsed = createBoundedJsonValueSchema(100, 7).parse(source);
+
+    expect(parsed).not.toBe(source);
+    if (
+      parsed === null ||
+      typeof parsed !== 'object' ||
+      Array.isArray(parsed)
+    ) {
+      throw new Error('expected an object JSON snapshot');
+    }
+    expect(parsed.nested).not.toBe(source.nested);
+    expect(parsed.repeated).not.toBe(parsed.nested);
+
+    source.nested[0] = 'after';
+    expect(parsed).toEqual({ nested: ['before'], repeated: ['before'] });
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(
+      createBoundedJsonValueSchema(100, 100).safeParse(cyclic).success,
+    ).toBe(false);
+    expect(() =>
+      z.toJSONSchema(createBoundedJsonValueSchema(100)),
+    ).not.toThrow();
+  });
+});
+
+describe('createBoundedJsonObjectSchema', () => {
+  test('bounds JSON objects iteratively while preserving object JSON Schema', () => {
+    const schema = createBoundedJsonObjectSchema(100, 20);
+
+    expect(schema.safeParse({ nested: { value: 1 } }).success).toBe(true);
+    expect(schema.safeParse([]).success).toBe(false);
+    expect(z.toJSONSchema(schema).type).toBe('object');
   });
 });
 

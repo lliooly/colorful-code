@@ -50,6 +50,8 @@ const hasDataValue = (
   descriptor !== undefined && 'value' in descriptor;
 
 const invalidJsonValue = Symbol('invalidJsonValue');
+const jsonValueExceedsMaxLength = Symbol('jsonValueExceedsMaxLength');
+const jsonValueExceedsMaxTokenCount = Symbol('jsonValueExceedsMaxTokenCount');
 type JsonToken =
   | ['value', string | number | boolean | null]
   | ['array', number]
@@ -59,14 +61,108 @@ type JsonToken =
 type PendingJsonItem =
   | { kind: 'value'; value: unknown }
   | { kind: 'key'; key: string }
-  | { kind: 'exit'; value: object };
+  | { kind: 'array'; value: unknown[]; index: number; length: number }
+  | { kind: 'object'; value: object; keys: string[]; index: number };
 
-const encodeJsonValue = (
+type JsonEncodingBudget = { remaining: number };
+
+const consumeJsonLength = (
+  budget: JsonEncodingBudget | undefined,
+  length: number,
+) => {
+  if (budget === undefined) return true;
+  if (length > budget.remaining) return false;
+  budget.remaining -= length;
+  return true;
+};
+
+const hasArrayTokenMinimum = (
+  budget: JsonEncodingBudget | undefined,
+  length: number,
+) =>
+  budget === undefined ||
+  (budget.remaining > 0 && length <= budget.remaining - 1);
+
+const hasObjectTokenMinimum = (
+  budget: JsonEncodingBudget | undefined,
+  keyCount: number,
+) =>
+  budget === undefined ||
+  (budget.remaining > 0 && keyCount <= Math.floor((budget.remaining - 1) / 2));
+
+const consumeJsonStringLength = (
+  value: string,
+  budget: JsonEncodingBudget | undefined,
+) => {
+  if (budget === undefined) return true;
+  if (!consumeJsonLength(budget, 2)) return false;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (
+      codeUnit === 0x22 ||
+      codeUnit === 0x5c ||
+      codeUnit === 0x08 ||
+      codeUnit === 0x09 ||
+      codeUnit === 0x0a ||
+      codeUnit === 0x0c ||
+      codeUnit === 0x0d
+    ) {
+      if (!consumeJsonLength(budget, 2)) return false;
+      continue;
+    }
+    if (codeUnit <= 0x1f) {
+      if (!consumeJsonLength(budget, 6)) return false;
+      continue;
+    }
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const nextCodeUnit = value.charCodeAt(index + 1);
+      if (nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff) {
+        if (!consumeJsonLength(budget, 2)) return false;
+        index += 1;
+      } else if (!consumeJsonLength(budget, 6)) {
+        return false;
+      }
+      continue;
+    }
+    if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      if (!consumeJsonLength(budget, 6)) return false;
+      continue;
+    }
+    if (!consumeJsonLength(budget, 1)) return false;
+  }
+
+  return true;
+};
+
+function encodeJsonValue(root: unknown): JsonToken[] | typeof invalidJsonValue;
+function encodeJsonValue(
   root: unknown,
-): JsonToken[] | typeof invalidJsonValue => {
+  maxSerializedLength: number,
+  maxTokenCount?: number,
+):
+  | JsonToken[]
+  | typeof invalidJsonValue
+  | typeof jsonValueExceedsMaxLength
+  | typeof jsonValueExceedsMaxTokenCount;
+function encodeJsonValue(
+  root: unknown,
+  maxSerializedLength?: number,
+  maxTokenCount?: number,
+):
+  | JsonToken[]
+  | typeof invalidJsonValue
+  | typeof jsonValueExceedsMaxLength
+  | typeof jsonValueExceedsMaxTokenCount {
   const tokens: JsonToken[] = [];
   const ancestors = new WeakSet<object>();
   const pending: PendingJsonItem[] = [{ kind: 'value', value: root }];
+  const budget =
+    maxSerializedLength === undefined
+      ? undefined
+      : { remaining: maxSerializedLength };
+  const tokenBudget =
+    maxTokenCount === undefined ? undefined : { remaining: maxTokenCount };
 
   try {
     while (pending.length > 0) {
@@ -74,11 +170,42 @@ const encodeJsonValue = (
       if (item === undefined) return invalidJsonValue;
 
       if (item.kind === 'key') {
+        if (!consumeJsonLength(tokenBudget, 1)) {
+          return jsonValueExceedsMaxTokenCount;
+        }
         tokens.push(['key', item.key]);
         continue;
       }
-      if (item.kind === 'exit') {
-        ancestors.delete(item.value);
+      if (item.kind === 'array') {
+        if (item.index === item.length) {
+          ancestors.delete(item.value);
+          continue;
+        }
+        const descriptor = Object.getOwnPropertyDescriptor(
+          item.value,
+          String(item.index),
+        );
+        if (!hasDataValue(descriptor) || !descriptor.enumerable) {
+          return invalidJsonValue;
+        }
+        pending.push({ ...item, index: item.index + 1 });
+        pending.push({ kind: 'value', value: descriptor.value });
+        continue;
+      }
+      if (item.kind === 'object') {
+        if (item.index === item.keys.length) {
+          ancestors.delete(item.value);
+          continue;
+        }
+        const key = item.keys[item.index];
+        if (key === undefined) return invalidJsonValue;
+        const descriptor = Object.getOwnPropertyDescriptor(item.value, key);
+        if (!hasDataValue(descriptor) || !descriptor.enumerable) {
+          return invalidJsonValue;
+        }
+        pending.push({ ...item, index: item.index + 1 });
+        pending.push({ kind: 'value', value: descriptor.value });
+        pending.push({ kind: 'key', key });
         continue;
       }
 
@@ -88,11 +215,25 @@ const encodeJsonValue = (
         typeof value === 'string' ||
         typeof value === 'boolean'
       ) {
+        const withinBudget =
+          typeof value === 'string'
+            ? consumeJsonStringLength(value, budget)
+            : consumeJsonLength(budget, value === null ? 4 : value ? 4 : 5);
+        if (!withinBudget) return jsonValueExceedsMaxLength;
+        if (!consumeJsonLength(tokenBudget, 1)) {
+          return jsonValueExceedsMaxTokenCount;
+        }
         tokens.push(['value', value]);
         continue;
       }
       if (typeof value === 'number') {
         if (!Number.isFinite(value)) return invalidJsonValue;
+        if (!consumeJsonLength(budget, String(value).length)) {
+          return jsonValueExceedsMaxLength;
+        }
+        if (!consumeJsonLength(tokenBudget, 1)) {
+          return jsonValueExceedsMaxTokenCount;
+        }
         tokens.push(['value', value]);
         continue;
       }
@@ -108,52 +249,67 @@ const encodeJsonValue = (
         return invalidJsonValue;
       }
 
-      const descriptors = Object.getOwnPropertyDescriptors(value);
-      const keys = Reflect.ownKeys(descriptors);
-      ancestors.add(value);
-      pending.push({ kind: 'exit', value });
-
       if (isArray) {
-        const lengthDescriptor = descriptors.length;
+        const lengthDescriptor = Object.getOwnPropertyDescriptor(
+          value,
+          'length',
+        );
         if (!hasDataValue(lengthDescriptor)) return invalidJsonValue;
         const length = lengthDescriptor.value;
-        if (
-          !Number.isSafeInteger(length) ||
-          length < 0 ||
-          keys.length !== length + 1
-        ) {
+        if (!Number.isSafeInteger(length) || length < 0) {
           return invalidJsonValue;
         }
 
+        if (!consumeJsonLength(budget, 2 + Math.max(0, length - 1))) {
+          return jsonValueExceedsMaxLength;
+        }
+        if (!hasArrayTokenMinimum(tokenBudget, length)) {
+          return jsonValueExceedsMaxTokenCount;
+        }
+        const keys = Reflect.ownKeys(value);
+        if (keys.length !== length + 1) return invalidJsonValue;
+        if (!consumeJsonLength(tokenBudget, 1)) {
+          return jsonValueExceedsMaxTokenCount;
+        }
         tokens.push(['array', length]);
-        for (let index = length - 1; index >= 0; index -= 1) {
-          const descriptor = descriptors[String(index)];
-          if (!hasDataValue(descriptor) || !descriptor.enumerable) {
-            return invalidJsonValue;
-          }
-          pending.push({ kind: 'value', value: descriptor.value });
+        if (length > 0) {
+          ancestors.add(value);
+          pending.push({ kind: 'array', value, index: 0, length });
         }
         continue;
       }
 
-      const stringKeys: string[] = [];
+      if (!consumeJsonLength(budget, 2)) {
+        return jsonValueExceedsMaxLength;
+      }
+      const keys = Reflect.ownKeys(value);
       for (const key of keys) {
         if (typeof key !== 'string') return invalidJsonValue;
-        const descriptor = descriptors[key];
-        if (!hasDataValue(descriptor) || !descriptor.enumerable) {
-          return invalidJsonValue;
-        }
-        stringKeys.push(key);
+      }
+      const stringKeys = keys as string[];
+
+      if (!hasObjectTokenMinimum(tokenBudget, stringKeys.length)) {
+        return jsonValueExceedsMaxTokenCount;
       }
 
+      if (!consumeJsonLength(budget, Math.max(0, stringKeys.length - 1))) {
+        return jsonValueExceedsMaxLength;
+      }
+      for (const key of stringKeys) {
+        if (
+          !consumeJsonStringLength(key, budget) ||
+          !consumeJsonLength(budget, 1)
+        ) {
+          return jsonValueExceedsMaxLength;
+        }
+      }
+      if (!consumeJsonLength(tokenBudget, 1)) {
+        return jsonValueExceedsMaxTokenCount;
+      }
       tokens.push(['object', stringKeys.length]);
-      for (let index = stringKeys.length - 1; index >= 0; index -= 1) {
-        const key = stringKeys[index];
-        if (key === undefined) return invalidJsonValue;
-        const descriptor = descriptors[key];
-        if (!hasDataValue(descriptor)) return invalidJsonValue;
-        pending.push({ kind: 'value', value: descriptor.value });
-        pending.push({ kind: 'key', key });
+      if (stringKeys.length > 0) {
+        ancestors.add(value);
+        pending.push({ kind: 'object', value, keys: stringKeys, index: 0 });
       }
     }
   } catch {
@@ -161,7 +317,7 @@ const encodeJsonValue = (
   }
 
   return tokens;
-};
+}
 
 type JsonContainerFrame =
   | { kind: 'array'; value: JsonValue[]; remaining: number }
@@ -221,8 +377,7 @@ const decodeJsonValue = (encoded: JsonValue): JsonValue => {
       continue;
     }
 
-    const value: JsonValue =
-      kind === 'array' ? [] : (Object.create(null) as JsonObject);
+    const value: JsonValue = kind === 'array' ? [] : ({} as JsonObject);
     attach(value);
     if (payload > 0) {
       if (kind === 'array') {
@@ -264,6 +419,58 @@ export const jsonValueSchema = jsonValueNormalizerSchema
   .pipe(z.json())
   .overwrite(decodeJsonValue);
 
+export const createBoundedJsonValueSchema = (
+  maxSerializedLength: number,
+  maxTokenCount?: number,
+) => {
+  if (!Number.isSafeInteger(maxSerializedLength) || maxSerializedLength < 0) {
+    throw new TypeError(
+      'Maximum serialized JSON length must be a non-negative safe integer',
+    );
+  }
+  if (
+    maxTokenCount !== undefined &&
+    (!Number.isSafeInteger(maxTokenCount) || maxTokenCount < 0)
+  ) {
+    throw new TypeError(
+      'Maximum JSON token count must be a non-negative safe integer',
+    );
+  }
+
+  const boundedJsonValueNormalizerSchema = z
+    .unknown()
+    .transform<JsonValue>((value, context) => {
+      const encoded = encodeJsonValue(
+        value,
+        maxSerializedLength,
+        maxTokenCount,
+      );
+      if (encoded === invalidJsonValue) {
+        context.addIssue({ code: 'custom', message: 'Expected a JSON value' });
+        return z.NEVER;
+      }
+      if (encoded === jsonValueExceedsMaxLength) {
+        context.addIssue({
+          code: 'custom',
+          message: 'JSON value exceeds the maximum serialized length',
+        });
+        return z.NEVER;
+      }
+      if (encoded === jsonValueExceedsMaxTokenCount) {
+        context.addIssue({
+          code: 'custom',
+          message: 'JSON value exceeds the maximum token count',
+        });
+        return z.NEVER;
+      }
+      return encoded as JsonValue;
+    });
+
+  return boundedJsonValueNormalizerSchema
+    .pipe(z.json())
+    .overwrite(decodeJsonValue);
+};
+
 const jsonObjectOutputSchema = z.record(z.string(), z.json());
 
 const jsonObjectNormalizerSchema = z.unknown().transform((value, context) => {
@@ -285,6 +492,63 @@ const jsonObjectNormalizerSchema = z.unknown().transform((value, context) => {
 export const jsonObjectSchema = jsonObjectNormalizerSchema
   .pipe(jsonObjectOutputSchema)
   .overwrite((value) => decodeJsonValue(value['\u0000']) as JsonObject);
+
+export const createBoundedJsonObjectSchema = (
+  maxSerializedLength: number,
+  maxTokenCount?: number,
+) => {
+  if (!Number.isSafeInteger(maxSerializedLength) || maxSerializedLength < 0) {
+    throw new TypeError(
+      'Maximum serialized JSON length must be a non-negative safe integer',
+    );
+  }
+  if (
+    maxTokenCount !== undefined &&
+    (!Number.isSafeInteger(maxTokenCount) || maxTokenCount < 0)
+  ) {
+    throw new TypeError(
+      'Maximum JSON token count must be a non-negative safe integer',
+    );
+  }
+
+  const normalizer = z.unknown().transform((value, context) => {
+    const encoded = encodeJsonValue(value, maxSerializedLength, maxTokenCount);
+    if (encoded === invalidJsonValue) {
+      context.addIssue({ code: 'custom', message: 'Expected a JSON object' });
+      return z.NEVER;
+    }
+    if (encoded === jsonValueExceedsMaxLength) {
+      context.addIssue({
+        code: 'custom',
+        message: 'JSON value exceeds the maximum serialized length',
+      });
+      return z.NEVER;
+    }
+    if (encoded === jsonValueExceedsMaxTokenCount) {
+      context.addIssue({
+        code: 'custom',
+        message: 'JSON value exceeds the maximum token count',
+      });
+      return z.NEVER;
+    }
+    if (encoded[0]?.[0] !== 'object') {
+      context.addIssue({ code: 'custom', message: 'Expected a JSON object' });
+      return z.NEVER;
+    }
+    const wrapper = Object.create(null) as JsonObject;
+    Object.defineProperty(wrapper, '\u0000', {
+      value: encoded,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+    return wrapper;
+  });
+
+  return normalizer
+    .pipe(jsonObjectOutputSchema)
+    .overwrite((value) => decodeJsonValue(value['\u0000']) as JsonObject);
+};
 
 export const pageInfoSchema = strictObjectSchema({
   nextCursor: pageCursorSchema.nullable(),
