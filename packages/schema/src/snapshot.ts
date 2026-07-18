@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   createBoundedJsonValueSchema,
   durableCursorSchema,
+  type JsonValue,
   pageSchema,
   revisionSchema,
   streamCursorSchema,
@@ -39,6 +40,11 @@ import { threadViewSchema } from './thread.js';
 const MAX_STREAM_BUFFERS = 100;
 const MAX_BUFFER_CONTENT_LENGTH = 1_048_576;
 const MAX_BUFFER_JSON_TOKENS = 50_000;
+
+// The preceding bounded schema guarantees JSON wire input. This narrows only
+// the downstream input contract; the structural schema still validates it.
+const acceptJsonWireInput = <Schema extends z.ZodType>(schema: Schema) =>
+  schema as unknown as z.ZodType<z.output<Schema>, JsonValue>;
 
 const boundedToolContentSchema = createBoundedJsonValueSchema(
   MAX_BUFFER_CONTENT_LENGTH,
@@ -100,14 +106,9 @@ const boundedStreamStateJsonSchema = createBoundedJsonValueSchema(
   MAX_STREAM_STATE_TOKEN_COUNT,
 );
 
-export const streamStateSnapshotSchema =
-  rawStreamStateSnapshotSchema.superRefine((streamState, context) => {
-    if (boundedStreamStateJsonSchema.safeParse(streamState).success) return;
-    context.addIssue({
-      code: 'custom',
-      message: 'Stream state exceeds the aggregate frame budget',
-    });
-  });
+export const streamStateSnapshotSchema = boundedStreamStateJsonSchema.pipe(
+  acceptJsonWireInput(rawStreamStateSnapshotSchema),
+);
 export type StreamStateSnapshot = z.infer<typeof streamStateSnapshotSchema>;
 
 const snapshotBaseShape = {
@@ -289,13 +290,7 @@ const boundedSnapshotResetJsonSchema = createBoundedJsonValueSchema(
   MAX_THREAD_STREAM_FRAME_TOKEN_COUNT,
 );
 
-export const snapshotResetSchema = validatedSnapshotResetSchema.superRefine(
-  (frame, context) => {
-    if (boundedSnapshotResetJsonSchema.safeParse(frame).success) return;
-    context.addIssue({
-      code: 'custom',
-      message: 'Snapshot reset exceeds the thread stream frame budget',
-    });
-  },
+export const snapshotResetSchema = boundedSnapshotResetJsonSchema.pipe(
+  acceptJsonWireInput(validatedSnapshotResetSchema),
 );
 export type SnapshotReset = z.infer<typeof snapshotResetSchema>;

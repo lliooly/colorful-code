@@ -334,11 +334,11 @@ describe('StreamStateSnapshot', () => {
     ).toBe(false);
   });
 
-  test('rejects wide tool content before reading every data descriptor', () => {
+  test('rejects aggregate-wide tool content before reading every descriptor', () => {
     const source = Object.fromEntries(
       Array.from({ length: 2_500 }, (_, index) => [
         `key-${index}`,
-        'x'.repeat(1_000),
+        'x'.repeat(4_000),
       ]),
     );
     let descriptorReads = 0;
@@ -378,6 +378,23 @@ describe('StreamStateSnapshot', () => {
       }).success,
     ).toBe(false);
     expect(() => z.toJSONSchema(streamStateSnapshotSchema)).not.toThrow();
+  });
+
+  test('applies its aggregate budget before ID normalization', () => {
+    const paddedId = `${' '.repeat(5 * 1024 * 1024)}run-1`;
+
+    expect(
+      streamStateSnapshotSchema.safeParse({
+        assistantBuffers: [
+          {
+            ...assistantStreaming,
+            transcriptItemId: paddedId,
+            runId: paddedId,
+          },
+        ],
+        toolBuffers: [],
+      }).success,
+    ).toBe(false);
   });
 });
 
@@ -586,6 +603,26 @@ describe('SnapshotReset', () => {
     );
     expect(snapshotResetSchema.safeParse(runtimeReset).success).toBe(true);
     expect(parseThreadStreamFrame(runtimeReset).outcome).toBe('known');
+  });
+
+  test('applies the frame budget before ID normalization', () => {
+    const paddedThreadId = `${' '.repeat(9 * 1024 * 1024)}thread-1`;
+    const oversizedReset = {
+      ...durableReset,
+      threadId: paddedThreadId,
+      snapshot: {
+        ...snapshot,
+        thread: {
+          ...snapshot.thread,
+          threadId: paddedThreadId,
+        },
+      },
+    };
+
+    expect(snapshotResetSchema.safeParse(oversizedReset).success).toBe(false);
+    expect(parseThreadStreamFrame(oversizedReset).outcome).toBe(
+      'protocolError',
+    );
   });
 
   test('rejects a frame durableCursor that differs from its snapshot', () => {
