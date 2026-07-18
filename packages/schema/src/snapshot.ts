@@ -28,6 +28,12 @@ import {
 } from './operations.js';
 import { queueViewSchema, transcriptItemViewSchema } from './queue.js';
 import { runViewSchema } from './run.js';
+import {
+  MAX_STREAM_STATE_SERIALIZED_LENGTH,
+  MAX_STREAM_STATE_TOKEN_COUNT,
+  MAX_THREAD_STREAM_FRAME_SERIALIZED_LENGTH,
+  MAX_THREAD_STREAM_FRAME_TOKEN_COUNT,
+} from './stream-limits.js';
 import { threadViewSchema } from './thread.js';
 
 const MAX_STREAM_BUFFERS = 100;
@@ -82,12 +88,27 @@ export const toolStreamBufferSchema = createStreamBufferSchema({
 });
 export type ToolStreamBuffer = z.infer<typeof toolStreamBufferSchema>;
 
-export const streamStateSnapshotSchema = strictObjectSchema({
+const rawStreamStateSnapshotSchema = strictObjectSchema({
   assistantBuffers: z
     .array(assistantStreamBufferSchema)
     .max(MAX_STREAM_BUFFERS),
   toolBuffers: z.array(toolStreamBufferSchema).max(MAX_STREAM_BUFFERS),
 });
+
+const boundedStreamStateJsonSchema = createBoundedJsonValueSchema(
+  MAX_STREAM_STATE_SERIALIZED_LENGTH,
+  MAX_STREAM_STATE_TOKEN_COUNT,
+);
+
+export const streamStateSnapshotSchema = rawStreamStateSnapshotSchema.superRefine(
+  (streamState, context) => {
+    if (boundedStreamStateJsonSchema.safeParse(streamState).success) return;
+    context.addIssue({
+      code: 'custom',
+      message: 'Stream state exceeds the aggregate frame budget',
+    });
+  },
+);
 export type StreamStateSnapshot = z.infer<typeof streamStateSnapshotSchema>;
 
 const snapshotBaseShape = {
@@ -199,7 +220,7 @@ const streamCursorMismatchMessage =
 const threadIdMismatchMessage =
   'SnapshotReset threadId must equal snapshot.thread.threadId';
 
-export const snapshotResetSchema = z
+const validatedSnapshotResetSchema = z
   .union([durableOnlySnapshotResetSchema, runtimeSnapshotResetSchema])
   .superRefine((frame, context) => {
     if (frame.threadId !== frame.snapshot.thread.threadId) {
@@ -263,4 +284,19 @@ export const snapshotResetSchema = z
       });
     }
   });
+
+const boundedSnapshotResetJsonSchema = createBoundedJsonValueSchema(
+  MAX_THREAD_STREAM_FRAME_SERIALIZED_LENGTH,
+  MAX_THREAD_STREAM_FRAME_TOKEN_COUNT,
+);
+
+export const snapshotResetSchema = validatedSnapshotResetSchema.superRefine(
+  (frame, context) => {
+    if (boundedSnapshotResetJsonSchema.safeParse(frame).success) return;
+    context.addIssue({
+      code: 'custom',
+      message: 'Snapshot reset exceeds the thread stream frame budget',
+    });
+  },
+);
 export type SnapshotReset = z.infer<typeof snapshotResetSchema>;

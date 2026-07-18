@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { z } from 'zod';
 
+import { parseThreadStreamFrame } from '@colorful-code/schema/events';
 import {
   snapshotResetKindSchema,
   snapshotResetSchema,
@@ -560,6 +561,31 @@ describe('SnapshotReset', () => {
         eventId: 'event-1',
       }).success,
     ).toBe(false);
+  });
+
+  test('uses the same aggregate budget as the stream frame parser', () => {
+    const text = 'x'.repeat(MAX_BUFFER_CONTENT_LENGTH);
+    const oversizedReset = {
+      ...runtimeReset,
+      snapshot: {
+        ...runtimeSnapshot,
+        streamState: {
+          assistantBuffers: Array.from({ length: 17 }, (_, index) => ({
+            ...assistantStreaming,
+            transcriptItemId: `transcript-${index}`,
+            text,
+          })),
+          toolBuffers: [],
+        },
+      },
+    };
+
+    expect(snapshotResetSchema.safeParse(oversizedReset).success).toBe(false);
+    expect(parseThreadStreamFrame(oversizedReset).outcome).toBe(
+      'protocolError',
+    );
+    expect(snapshotResetSchema.safeParse(runtimeReset).success).toBe(true);
+    expect(parseThreadStreamFrame(runtimeReset).outcome).toBe('known');
   });
 
   test('rejects a frame durableCursor that differs from its snapshot', () => {
