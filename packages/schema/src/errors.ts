@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { createBoundedJsonObjectSchema } from './common.js';
 import {
   commandIdSchema,
   operationIdSchema,
@@ -36,7 +37,7 @@ export const errorCodeSchema = z.enum([
 ]);
 export type ErrorCode = z.infer<typeof errorCodeSchema>;
 
-const apiErrorDetailsSchema = z.record(z.string(), z.json());
+const apiErrorDetailsSchema = createBoundedJsonObjectSchema(65_536, 10_000);
 
 export const apiErrorPayloadSchema = z.strictObject({
   code: errorCodeSchema,

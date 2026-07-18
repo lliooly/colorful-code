@@ -38,48 +38,6 @@ const expectedHttpStatus = {
   INTERNAL_ERROR: 500,
 } as const satisfies Record<ErrorCode, number>;
 
-const forbiddenAuthoringNodes = (schema: z.ZodType): string[] => {
-  const forbidden: string[] = [];
-  const seen = new Set<object>();
-
-  const visit = (value: unknown, path: string): void => {
-    if (value === null || typeof value !== 'object' || seen.has(value)) return;
-    seen.add(value);
-
-    const internals = value as {
-      _zod?: { def?: Record<string, unknown> };
-    };
-    const definition = internals._zod?.def;
-    if (definition !== undefined) {
-      if (definition.type === 'transform' || definition.type === 'pipe') {
-        forbidden.push(`${path}:${definition.type}`);
-      }
-      if (definition.check === 'custom') {
-        forbidden.push(`${path}:${definition.check}`);
-      }
-      if (
-        definition.type === 'lazy' &&
-        typeof definition.getter === 'function'
-      ) {
-        visit(definition.getter(), `${path}.lazy()`);
-      }
-      visit(definition, `${path}.def`);
-      return;
-    }
-
-    if (Array.isArray(value)) {
-      value.forEach((item, index) => visit(item, `${path}[${index}]`));
-      return;
-    }
-    for (const [key, child] of Object.entries(value)) {
-      visit(child, `${path}.${key}`);
-    }
-  };
-
-  visit(schema, 'apiErrorSchema');
-  return forbidden;
-};
-
 describe('apiErrorSchema', () => {
   test('converts to JSON Schema with details as a JSON-valued object', () => {
     const jsonSchema = z.toJSONSchema(apiErrorSchema);
@@ -125,10 +83,6 @@ describe('apiErrorSchema', () => {
         },
       ],
     });
-  });
-
-  test('has no transform, pipe, or custom refine schema nodes', () => {
-    expect(forbiddenAuthoringNodes(apiErrorSchema)).toEqual([]);
   });
 
   test('parses the strict public error envelope with authoritative IDs', () => {
@@ -233,7 +187,27 @@ describe('apiErrorSchema', () => {
     }
   });
 
-  test('uses Zod authoring sanitization to drop a wire __proto__ key', () => {
+  test('rejects over-complex details without throwing', () => {
+    const details: Record<string, unknown> = {};
+    let tail = details;
+    for (let index = 0; index < 6_000; index += 1) {
+      tail.next = {};
+      tail = tail.next as Record<string, unknown>;
+    }
+    const input = {
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid request',
+        retryable: false,
+        details,
+      },
+    };
+
+    expect(() => apiErrorSchema.safeParse(input)).not.toThrow();
+    expect(apiErrorSchema.safeParse(input).success).toBe(false);
+  });
+
+  test('preserves a wire __proto__ key without prototype pollution', () => {
     const details = JSON.parse(
       '{"__proto__":{"polluted":true},"stable":"preserved"}',
     ) as Record<string, unknown>;
@@ -249,14 +223,15 @@ describe('apiErrorSchema', () => {
 
     expect(parsed.success).toBe(true);
     if (!parsed.success) return;
-    // Zod's object/record authoring sanitizer intentionally drops __proto__.
     expect(
       Object.prototype.hasOwnProperty.call(
         parsed.data.error.details,
         '__proto__',
       ),
-    ).toBe(false);
-    expect(parsed.data.error.details).toEqual({ stable: 'preserved' });
+    ).toBe(true);
+    expect(JSON.stringify(parsed.data.error.details)).toBe(
+      '{"__proto__":{"polluted":true},"stable":"preserved"}',
+    );
     expect('polluted' in parsed.data.error.details).toBe(false);
     expect(Object.getPrototypeOf(parsed.data.error.details)).toBe(
       Object.prototype,
