@@ -377,8 +377,7 @@ const decodeJsonValue = (encoded: JsonValue): JsonValue => {
       continue;
     }
 
-    const value: JsonValue =
-      kind === 'array' ? [] : (Object.create(null) as JsonObject);
+    const value: JsonValue = kind === 'array' ? [] : ({} as JsonObject);
     attach(value);
     if (payload > 0) {
       if (kind === 'array') {
@@ -493,6 +492,67 @@ const jsonObjectNormalizerSchema = z.unknown().transform((value, context) => {
 export const jsonObjectSchema = jsonObjectNormalizerSchema
   .pipe(jsonObjectOutputSchema)
   .overwrite((value) => decodeJsonValue(value['\u0000']) as JsonObject);
+
+export const createBoundedJsonObjectSchema = (
+  maxSerializedLength: number,
+  maxTokenCount?: number,
+) => {
+  if (!Number.isSafeInteger(maxSerializedLength) || maxSerializedLength < 0) {
+    throw new TypeError(
+      'Maximum serialized JSON length must be a non-negative safe integer',
+    );
+  }
+  if (
+    maxTokenCount !== undefined &&
+    (!Number.isSafeInteger(maxTokenCount) || maxTokenCount < 0)
+  ) {
+    throw new TypeError(
+      'Maximum JSON token count must be a non-negative safe integer',
+    );
+  }
+
+  const normalizer = z.unknown().transform((value, context) => {
+    const encoded = encodeJsonValue(
+      value,
+      maxSerializedLength,
+      maxTokenCount,
+    );
+    if (encoded === invalidJsonValue) {
+      context.addIssue({ code: 'custom', message: 'Expected a JSON object' });
+      return z.NEVER;
+    }
+    if (encoded === jsonValueExceedsMaxLength) {
+      context.addIssue({
+        code: 'custom',
+        message: 'JSON value exceeds the maximum serialized length',
+      });
+      return z.NEVER;
+    }
+    if (encoded === jsonValueExceedsMaxTokenCount) {
+      context.addIssue({
+        code: 'custom',
+        message: 'JSON value exceeds the maximum token count',
+      });
+      return z.NEVER;
+    }
+    if (encoded[0]?.[0] !== 'object') {
+      context.addIssue({ code: 'custom', message: 'Expected a JSON object' });
+      return z.NEVER;
+    }
+    const wrapper = Object.create(null) as JsonObject;
+    Object.defineProperty(wrapper, '\u0000', {
+      value: encoded,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+    return wrapper;
+  });
+
+  return normalizer
+    .pipe(jsonObjectOutputSchema)
+    .overwrite((value) => decodeJsonValue(value['\u0000']) as JsonObject);
+};
 
 export const pageInfoSchema = strictObjectSchema({
   nextCursor: pageCursorSchema.nullable(),

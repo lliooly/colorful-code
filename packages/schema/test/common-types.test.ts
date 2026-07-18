@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import {
   configRevisionSchema,
+  createBoundedJsonObjectSchema,
   createBoundedJsonValueSchema,
   durableCursorSchema,
   jsonObjectSchema,
@@ -265,6 +266,20 @@ describe('jsonValueSchema', () => {
 
     const parsed = jsonValueSchema.parse(input);
     expect(JSON.stringify(parsed)).toBe('{"__proto__":{"polluted":true}}');
+    expect(Object.prototype).not.toHaveProperty('polluted');
+  });
+
+  test('returns ordinary objects without weakening prototype pollution defenses', () => {
+    const input = JSON.parse(
+      '{"value":1,"__proto__":{"polluted":true}}',
+    ) as Record<string, unknown>;
+    const parsed = jsonValueSchema.parse(input) as Record<string, unknown>;
+
+    expect(Object.getPrototypeOf(parsed)).toBe(Object.prototype);
+    expect(parsed.hasOwnProperty('value')).toBe(true);
+    expect(parsed.toString()).toBe('[object Object]');
+    expect(`${parsed}`).toBe('[object Object]');
+    expect(Object.hasOwn(parsed, '__proto__')).toBe(true);
     expect(Object.prototype).not.toHaveProperty('polluted');
   });
 
@@ -560,6 +575,16 @@ describe('createBoundedJsonValueSchema', () => {
     expect(() =>
       z.toJSONSchema(createBoundedJsonValueSchema(100)),
     ).not.toThrow();
+  });
+});
+
+describe('createBoundedJsonObjectSchema', () => {
+  test('bounds JSON objects iteratively while preserving object JSON Schema', () => {
+    const schema = createBoundedJsonObjectSchema(100, 20);
+
+    expect(schema.safeParse({ nested: { value: 1 } }).success).toBe(true);
+    expect(schema.safeParse([]).success).toBe(false);
+    expect(z.toJSONSchema(schema).type).toBe('object');
   });
 });
 
