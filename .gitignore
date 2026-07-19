@@ -11,7 +11,7 @@ apps/desktop/src-tauri/target
 apps/desktop/src-tauri/gen
 .DS_Store
 *.bun-build
-bazel-*
+/bazel-*
 *.tsbuildinfo
 .env
 .env.local
