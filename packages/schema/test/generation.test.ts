@@ -498,6 +498,136 @@ describe('contract registry', () => {
     }
   });
 
+  test('deeply freezes isolated schema definitions that can change parsing', () => {
+    expect(registryViewFactory).toBeDefined();
+    if (registryViewFactory === undefined) return;
+    const view = registryViewFactory(
+      z.strictObject({
+        code: z.string().min(2).regex(/^ok/u),
+        kind: z.enum(['one', 'two']),
+        values: z.array(z.number().int()),
+      }),
+    );
+    const definition = view._zod.def;
+    const shape = definition.shape;
+    const code = shape.code;
+    const checks = code._zod.def.checks;
+    const minimum = checks?.find(
+      (check) => check._zod.def.check === 'min_length',
+    );
+    if (minimum === undefined) throw new Error('missing minimum check');
+
+    expect(
+      view.safeParse({ code: 'ok', kind: 'one', values: [1] }).success,
+    ).toBe(true);
+    expect(Object.isFrozen(view._zod)).toBe(true);
+    expect(Object.isFrozen(definition)).toBe(true);
+    expect(Object.isFrozen(shape)).toBe(true);
+    expect(Object.isFrozen(checks)).toBe(true);
+    expect(Object.isFrozen(minimum)).toBe(true);
+    expect(Object.isFrozen(minimum._zod)).toBe(true);
+    expect(Object.isFrozen(minimum._zod.def)).toBe(true);
+    expect(Object.isFrozen(shape.kind._zod.values)).toBe(true);
+    expect(Reflect.set(shape, 'code', z.number())).toBe(false);
+    expect(Reflect.set(minimum._zod.def, 'minimum', 20)).toBe(false);
+    expect(() => shape.kind._zod.values.add('three')).toThrow(/immutable/u);
+    expect(() =>
+      Set.prototype.add.call(shape.kind._zod.values, 'prototype-bypass'),
+    ).toThrow(TypeError);
+    expect(
+      Reflect.set(
+        Object.getPrototypeOf(shape.kind._zod.values),
+        'has',
+        () => true,
+      ),
+    ).toBe(false);
+    expect(shape.kind.safeParse('prototype-bypass').success).toBe(false);
+    expect(
+      view.safeParse({ code: 'ok', kind: 'one', values: [1] }).success,
+    ).toBe(true);
+    expect(
+      view.safeParse({ code: 'x', kind: 'one', values: [1] }).success,
+    ).toBe(false);
+    expect(view.toJSONSchema()).toMatchObject({ type: 'object' });
+  });
+
+  test('keeps Map, Set and RegExp-backed validators operational after freezing', () => {
+    expect(registryViewFactory).toBeDefined();
+    if (registryViewFactory === undefined) return;
+    const view = registryViewFactory(
+      z.tuple([
+        z.map(z.string(), z.number().int()),
+        z.set(z.string().regex(/^item-/u)),
+      ]),
+    );
+    const traits = view._zod.traits;
+
+    expect(traits.has('$ZodTuple')).toBe(true);
+    expect([...traits]).toContain('$ZodTuple');
+    expect(() => Set.prototype.add.call(traits, 'prototype-bypass')).toThrow(
+      TypeError,
+    );
+
+    expect(
+      view.safeParse([
+        new Map([['answer', 42]]),
+        new Set(['item-one', 'item-two']),
+      ]).success,
+    ).toBe(true);
+    expect(
+      view.safeParse([new Map([['answer', 42.5]]), new Set(['invalid'])])
+        .success,
+    ).toBe(false);
+  });
+
+  test('exposes definition Maps through an immutable non-native facade', () => {
+    expect(registryViewFactory).toBeDefined();
+    if (registryViewFactory === undefined) return;
+    const authoring = z.string();
+    const nested = { value: 1 };
+    Object.assign(authoring._zod.def, {
+      lookup: new Map<string, Readonly<{ value: number }>>([
+        ['answer', nested],
+      ]),
+    });
+    const view = registryViewFactory(authoring);
+    const lookup = (
+      view._zod.def as typeof view._zod.def & {
+        lookup: ReadonlyMap<string, Readonly<{ value: number }>> & {
+          clear(): void;
+          delete(key: string): boolean;
+          set(key: string, value: Readonly<{ value: number }>): unknown;
+        };
+      }
+    ).lookup;
+
+    expect(lookup instanceof Map).toBe(false);
+    expect(lookup.size).toBe(1);
+    expect(lookup.has('answer')).toBe(true);
+    expect(lookup.get('answer')).toEqual({ value: 1 });
+    expect([...lookup]).toEqual([['answer', { value: 1 }]]);
+    expect([...lookup.keys()]).toEqual(['answer']);
+    expect([...lookup.values()]).toEqual([{ value: 1 }]);
+    expect([...lookup.entries()]).toEqual([['answer', { value: 1 }]]);
+    const visited: Array<readonly [string, number]> = [];
+    lookup.forEach((value, key, collection) => {
+      expect(collection).toBe(lookup);
+      visited.push([key, value.value]);
+    });
+    expect(visited).toEqual([['answer', 1]]);
+    expect(Object.isFrozen(lookup.get('answer'))).toBe(true);
+    expect(() => lookup.set('pwned', { value: 2 })).toThrow(/immutable/u);
+    expect(() => lookup.delete('answer')).toThrow(/immutable/u);
+    expect(() => lookup.clear()).toThrow(/immutable/u);
+    expect(() =>
+      Map.prototype.set.call(lookup, 'prototype-bypass', { value: 3 }),
+    ).toThrow(TypeError);
+    expect(
+      Reflect.set(Object.getPrototypeOf(lookup), 'get', () => ({ value: 3 })),
+    ).toBe(false);
+    expect(view.safeParse('still-valid').success).toBe(true);
+  });
+
   test('captures pre-frozen schemas into a distinct isolated view', () => {
     expect(registryViewFactory).toBeDefined();
     if (registryViewFactory === undefined || jsonSchemaModule === undefined) {
@@ -1761,8 +1891,7 @@ await generateContracts({ packageRoot: root, dependencies: role === 'first' ? { 
               currentTime = 500;
               rmSync(lockPath);
             },
-            rename: (from: string, to: string) => {
-              renameSync(from, to);
+            rename: (_from: string, to: string) => {
               if (to.endsWith('openapi.v2.json')) {
                 observedCreatedAt = JSON.parse(
                   readFileSync(lockPath, 'utf8'),
@@ -1864,7 +1993,7 @@ await generateContracts({ packageRoot: root, dependencies: role === 'first' ? { 
       await expect(
         generateModule.publishGeneratedOutputs(root, outputs, {
           dependencies: {
-            rename: (from: string, to: string) => {
+            rename: (from: string) => {
               if (
                 from.includes('.schema-generation.staging-') &&
                 !from.includes('/backup/')
@@ -1873,7 +2002,6 @@ await generateContracts({ packageRoot: root, dependencies: role === 'first' ? { 
                 if (promoted === 2)
                   throw new Error('injected promotion failure');
               }
-              renameSync(from, to);
             },
           },
         }),
@@ -1902,12 +2030,11 @@ await generateContracts({ packageRoot: root, dependencies: role === 'first' ? { 
           },
           {
             dependencies: {
-              rename: (from: string, to: string) => {
+              rename: (from: string) => {
                 if (from.includes('.schema-generation.staging-')) {
                   promoted += 1;
                   if (promoted === 2) throw new Error('fail second install');
                 }
-                renameSync(from, to);
               },
             },
           },
@@ -1928,6 +2055,7 @@ await generateContracts({ packageRoot: root, dependencies: role === 'first' ? { 
       const root = mkdtempSync(join(tmpdir(), 'colorful-error-order-'));
       const promotionError = new Error('primary promotion error');
       const unlockError = new Error('secondary unlock error');
+      let injected = false;
       let caught: unknown;
       try {
         await generateModule.publishGeneratedOutputs(
@@ -1936,7 +2064,10 @@ await generateContracts({ packageRoot: root, dependencies: role === 'first' ? { 
           {
             dependencies: {
               rename: () => {
-                throw promotionError;
+                if (!injected) {
+                  injected = true;
+                  throw promotionError;
+                }
               },
               ...(includeUnlockFailure
                 ? {
@@ -2027,7 +2158,6 @@ await publishGeneratedOutputs(process.argv[2], { 'generated/a.json': 'a\\n' }, {
           {
             dependencies: {
               rename: (from: string, to: string) => {
-                renameSync(from, to);
                 if (!changed && to.endsWith('openapi.v2.json')) {
                   changed = true;
                   writeFileSync(
@@ -2122,4 +2252,297 @@ await publishGeneratedOutputs(process.argv[2], { 'generated/a.json': 'a\\n' }, {
       rmSync(root, { recursive: true });
     }
   });
+
+  test('binds promotion to the inspected parent inode when an attacker swaps the pathname', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-parent-swap-'));
+    const outside = mkdtempSync(join(tmpdir(), 'colorful-parent-outside-'));
+    const generated = join(root, 'generated');
+    const displaced = join(root, 'generated.displaced');
+    mkdirSync(generated);
+    writeFileSync(join(generated, 'value.json'), 'old\n');
+    try {
+      await generateModule.publishGeneratedOutputs(
+        root,
+        { 'generated/value.json': 'new\n' },
+        {
+          dependencies: {
+            afterTargetInspect: async () => {
+              renameSync(generated, displaced);
+              symlinkSync(outside, generated);
+            },
+          },
+        },
+      );
+      expect(readFileSync(join(displaced, 'value.json'), 'utf8')).toBe('new\n');
+      expect(existsSync(join(outside, 'value.json'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test('recovers the old generation after SIGKILL interrupts promotion', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-promotion-crash-'));
+    const runner = join(root, 'crash-promotion.ts');
+    const marker = join(root, 'promotion.marker');
+    const recoveryRunner = join(root, 'crash-recovery.ts');
+    const recoveryMarker = join(root, 'recovery.marker');
+    const moduleUrl = new URL('../scripts/generate.ts', import.meta.url).href;
+    const outputs = {
+      'generated/first.json': 'new:first\n',
+      'generated/second.json': 'new:second\n',
+    };
+    mkdirSync(join(root, 'generated'));
+    writeFileSync(join(root, 'generated/first.json'), 'old:first\n');
+    writeFileSync(join(root, 'generated/second.json'), 'old:second\n');
+    writeFileSync(
+      runner,
+      `import { writeFileSync } from 'node:fs'; import { publishGeneratedOutputs } from ${JSON.stringify(moduleUrl)};
+await publishGeneratedOutputs(process.argv[2], ${JSON.stringify(outputs)}, { dependencies: { afterPromotionStep: async (step) => { if (step === 1) { writeFileSync(${JSON.stringify(marker)}, 'interrupted'); process.kill(process.pid, 'SIGKILL'); } } } });`,
+    );
+    writeFileSync(
+      recoveryRunner,
+      `import { writeFileSync } from 'node:fs'; import { publishGeneratedOutputs } from ${JSON.stringify(moduleUrl)};
+await publishGeneratedOutputs(process.argv[2], { 'generated/third.json': 'new:third\\n' }, { dependencies: { rename: (_from, to) => { if (to.includes('recovery-discard-0')) { writeFileSync(${JSON.stringify(recoveryMarker)}, 'interrupted'); process.kill(process.pid, 'SIGKILL'); } } } });`,
+    );
+    try {
+      const crashed = Bun.spawn(['bun', runner, root], {
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(await crashed.exited).not.toBe(0);
+      expect(existsSync(marker)).toBe(true);
+
+      const recoveryCrashed = Bun.spawn(['bun', recoveryRunner, root], {
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(await recoveryCrashed.exited).not.toBe(0);
+      expect(existsSync(recoveryMarker)).toBe(true);
+
+      await generateModule.publishGeneratedOutputs(root, {
+        'generated/third.json': 'new:third\n',
+      });
+
+      expect(readFileSync(join(root, 'generated/first.json'), 'utf8')).toBe(
+        'old:first\n',
+      );
+      expect(readFileSync(join(root, 'generated/second.json'), 'utf8')).toBe(
+        'old:second\n',
+      );
+      expect(readFileSync(join(root, 'generated/third.json'), 'utf8')).toBe(
+        'new:third\n',
+      );
+      expect(generationResidue(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test('rejects generated outputs in the reserved transaction namespace', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-reserved-output-'));
+    try {
+      await expect(
+        generateModule.publishGeneratedOutputs(root, {
+          '.schema-generation.attacker/value': 'bad\n',
+        }),
+      ).rejects.toThrow(/reserved/i);
+      expect(generationResidue(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('recovers a committed journal after staging cleanup was SIGKILLed', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-committed-crash-'));
+    const runner = join(root, 'committed-crash.ts');
+    const moduleUrl = new URL('../scripts/generate.ts', import.meta.url).href;
+    writeFileSync(
+      runner,
+      `import { publishGeneratedOutputs } from ${JSON.stringify(moduleUrl)}; await publishGeneratedOutputs(process.argv[2], { 'generated/first': 'new\\n' }, { dependencies: { afterStagingCleanup: async () => process.kill(process.pid, 'SIGKILL') } });`,
+    );
+    try {
+      const crashed = Bun.spawn(['bun', runner, root]);
+      expect(await crashed.exited).not.toBe(0);
+      await generateModule.publishGeneratedOutputs(root, {
+        'generated/second': 'second\n',
+      });
+      expect(readFileSync(join(root, 'generated/first'), 'utf8')).toBe('new\n');
+      expect(readFileSync(join(root, 'generated/second'), 'utf8')).toBe(
+        'second\n',
+      );
+      expect(generationResidue(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test('garbage collects a dead same-host staging owner killed before journaling', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-orphan-staging-'));
+    const runner = join(root, 'orphan-crash.ts');
+    const moduleUrl = new URL('../scripts/generate.ts', import.meta.url).href;
+    writeFileSync(
+      runner,
+      `import { publishGeneratedOutputs } from ${JSON.stringify(moduleUrl)}; await publishGeneratedOutputs(process.argv[2], { 'generated/first': 'new\\n' }, { dependencies: { afterStagingPrepared: async () => process.kill(process.pid, 'SIGKILL') } });`,
+    );
+    try {
+      const crashed = Bun.spawn(['bun', runner, root]);
+      expect(await crashed.exited).not.toBe(0);
+      await generateModule.publishGeneratedOutputs(root, {
+        'generated/second': 'second\n',
+      });
+      expect(generationResidue(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test('fails closed when an inspected orphan staging pathname is replaced before cleanup', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-orphan-swap-'));
+    const deadPid = 999999;
+    const token = (value: string) =>
+      createHash('sha256').update(value).digest('hex').slice(0, 16);
+    const orphanName = `.schema-generation.staging-${deadPid}-${token(
+      hostname(),
+    )}-${token('dead-orphan')}`;
+    const orphanPath = join(root, orphanName);
+    const displacedPath = join(root, `${orphanName}.displaced`);
+    mkdirSync(orphanPath);
+    try {
+      await expect(
+        generateModule.publishGeneratedOutputs(
+          root,
+          { 'generated/new': 'new\n' },
+          {
+            dependencies: {
+              pidIsAlive: () => false,
+              afterLockAcquired: async () => {
+                renameSync(orphanPath, displacedPath);
+                mkdirSync(orphanPath);
+                writeFileSync(join(orphanPath, 'valuable'), 'keep\n');
+              },
+            },
+          },
+        ),
+      ).rejects.toThrow(/orphan staging.*changed|identity/i);
+      expect(readFileSync(join(orphanPath, 'valuable'), 'utf8')).toBe('keep\n');
+      expect(existsSync(join(root, 'generated/new'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('never treats a journal target directory as an absent regular file', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-journal-directory-'));
+    const staging = '.schema-generation.staging-999999-malicious';
+    mkdirSync(join(root, 'generated'));
+    writeFileSync(join(root, 'generated/valuable'), 'keep\n');
+    mkdirSync(join(root, staging, 'backup'), { recursive: true });
+    writeFileSync(
+      join(root, '.schema-generation.transaction'),
+      JSON.stringify({
+        version: 1,
+        state: 'prepared',
+        staging,
+        entries: [
+          {
+            target: 'generated',
+            staged: `${staging}/generated`,
+            backup: `${staging}/backup/0`,
+            hadOriginal: false,
+          },
+        ],
+      }),
+    );
+    writeFileSync(
+      join(root, '.schema-generation.lock'),
+      JSON.stringify({
+        pid: 999999,
+        hostname: hostname(),
+        nonce: 'dead',
+        createdAt: 0,
+      }),
+    );
+    try {
+      await expect(
+        generateModule.publishGeneratedOutputs(
+          root,
+          { 'generated/new': 'new\n' },
+          { dependencies: { pidIsAlive: () => false } },
+        ),
+      ).rejects.toThrow(/regular file/i);
+      expect(readFileSync(join(root, 'generated/valuable'), 'utf8')).toBe(
+        'keep\n',
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('recovers when durability fails after the prepared journal rename', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-journal-fsync-'));
+    try {
+      await expect(
+        generateModule.publishGeneratedOutputs(
+          root,
+          { 'generated/first': 'first\n' },
+          {
+            dependencies: {
+              afterPreparedJournalRename: () => {
+                throw new Error('injected root fsync failure');
+              },
+            },
+          },
+        ),
+      ).rejects.toThrow('injected root fsync failure');
+      await generateModule.publishGeneratedOutputs(root, {
+        'generated/second': 'second\n',
+      });
+      expect(existsSync(join(root, 'generated/first'))).toBe(false);
+      expect(readFileSync(join(root, 'generated/second'), 'utf8')).toBe(
+        'second\n',
+      );
+      expect(generationResidue(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('garbage collects a dead same-host staging killed before its owner manifest', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-mkdir-crash-'));
+    const runner = join(root, 'mkdir-crash.ts');
+    const moduleUrl = new URL('../scripts/generate.ts', import.meta.url).href;
+    writeFileSync(
+      runner,
+      `import { publishGeneratedOutputs } from ${JSON.stringify(moduleUrl)}; await publishGeneratedOutputs(process.argv[2], { 'generated/first': 'first\\n' }, { dependencies: { afterStagingMkdir: async () => process.kill(process.pid, 'SIGKILL') } });`,
+    );
+    try {
+      const crashed = Bun.spawn(['bun', runner, root]);
+      expect(await crashed.exited).not.toBe(0);
+      await generateModule.publishGeneratedOutputs(root, {
+        'generated/second': 'second\n',
+      });
+      expect(generationResidue(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

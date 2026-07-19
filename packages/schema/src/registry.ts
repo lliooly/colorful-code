@@ -206,6 +206,245 @@ const asZodCoreNode = (value: object): ZodCoreNode | undefined => {
     : undefined;
 };
 
+const immutableCollectionMutation = (): never => {
+  throw new TypeError('isolated Zod definition collections are immutable');
+};
+
+const immutableSetBackings = new WeakMap<object, ReadonlySet<unknown>>();
+const immutableMapBackings = new WeakMap<
+  object,
+  ReadonlyMap<unknown, unknown>
+>();
+
+const setBacking = <Value>(facade: object): ReadonlySet<Value> => {
+  const backing = immutableSetBackings.get(facade);
+  if (backing === undefined)
+    throw new TypeError('invalid immutable Set facade');
+  return backing as ReadonlySet<Value>;
+};
+
+const mapBacking = <Key, Value>(facade: object): ReadonlyMap<Key, Value> => {
+  const backing = immutableMapBackings.get(facade);
+  if (backing === undefined)
+    throw new TypeError('invalid immutable Map facade');
+  return backing as ReadonlyMap<Key, Value>;
+};
+
+class ImmutableSetFacade<Value> implements ReadonlySet<Value> {
+  public constructor(backing: ReadonlySet<Value>) {
+    immutableSetBackings.set(this, backing as ReadonlySet<unknown>);
+  }
+
+  public get size(): number {
+    return setBacking<Value>(this).size;
+  }
+
+  public get [Symbol.toStringTag](): string {
+    return 'Set';
+  }
+
+  public add(value: Value): this {
+    void value;
+    return immutableCollectionMutation();
+  }
+
+  public clear(): void {
+    immutableCollectionMutation();
+  }
+
+  public delete(value: Value): boolean {
+    void value;
+    return immutableCollectionMutation();
+  }
+
+  public entries(): SetIterator<[Value, Value]> {
+    return setBacking<Value>(this).entries();
+  }
+
+  public forEach(
+    callback: (value: Value, key: Value, set: ReadonlySet<Value>) => void,
+    thisArgument?: unknown,
+  ): void {
+    for (const value of setBacking<Value>(this)) {
+      callback.call(thisArgument, value, value, this);
+    }
+  }
+
+  public has(value: Value): boolean {
+    return setBacking<Value>(this).has(value);
+  }
+
+  public keys(): SetIterator<Value> {
+    return setBacking<Value>(this).keys();
+  }
+
+  public values(): SetIterator<Value> {
+    return setBacking<Value>(this).values();
+  }
+
+  public [Symbol.iterator](): SetIterator<Value> {
+    return this.values();
+  }
+}
+
+class ImmutableMapFacade<Key, Value> implements ReadonlyMap<Key, Value> {
+  public constructor(backing: ReadonlyMap<Key, Value>) {
+    immutableMapBackings.set(this, backing as ReadonlyMap<unknown, unknown>);
+  }
+
+  public get size(): number {
+    return mapBacking<Key, Value>(this).size;
+  }
+
+  public get [Symbol.toStringTag](): string {
+    return 'Map';
+  }
+
+  public clear(): void {
+    immutableCollectionMutation();
+  }
+
+  public delete(key: Key): boolean {
+    void key;
+    return immutableCollectionMutation();
+  }
+
+  public entries(): MapIterator<[Key, Value]> {
+    return mapBacking<Key, Value>(this).entries();
+  }
+
+  public forEach(
+    callback: (value: Value, key: Key, map: ReadonlyMap<Key, Value>) => void,
+    thisArgument?: unknown,
+  ): void {
+    for (const [key, value] of mapBacking<Key, Value>(this)) {
+      callback.call(thisArgument, value, key, this);
+    }
+  }
+
+  public get(key: Key): Value | undefined {
+    return mapBacking<Key, Value>(this).get(key);
+  }
+
+  public has(key: Key): boolean {
+    return mapBacking<Key, Value>(this).has(key);
+  }
+
+  public keys(): MapIterator<Key> {
+    return mapBacking<Key, Value>(this).keys();
+  }
+
+  public set(key: Key, value: Value): this {
+    void key;
+    void value;
+    return immutableCollectionMutation();
+  }
+
+  public values(): MapIterator<Value> {
+    return mapBacking<Key, Value>(this).values();
+  }
+
+  public [Symbol.iterator](): MapIterator<[Key, Value]> {
+    return this.entries();
+  }
+}
+
+Object.freeze(ImmutableSetFacade.prototype);
+Object.freeze(ImmutableMapFacade.prototype);
+
+const deeplyFreezeSchemaGraph = (root: z.ZodType): void => {
+  const replacements = new WeakMap<object, object>();
+  const objects: object[] = [];
+
+  const normalizeValue = (value: unknown): unknown => {
+    if (
+      value === null ||
+      (typeof value !== 'object' && typeof value !== 'function') ||
+      typeof value === 'function'
+    ) {
+      return value;
+    }
+    const prior = replacements.get(value);
+    if (prior !== undefined) return prior;
+
+    if (value instanceof Map) {
+      const backing = new Map<unknown, unknown>();
+      const facade = new ImmutableMapFacade(backing);
+      replacements.set(value, facade);
+      objects.push(facade);
+      for (const [key, nested] of value) {
+        backing.set(normalizeValue(key), normalizeValue(nested));
+      }
+      return facade;
+    }
+    if (value instanceof Set) {
+      const backing = new Set<unknown>();
+      const facade = new ImmutableSetFacade(backing);
+      replacements.set(value, facade);
+      objects.push(facade);
+      for (const nested of value) backing.add(normalizeValue(nested));
+      return facade;
+    }
+
+    // Zod deliberately writes RegExp.lastIndex = 0 before every regex check.
+    // Its source/flags are already immutable and lastIndex cannot influence a
+    // parse because Zod resets it, so treating RegExp as an atomic value keeps
+    // regex validators operational without exposing semantic mutability.
+    if (value instanceof RegExp) return value;
+
+    replacements.set(value, value);
+    objects.push(value);
+
+    for (const key of Reflect.ownKeys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined) continue;
+      let nested: unknown;
+      if ('value' in descriptor) {
+        nested = descriptor.value;
+      } else if (descriptor.get !== undefined) {
+        // Zod uses memoizing getters for shape/value caches. Resolve them while
+        // the complete graph is writable, then freeze the stable object they
+        // expose in a separate pass. A one-pass DFS can freeze a shared `def`
+        // before a later getter writes its `_cachedInner` field.
+        nested = Reflect.get(value, key, value);
+      } else {
+        continue;
+      }
+
+      const normalized = normalizeValue(nested);
+      if (normalized === nested) continue;
+      if ('value' in descriptor) {
+        if (descriptor.configurable !== true && descriptor.writable !== true) {
+          throw new TypeError(
+            `cannot replace mutable collection at non-writable Zod property ${String(key)}`,
+          );
+        }
+        Object.defineProperty(value, key, { ...descriptor, value: normalized });
+      } else {
+        if (descriptor.configurable !== true) {
+          throw new TypeError(
+            `cannot replace mutable collection returned by Zod getter ${String(key)}`,
+          );
+        }
+        Object.defineProperty(value, key, {
+          configurable: true,
+          enumerable: descriptor.enumerable,
+          value: normalized,
+          writable: true,
+        });
+      }
+    }
+    return value;
+  };
+
+  if (normalizeValue(root) !== root) {
+    throw new TypeError('isolated Zod schema root cannot be a collection');
+  }
+  for (const value of objects.reverse()) {
+    Object.freeze(value);
+  }
+};
+
 const cloneSchemaGraph = <Schema extends z.ZodType>(
   schema: Schema,
   options: Readonly<{ escapeProtoProperties?: boolean }> = {},
@@ -301,14 +540,24 @@ const cloneSchemaGraph = <Schema extends z.ZodType>(
         cloned,
         key,
         'value' in descriptor
-          ? { ...descriptor, value: cloneValue(descriptor.value) }
+          ? {
+              configurable: true,
+              enumerable: descriptor.enumerable,
+              value: cloneValue(descriptor.value),
+              writable: true,
+            }
           : descriptor.get === undefined
-            ? descriptor
+            ? {
+                configurable: true,
+                enumerable: descriptor.enumerable,
+                value: undefined,
+                writable: true,
+              }
             : {
-                configurable: descriptor.configurable,
+                configurable: true,
                 enumerable: descriptor.enumerable,
                 value: cloneValue(Reflect.get(value, key, value)),
-                writable: descriptor.set !== undefined,
+                writable: true,
               },
       );
     }
@@ -336,7 +585,22 @@ const cloneSchemaGraph = <Schema extends z.ZodType>(
 
     const originalDefinition = original._zod.def;
     const inspectedDefinition = originalDefinition as ZodInternals['def'];
-    const provisional = z.core.clone(original, originalDefinition, {
+    const provisionalDefinition = Object.create(
+      Object.getPrototypeOf(originalDefinition),
+    ) as typeof originalDefinition;
+    for (const key of Reflect.ownKeys(originalDefinition)) {
+      const descriptor = Object.getOwnPropertyDescriptor(
+        originalDefinition,
+        key,
+      );
+      if (descriptor === undefined) continue;
+      Object.defineProperty(provisionalDefinition, key, {
+        ...descriptor,
+        configurable: true,
+        ...('value' in descriptor ? { writable: true } : {}),
+      });
+    }
+    const provisional = z.core.clone(original, provisionalDefinition, {
       parent: false,
     });
     schemas.set(original, provisional);
@@ -389,10 +653,11 @@ const cloneSchemaGraph = <Schema extends z.ZodType>(
     const cloned = z.core.clone(original, clonedDefinition, { parent: false });
     schemas.set(original, cloned);
     cloning.delete(original);
-    return Object.freeze(cloned) as Nested;
+    return cloned as Nested;
   };
 
   const clonedSchema = cloneSchema(schema);
+  deeplyFreezeSchemaGraph(clonedSchema);
   return Object.freeze({
     escapedProtoProperties,
     schema: clonedSchema,
