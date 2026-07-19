@@ -24,6 +24,18 @@ type OutputName = (typeof OUTPUT_NAMES)[number];
 
 export type BazelOutputPaths = Readonly<Record<OutputName, string>>;
 
+class BazelRunnerDiagnosticError extends TypeError {
+  constructor(message: string, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = 'TypeError';
+  }
+}
+
+const diagnosticError = (
+  message: string,
+  cause?: unknown,
+): BazelRunnerDiagnosticError => new BazelRunnerDiagnosticError(message, cause);
+
 const expectedBasenameByOutput = Object.freeze({
   openapi: 'openapi.v2.json',
   events: 'events.schema.json',
@@ -49,7 +61,7 @@ const resolveActionPath = (value: string, cwd: string): string => {
     value.includes('\\') ||
     value.includes('//')
   ) {
-    throw new TypeError('invalid Bazel output path');
+    throw diagnosticError('invalid Bazel output path');
   }
 
   const pathWithoutRoot = isAbsolute(value) ? value.slice(1) : value;
@@ -59,7 +71,7 @@ const resolveActionPath = (value: string, cwd: string): string => {
       (segment) => segment.length === 0 || segment === '.' || segment === '..',
     )
   ) {
-    throw new TypeError('invalid Bazel output path');
+    throw diagnosticError('invalid Bazel output path');
   }
 
   return isAbsolute(value) ? resolve(value) : resolve(cwd, value);
@@ -80,29 +92,29 @@ export const parseOutputArguments = (
     const name = option.startsWith('--') ? option.slice(2) : '';
 
     if (!isOutputName(name)) {
-      throw new TypeError('unknown Bazel output argument');
+      throw diagnosticError('unknown Bazel output argument');
     }
     if (value === undefined || value.length === 0) {
-      throw new TypeError('empty Bazel output argument');
+      throw diagnosticError('empty Bazel output argument');
     }
     if (parsed[name] !== undefined) {
-      throw new TypeError('duplicate Bazel output argument');
+      throw diagnosticError('duplicate Bazel output argument');
     }
 
     parsed[name] = resolveActionPath(value, cwd);
   }
 
   if (OUTPUT_NAMES.some((name) => parsed[name] === undefined)) {
-    throw new TypeError('missing Bazel output argument');
+    throw diagnosticError('missing Bazel output argument');
   }
 
   const paths = parsed as Record<OutputName, string>;
   if (new Set(Object.values(paths)).size !== OUTPUT_NAMES.length) {
-    throw new TypeError('Bazel output paths must be unique');
+    throw diagnosticError('Bazel output paths must be unique');
   }
   for (const name of OUTPUT_NAMES) {
     if (basename(paths[name]) !== expectedBasenameByOutput[name]) {
-      throw new TypeError('incorrect Bazel output basename');
+      throw diagnosticError('incorrect Bazel output basename');
     }
   }
 
@@ -126,7 +138,7 @@ const lstatIfPresent = (path: string): Stats | undefined => {
     ) {
       return undefined;
     }
-    throw error;
+    throw diagnosticError('failed to inspect Bazel output', error);
   }
 };
 
@@ -142,14 +154,14 @@ const validateParentDirectories = (outputPath: string): void => {
     !rootStats.isDirectory() ||
     rootStats.isSymbolicLink()
   ) {
-    throw new TypeError('Bazel output parent is not a real directory');
+    throw diagnosticError('Bazel output parent is not a real directory');
   }
 
   for (const segment of relativeSegments) {
     current = join(current, segment);
     const stats = lstatIfPresent(current);
     if (stats === undefined || !stats.isDirectory() || stats.isSymbolicLink()) {
-      throw new TypeError('Bazel output parent is not a real directory');
+      throw diagnosticError('Bazel output parent is not a real directory');
     }
   }
 };
@@ -157,11 +169,49 @@ const validateParentDirectories = (outputPath: string): void => {
 const validateOutputTarget = (outputPath: string): void => {
   validateParentDirectories(outputPath);
   if (lstatIfPresent(outputPath) !== undefined) {
-    throw new TypeError('Bazel output target already exists');
+    throw diagnosticError('Bazel output target already exists');
   }
 };
 
 type DescriptorWriter = (descriptor: number, contents: string) => void;
+
+const writeOutput = (
+  path: string,
+  contents: string,
+  writer: DescriptorWriter,
+): void => {
+  let descriptor: number;
+  try {
+    descriptor = openSync(path, 'wx', 0o600);
+  } catch (error) {
+    throw diagnosticError('failed to write Bazel output', error);
+  }
+
+  let writerFailed = false;
+  let writerFailure: unknown;
+  try {
+    writer(descriptor, contents);
+  } catch (error) {
+    writerFailed = true;
+    writerFailure = error;
+  }
+
+  let closeFailed = false;
+  let closeFailure: unknown;
+  try {
+    closeSync(descriptor);
+  } catch (error) {
+    closeFailed = true;
+    closeFailure = error;
+  }
+
+  if (writerFailed) {
+    throw diagnosticError('failed to write Bazel output', writerFailure);
+  }
+  if (closeFailed) {
+    throw diagnosticError('failed to close Bazel output', closeFailure);
+  }
+};
 
 const runBazelCodegenWithWriter = (
   args: readonly string[],
@@ -170,15 +220,14 @@ const runBazelCodegenWithWriter = (
   const paths = parseOutputArguments(args);
   for (const name of OUTPUT_NAMES) validateOutputTarget(paths[name]);
 
-  const outputs = createContractOutputs();
+  let outputs: ReturnType<typeof createContractOutputs>;
+  try {
+    outputs = createContractOutputs();
+  } catch (error) {
+    throw diagnosticError('contract generation failed', error);
+  }
   for (const name of OUTPUT_NAMES) {
-    const path = paths[name];
-    const descriptor = openSync(path, 'wx', 0o600);
-    try {
-      writer(descriptor, outputs[generatedPathByOutput[name]]);
-    } finally {
-      closeSync(descriptor);
-    }
+    writeOutput(paths[name], outputs[generatedPathByOutput[name]], writer);
   }
 };
 
@@ -186,7 +235,13 @@ export const runBazelCodegen = (
   args: readonly string[] = process.argv.slice(2),
 ): void => runBazelCodegenWithWriter(args, writeFileSync);
 
+const formatCliDiagnostic = (error: unknown): string =>
+  error instanceof BazelRunnerDiagnosticError
+    ? `${error.name}: ${error.message}`
+    : 'Error: Bazel code generation failed';
+
 export const bazelRunnerTestSeams = Object.freeze({
+  formatCliDiagnostic,
   runBazelCodegenWithWriter,
 });
 
@@ -202,10 +257,7 @@ if (isMainModule()) {
   try {
     runBazelCodegen();
   } catch (error) {
-    const name = error instanceof Error ? error.name : 'Error';
-    const message =
-      error instanceof Error ? error.message : 'Bazel code generation failed';
-    console.error(`${name}: ${message}`);
+    console.error(formatCliDiagnostic(error));
     process.exitCode = 1;
   }
 }

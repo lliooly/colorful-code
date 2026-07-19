@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
+  closeSync,
   existsSync,
   fstatSync,
   lstatSync,
@@ -259,24 +260,119 @@ describe('runBazelCodegen', () => {
     let writeCount = 0;
     let failedDescriptor: number | undefined;
 
-    expect(() =>
+    let caught: unknown;
+    const primaryFailure = new Error('primary-write-marker');
+    try {
       bazelRunnerTestSeams.runBazelCodegenWithWriter(
         argumentsFor(paths),
         (descriptor, contents) => {
           writeCount += 1;
           if (writeCount === 4) {
             failedDescriptor = descriptor;
-            throw new Error('simulated write failure');
+            throw primaryFailure;
           }
           writeFileSync(descriptor, contents);
         },
-      ),
-    ).toThrow('simulated write failure');
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).cause).toBe(primaryFailure);
+    expect(String(caught)).not.toContain('primary-write-marker');
+    expect(bazelRunnerTestSeams.formatCliDiagnostic(caught)).toBe(
+      'TypeError: failed to write Bazel output',
+    );
     expect(existsSync(paths.openapi)).toBe(true);
     expect(existsSync(paths.events)).toBe(true);
     expect(existsSync(paths.typescript)).toBe(true);
     expect(existsSync(paths.swift)).toBe(true);
     expect(() => fstatSync(failedDescriptor!)).toThrow();
+  });
+
+  test('preserves the writer failure when finally close also fails', () => {
+    const root = makeDirectory();
+    const paths = outputPaths(root);
+    const primaryFailure = new Error('primary-write-marker');
+    let caught: unknown;
+
+    try {
+      bazelRunnerTestSeams.runBazelCodegenWithWriter(
+        argumentsFor(paths),
+        (descriptor) => {
+          closeSync(descriptor);
+          throw primaryFailure;
+        },
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).cause).toBe(primaryFailure);
+    expect(String(caught)).not.toContain('primary-write-marker');
+    expect(String(caught)).not.toContain('EBADF');
+  });
+
+  test('reports a safe close error when writing succeeds but close fails', () => {
+    const root = makeDirectory();
+    const paths = outputPaths(root);
+    let caught: unknown;
+
+    try {
+      bazelRunnerTestSeams.runBazelCodegenWithWriter(
+        argumentsFor(paths),
+        (descriptor, contents) => {
+          writeFileSync(descriptor, contents);
+          closeSync(descriptor);
+        },
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect(String(caught)).toBe('TypeError: failed to close Bazel output');
+    expect((caught as Error).cause).toBeInstanceOf(Error);
+    expect(bazelRunnerTestSeams.formatCliDiagnostic(caught)).toBe(
+      'TypeError: failed to close Bazel output',
+    );
+  });
+
+  test('fails closed if a target appears after full preflight validation', () => {
+    const root = makeDirectory();
+    const paths = outputPaths(root);
+    let writeCount = 0;
+    let caught: unknown;
+
+    try {
+      bazelRunnerTestSeams.runBazelCodegenWithWriter(
+        argumentsFor(paths),
+        (descriptor, contents) => {
+          writeFileSync(descriptor, contents);
+          writeCount += 1;
+          if (writeCount === 1) writeFileSync(paths.events, 'race-marker');
+        },
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect(String(caught)).not.toContain(root);
+    expect(String(caught)).not.toContain('events.schema.json');
+    expect(readFileSync(paths.events, 'utf8')).toBe('race-marker');
+    expect(existsSync(paths.openapi)).toBe(true);
+  });
+
+  test('CLI diagnostic formatter never exposes an unknown error', () => {
+    const marker = 'formatter-secret-marker';
+    const formatted = bazelRunnerTestSeams.formatCliDiagnostic(
+      new Error(marker),
+    );
+
+    expect(formatted).toBe('Error: Bazel code generation failed');
+    expect(formatted).not.toContain(marker);
   });
 
   test('source stays within the Bazel runner dependency boundary', () => {
@@ -319,5 +415,18 @@ describe('runBazelCodegen', () => {
     expect(result.exitCode).not.toBe(0);
     expect(result.stdout.toString()).toBe('');
     expect(result.stderr.toString()).toMatch(/^TypeError: [^\n]+\n$/u);
+
+    const marker = `cli-secret-${'x'.repeat(300)}`;
+    const unsafePaths = outputPaths(join(root, marker));
+    const filesystemFailure = Bun.spawnSync(
+      ['node', join(root, 'bazel-runner.mjs'), ...argumentsFor(unsafePaths)],
+      { stderr: 'pipe', stdout: 'pipe' },
+    );
+    const diagnostic = filesystemFailure.stderr.toString();
+    expect(filesystemFailure.exitCode).not.toBe(0);
+    expect(filesystemFailure.stdout.toString()).toBe('');
+    expect(diagnostic).toMatch(/^[^\n]+\n$/u);
+    expect(diagnostic).not.toContain(marker);
+    expect(diagnostic).not.toContain(root);
   });
 });
