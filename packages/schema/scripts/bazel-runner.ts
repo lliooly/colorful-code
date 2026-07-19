@@ -89,11 +89,7 @@ export const parseOutputArguments = (
       throw new TypeError('duplicate Bazel output argument');
     }
 
-    const outputPath = resolveActionPath(value, cwd);
-    if (basename(outputPath) !== expectedBasenameByOutput[name]) {
-      throw new TypeError('incorrect Bazel output basename');
-    }
-    parsed[name] = outputPath;
+    parsed[name] = resolveActionPath(value, cwd);
   }
 
   if (OUTPUT_NAMES.some((name) => parsed[name] === undefined)) {
@@ -103,6 +99,11 @@ export const parseOutputArguments = (
   const paths = parsed as Record<OutputName, string>;
   if (new Set(Object.values(paths)).size !== OUTPUT_NAMES.length) {
     throw new TypeError('Bazel output paths must be unique');
+  }
+  for (const name of OUTPUT_NAMES) {
+    if (basename(paths[name]) !== expectedBasenameByOutput[name]) {
+      throw new TypeError('incorrect Bazel output basename');
+    }
   }
 
   return Object.freeze({

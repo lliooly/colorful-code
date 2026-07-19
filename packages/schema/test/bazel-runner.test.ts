@@ -70,17 +70,19 @@ describe('parseOutputArguments', () => {
   test.each([
     {
       name: 'missing',
+      markers: ['missing-secret'],
       args: [
-        '--openapi=o/openapi.v2.json',
+        '--openapi=o/missing-secret/openapi.v2.json',
         '--events=o/events.schema.json',
         '--typescript=o/contracts.ts',
       ],
     },
     {
       name: 'duplicate',
+      markers: ['duplicate-secret'],
       args: [
         '--openapi=o/openapi.v2.json',
-        '--openapi=x/openapi.v2.json',
+        '--openapi=x/duplicate-secret/openapi.v2.json',
         '--events=o/events.schema.json',
         '--typescript=o/contracts.ts',
         '--swift=o/ColorfulCodeContracts.swift',
@@ -88,48 +90,63 @@ describe('parseOutputArguments', () => {
     },
     {
       name: 'unknown',
+      markers: ['unknown-secret'],
       args: [
         '--openapi=o/openapi.v2.json',
         '--events=o/events.schema.json',
         '--typescript=o/contracts.ts',
         '--swift=o/ColorfulCodeContracts.swift',
-        '--extra=secret-payload',
+        '--unknown-secret=payload',
       ],
     },
     {
       name: 'empty',
+      markers: ['empty-secret'],
       args: [
         '--openapi=',
-        '--events=o/events.schema.json',
+        '--events=o/empty-secret/events.schema.json',
         '--typescript=o/contracts.ts',
         '--swift=o/ColorfulCodeContracts.swift',
       ],
     },
-  ])('rejects $name arguments without echoing argv', ({ args }) => {
+  ])('rejects $name arguments without echoing markers', ({ args, markers }) => {
     try {
       parseOutputArguments(args, makeDirectory());
       throw new Error('expected argument validation to fail');
     } catch (error) {
       expect(error).toBeInstanceOf(TypeError);
-      expect(String(error)).not.toContain('secret-payload');
-      expect(String(error)).not.toContain(args.join(' '));
+      for (const marker of markers) {
+        expect(String(error)).not.toContain(marker);
+      }
     }
   });
 
-  test('rejects distinct logical outputs that resolve to the same path', () => {
-    const root = makeDirectory();
-    expect(() =>
-      parseOutputArguments(
-        [
-          '--openapi=out/openapi.v2.json',
-          '--events=out/openapi.v2.json',
-          '--typescript=out/contracts.ts',
-          '--swift=out/ColorfulCodeContracts.swift',
-        ],
-        root,
-      ),
-    ).toThrow(TypeError);
-  });
+  test.each(['events', 'typescript', 'swift', 'openapi'] as const)(
+    'rejects a resolved path collision involving %s as a unique-path error',
+    (collidingOutput) => {
+      const root = makeDirectory();
+      const paths = {
+        openapi: 'out/openapi.v2.json',
+        events: 'out/events.schema.json',
+        typescript: 'out/contracts.ts',
+        swift: 'out/ColorfulCodeContracts.swift',
+      };
+      const counterpart = collidingOutput === 'openapi' ? 'events' : 'openapi';
+      paths[collidingOutput] = paths[counterpart];
+
+      expect(() =>
+        parseOutputArguments(
+          [
+            `--openapi=${paths.openapi}`,
+            `--events=${paths.events}`,
+            `--typescript=${paths.typescript}`,
+            `--swift=${paths.swift}`,
+          ],
+          root,
+        ),
+      ).toThrow(/unique/u);
+    },
+  );
 
   test.each([
     'out/../openapi.v2.json',
@@ -268,14 +285,33 @@ describe('runBazelCodegen', () => {
       'utf8',
     );
 
-    expect(source).not.toMatch(/bun:|generate\.js|publisher|lock|journal/u);
-    expect(source).not.toMatch(/hostname|Date|performance|random|randomUUID/u);
-    expect(source).not.toMatch(/process\.pid/u);
+    expect(source).not.toMatch(
+      /\b(?:from\s+|import\s*(?:\(\s*)?)['"](?:[^'"]*\/)?generate\.(?:ts|js)['"]|bun:ffi/u,
+    );
+    expect(source).not.toMatch(
+      /\b(?:publisher|lock|journal|temp|staging|quarantine|backup|hostname|Date|performance|random)\b|Math\.random|randomUUID|getRandomValues|process\.pid/u,
+    );
   });
 
-  test('CLI exits non-zero and prints only a bounded diagnostic', () => {
+  test('bundled Node 22 CLI exits non-zero with a bounded diagnostic', async () => {
     const script = resolve(import.meta.dir, '../scripts/bazel-runner.ts');
-    const result = Bun.spawnSync(['bun', script], {
+    const root = makeDirectory();
+    const build = await Bun.build({
+      entrypoints: [script],
+      format: 'esm',
+      naming: '[name].mjs',
+      outdir: root,
+      target: 'node',
+    });
+    expect(build.success).toBe(true);
+    const nodeVersion = Bun.spawnSync(['node', '--version'], {
+      stderr: 'pipe',
+      stdout: 'pipe',
+    });
+    expect(nodeVersion.exitCode).toBe(0);
+    expect(nodeVersion.stdout.toString()).toMatch(/^v22\./u);
+
+    const result = Bun.spawnSync(['node', join(root, 'bazel-runner.mjs')], {
       stderr: 'pipe',
       stdout: 'pipe',
     });
