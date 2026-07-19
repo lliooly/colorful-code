@@ -18,13 +18,10 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { dlopen, FFIType, read } from 'bun:ffi';
 
-import { contractRegistry } from '../src/registry.js';
-import { createEventsSchema } from './lib/events-schema.js';
-import { createJsonSchemaIr } from './lib/json-schema.js';
-import { createOpenApiDocument } from './lib/openapi.js';
+import { createContractOutputs } from './create-contract-outputs.js';
 import { stableJson } from './lib/stable-json.js';
-import { createSwiftContracts } from './lib/swift.js';
-import { createTypeScriptContracts } from './lib/typescript.js';
+
+export { GENERATED_PATHS } from './create-contract-outputs.js';
 
 const LOCK_NAME = '.schema-generation.lock';
 const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
@@ -88,13 +85,6 @@ const errnoPointer =
   flockLibrary.symbols[
     process.platform === 'darwin' ? '__error' : '__errno_location'
   ];
-
-export const GENERATED_PATHS = [
-  'generated/openapi.v2.json',
-  'generated/events.schema.json',
-  'generated/typescript/contracts.ts',
-  'swift-fixture/Sources/ColorfulCodeContracts/ColorfulCodeContracts.swift',
-] as const;
 
 type LockRecord = Readonly<{
   pid: number;
@@ -1404,46 +1394,11 @@ export const publishGeneratedOutputs = async (
   );
 };
 
-const createOutputs = (): Readonly<Record<string, string>> => {
-  const ir = createJsonSchemaIr(contractRegistry.schemas);
-  const outputs = {
-    'generated/openapi.v2.json': stableJson(
-      createOpenApiDocument(contractRegistry),
-    ),
-    'generated/events.schema.json': stableJson(
-      createEventsSchema(contractRegistry),
-    ),
-    'generated/typescript/contracts.ts': createTypeScriptContracts(
-      contractRegistry.schemas,
-    ),
-    'swift-fixture/Sources/ColorfulCodeContracts/ColorfulCodeContracts.swift':
-      createSwiftContracts(ir),
-  } satisfies Record<(typeof GENERATED_PATHS)[number], string>;
-
-  JSON.parse(outputs['generated/openapi.v2.json']);
-  JSON.parse(outputs['generated/events.schema.json']);
-  if (
-    !outputs['generated/typescript/contracts.ts'].startsWith(
-      '// This file is generated.',
-    )
-  ) {
-    throw new Error('generated TypeScript artifact failed validation');
-  }
-  if (
-    !outputs[
-      'swift-fixture/Sources/ColorfulCodeContracts/ColorfulCodeContracts.swift'
-    ].startsWith('// This file is generated.')
-  ) {
-    throw new Error('generated Swift artifact failed validation');
-  }
-  return outputs;
-};
-
 export const generateContracts = async (
   options: PublishOptions & Readonly<{ packageRoot?: string }> = {},
 ): Promise<void> => {
   const packageRoot = options.packageRoot ?? resolve(import.meta.dir, '..');
-  await publishGeneratedOutputs(packageRoot, createOutputs(), options);
+  await publishGeneratedOutputs(packageRoot, createContractOutputs(), options);
 };
 
 if (import.meta.main) await generateContracts();
