@@ -6,7 +6,7 @@
 
 **架构：** 将纯 `createContractOutputs()` 从 Bun FFI 发布器中提取，源码树入口继续调用现有锁/恢复发布流程；Bazel runner 只接受四个命名输出参数，在 Bazel output tree 写文件。`ts_project` 编译纯生成闭包，`js_binary` 提供 Node 入口，`js_run_binary` 产生四个文件，`sh_test` 逐字节比较提交 fixture。
 
-**技术栈：** Bazel 9.1.0、Bzlmod、aspect_rules_js 3.2.3、aspect_rules_ts 3.8.11、rules_nodejs 6.7.3、Node.js 22.22.3、TypeScript 5.9、Zod 4、Bun test
+**技术栈：** Bazel 9.1.0、Bzlmod、aspect_rules_js 3.2.3、aspect_rules_ts 3.8.11、rules_nodejs 6.7.3、Node.js 22.22.0、TypeScript 5.9、Zod 4、Bun test
 
 ---
 
@@ -16,10 +16,16 @@
 - 修改 `packages/schema/scripts/generate.ts`：只保留源码树发布职责并调用纯内核。
 - 创建 `packages/schema/scripts/bazel-runner.ts`：验证四个显式输出参数并写 Bazel 声明输出。
 - 创建 `packages/schema/scripts/check-bazel-outputs.ts`：逐字节比较 Bazel 输出与提交 fixture。
+- 创建 `packages/schema/tsconfig.bazel.json`：仅供 Bazel 编译纯内核与 runner。
 - 创建 `packages/schema/test/create-contract-outputs.test.ts`：纯内核边界、确定性和无发布层依赖测试。
 - 创建 `packages/schema/test/bazel-runner.test.ts`：参数、重复路径、路径安全和失败清理测试。
 - 修改 `MODULE.bazel`、`MODULE.bazel.lock`：固定 Node/JS/TS rules 与 pnpm npm graph。
+- 修改 `BUILD.bazel`：为 pnpm workspace 建立根 package stores，同时保留七个
+  orchestration launcher。
+- 修改 `bazel/test/run-task.test.sh`：继续精确约束七个根 `sh_binary`，允许根
+  package stores 产生非 orchestration supporting targets。
 - 创建 `packages/schema/BUILD.bazel`：`codegen_lib`、`codegen_runner`、`contract_codegen` 与 `contract_codegen_check`。
+- 修改 `bazel/README.md`：区分原有宿主 orchestration 与新的 hermetic action。
 - 修改 `.github/workflows/ci.yml`：在宿主依赖安装前运行 Bazel drift 检查。
 
 ### 任务 1：提取纯生成内核
@@ -64,8 +70,12 @@ export type ContractOutputs = Readonly<
 export const createContractOutputs = (): ContractOutputs => {
   const ir = createJsonSchemaIr(contractRegistry.schemas);
   return Object.freeze({
-    'generated/openapi.v2.json': stableJson(createOpenApiDocument(ir)),
-    'generated/events.schema.json': stableJson(createEventsSchema(ir)),
+    'generated/openapi.v2.json': stableJson(
+      createOpenApiDocument(contractRegistry),
+    ),
+    'generated/events.schema.json': stableJson(
+      createEventsSchema(contractRegistry),
+    ),
     'generated/typescript/contracts.ts': createTypeScriptContracts(
       contractRegistry.schemas,
     ),
@@ -91,7 +101,11 @@ export const createContractOutputs = (): ContractOutputs => {
 
 - [ ] **步骤 1：编写 runner 红灯测试**
 
-用临时目录覆盖：缺参数、未知参数、重复逻辑名称、两个参数解析为同一路径、输出不是绝对路径、父目录逃逸/符号链接、成功写四个文件、任一写入失败时返回非零且不留下 runner 创建的半成品。
+用临时目录覆盖：缺参数、未知参数、重复逻辑名称、两个参数解析为同一路径、
+含 `..`/NUL/错误 basename 的路径、符号链接目标、成功写四个文件、任一写入
+失败时返回非零。失败 action 可以在 sandbox 中留下不完整文件供 Bazel 丢弃，
+但不得返回成功，也不得创建四个声明输出和必要父目录以外的 lock、temp、journal
+或 staging 文件。
 
 ```ts
 expect(() => parseOutputArguments([])).toThrow(/missing output/u);
@@ -111,7 +125,13 @@ expect(() => parseOutputArguments([
 
 - [ ] **步骤 3：实现最小参数解析与写入**
 
-runner 固定接受 `--openapi=...`、`--events=...`、`--typescript=...`、`--swift=...`。解析后对规范化绝对路径做唯一性检查；先验证所有父目录均为真实目录或由 runner 创建，再以 `wx` 创建临时 sibling、写入并关闭，最后逐个 rename 到声明路径。失败时只清理本进程 nonce 命名的临时文件，不删除既有目标；Bazel action 失败后不把部分结果视为成功。
+runner 固定接受 `--openapi=...`、`--events=...`、`--typescript=...`、
+`--swift=...`。参数可以是 Bazel 展开的绝对路径或 execroot-relative action path；
+拒绝空值、NUL、`.`/`..` segment 和与逻辑输出不匹配的 basename，并对 resolve
+后的四个目标做唯一性检查。父目录必须是 Bazel 已建立的真实目录；runner 用
+`open(..., 'wx')` 直接创建四个声明输出，不创建临时 sibling、锁或 journal。
+任何写入失败立即以非零退出，由 Bazel 丢弃失败 action 的输出；runner 不删除或
+覆盖既有目标。
 
 ```ts
 const OUTPUT_KEYS = ['openapi', 'events', 'typescript', 'swift'] as const;
@@ -123,7 +143,7 @@ const OUTPUT_TO_CONTRACT = {
 } as const;
 ```
 
-不得导入 `generate.ts`、Bun FFI、锁、journal、hostname、PID、时间或随机 API；临时名使用固定逻辑输出旁由 action 独占的 `.tmp` 后缀，并在开始前要求不存在。
+不得导入 `generate.ts`、Bun FFI、锁、journal、hostname、PID、时间或随机 API。
 
 - [ ] **步骤 4：运行 runner 测试和源码树生成回归**
 
@@ -136,6 +156,8 @@ const OUTPUT_TO_CONTRACT = {
 **文件：**
 - 修改：`MODULE.bazel`
 - 修改：`MODULE.bazel.lock`
+- 修改：`BUILD.bazel`
+- 修改：`bazel/test/run-task.test.sh`
 
 - [ ] **步骤 1：写 Bazel query 红灯验证**
 
@@ -151,18 +173,27 @@ bazel_dep(name = "aspect_rules_ts", version = "3.8.11")
 bazel_dep(name = "rules_nodejs", version = "6.7.3")
 
 node = use_extension("@rules_nodejs//nodejs:extensions.bzl", "node")
-node.toolchain(node_version = "22.22.3")
+node.toolchain(node_version = "22.22.0")
 use_repo(node, "nodejs_toolchains")
 
 npm = use_extension("@aspect_rules_js//npm:extensions.bzl", "npm")
 npm.npm_translate_lock(
     name = "npm",
     pnpm_lock = "//:pnpm-lock.yaml",
+    bins = {"typescript": ["tsc=./bin/tsc"]},
 )
 use_repo(npm, "npm")
 ```
 
-若实际固定版本导出的 repository 名称不同，以该版本官方 extension 输出为准，不使用宿主 PATH fallback。Bazel 9 使用根 `REPO.bazel` 的 `ignore_directories(["**/node_modules"])` 时，新增该文件并纳入本任务。
+`22.22.0` 是 `rules_nodejs` 6.7.3 内置清单可验证的最新 22.x
+toolchain。若实际固定版本导出的 repository 名称不同，以该版本官方
+extension 输出为准，不使用宿主 PATH fallback。Bazel 9 使用根 `REPO.bazel`
+的 `ignore_directories(["**/node_modules"])` 时，新增该文件并纳入本任务。
+不得调用 `aspect_rules_ts` 的 TypeScript 下载 extension；`ts_project.tsc`
+必须显式引用上述 `pnpm-lock.yaml` 生成的 `typescript/tsc` binary，避免第二份
+TypeScript 解析来源。根 `BUILD.bazel` 调用 `npm_link_all_packages()` 建 package
+stores；既有 orchestration 测试改为精确统计七个 `sh_binary`，而不是断言根
+package 总共只有七个 target。
 
 - [ ] **步骤 3：刷新并审查 lock**
 
@@ -175,6 +206,7 @@ use_repo(npm, "npm")
 **文件：**
 - 创建：`packages/schema/BUILD.bazel`
 - 创建：`packages/schema/scripts/check-bazel-outputs.ts`
+- 创建：`packages/schema/tsconfig.bazel.json`
 
 - [ ] **步骤 1：让 query 先失败并确认红灯来自目标缺失**
 
@@ -184,7 +216,7 @@ use_repo(npm, "npm")
 
 - [ ] **步骤 2：定义编译、runner 与四输出 action**
 
-`ts_project(name = "codegen_lib")` 的 `srcs` 精确列举 `src/**/*.ts`、纯内核、runner 和 emitter，不包含 `generate.ts`；`deps` 仅链接 `//:node_modules/zod` 与 Node 类型/TypeScript 编译所需目标。`js_binary(name = "codegen_runner")` 的入口来自编译输出。`js_run_binary(name = "contract_codegen")` 显式声明四个 `outs` 并通过 `$(execpath ...)` 参数传给 runner。
+`ts_project(name = "codegen_lib")` 的 `srcs` 精确列举 `src/**/*.ts`、纯内核、runner 和 emitter，不包含 `generate.ts`；`deps` 仅链接 `:node_modules/zod` 与 Node 类型/TypeScript 编译所需目标。专用 `tsconfig.bazel.json` 使用 `rootDir: "."`，其 declaration/sourceMap 等属性必须与 `ts_project` 一致。`ts_project.tsc` 显式使用 pnpm graph 的 TypeScript binary，不启用 persistent worker。`js_binary(name = "codegen_runner")` 的入口来自编译输出。`js_run_binary(name = "contract_codegen")` 显式声明四个 `outs` 并通过 location/execpath 展开后的 action 路径参数传给 runner；runner 不假设调用者 cwd，也不接受宿主绝对路径作为未声明输入。
 
 ```starlark
 js_run_binary(
@@ -228,6 +260,7 @@ bazel test //packages/schema:contract_codegen_check
 
 **文件：**
 - 修改：`.github/workflows/ci.yml`
+- 修改：`bazel/README.md`
 - 测试：`packages/schema/BUILD.bazel`
 
 - [ ] **步骤 1：加入 CI Bazel codegen 检查**

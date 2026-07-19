@@ -112,7 +112,8 @@ Bazel runner 必须满足：
 实施时固定：
 
 - Bazel：继续使用 `.bazelversion` 中的 `9.1.0`；
-- Node.js：`22.22.3`；
+- Node.js：`22.22.0`（`rules_nodejs` 6.7.3 内置并校验的最新 22.x
+  toolchain；不回退到宿主 Node，也不自维护跨平台下载校验和）；
 - pnpm：继续读取根 `package.json` 中的 `11.0.8`；
 - npm graph：通过 `npm_translate_lock` 读取根 `pnpm-lock.yaml`。
 

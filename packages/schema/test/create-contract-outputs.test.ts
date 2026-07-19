@@ -5,7 +5,15 @@ import { resolve } from 'node:path';
 import {
   GENERATED_PATHS,
   createContractOutputs,
+  validateContractOutputs,
+  type ContractOutputs,
 } from '../scripts/create-contract-outputs.js';
+
+const withOutput = (
+  outputs: ContractOutputs,
+  path: (typeof GENERATED_PATHS)[number],
+  contents: string,
+): ContractOutputs => ({ ...outputs, [path]: contents });
 
 describe('createContractOutputs', () => {
   test('returns exactly the declared generated paths in stable order', () => {
@@ -43,6 +51,40 @@ describe('createContractOutputs', () => {
     ).toStartWith('// This file is generated.');
   });
 
+  test('rejects malformed JSON artifacts before publication', () => {
+    const outputs = createContractOutputs();
+
+    expect(() =>
+      validateContractOutputs(
+        withOutput(outputs, 'generated/openapi.v2.json', '{'),
+      ),
+    ).toThrow(SyntaxError);
+    expect(() =>
+      validateContractOutputs(
+        withOutput(outputs, 'generated/events.schema.json', '{'),
+      ),
+    ).toThrow(SyntaxError);
+  });
+
+  test('rejects generated sources whose defensive headers are missing', () => {
+    const outputs = createContractOutputs();
+
+    expect(() =>
+      validateContractOutputs(
+        withOutput(outputs, 'generated/typescript/contracts.ts', 'export {};'),
+      ),
+    ).toThrow('generated TypeScript artifact failed validation');
+    expect(() =>
+      validateContractOutputs(
+        withOutput(
+          outputs,
+          'swift-fixture/Sources/ColorfulCodeContracts/ColorfulCodeContracts.swift',
+          'public struct Contract {}',
+        ),
+      ),
+    ).toThrow('generated Swift artifact failed validation');
+  });
+
   test('keeps the generation kernel free of runtime and I/O dependencies', () => {
     const source = readFileSync(
       resolve(import.meta.dir, '../scripts/create-contract-outputs.ts'),
@@ -58,5 +100,6 @@ describe('createContractOutputs', () => {
     ]) {
       expect(source).not.toContain(forbiddenImport);
     }
+    expect(source).toContain('validateContractOutputs(outputs);');
   });
 });

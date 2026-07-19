@@ -17,9 +17,28 @@ export type ContractOutputs = Readonly<
   Record<(typeof GENERATED_PATHS)[number], string>
 >;
 
+export const validateContractOutputs = (outputs: ContractOutputs): void => {
+  JSON.parse(outputs['generated/openapi.v2.json']);
+  JSON.parse(outputs['generated/events.schema.json']);
+  if (
+    !outputs['generated/typescript/contracts.ts'].startsWith(
+      '// This file is generated.',
+    )
+  ) {
+    throw new Error('generated TypeScript artifact failed validation');
+  }
+  if (
+    !outputs[
+      'swift-fixture/Sources/ColorfulCodeContracts/ColorfulCodeContracts.swift'
+    ].startsWith('// This file is generated.')
+  ) {
+    throw new Error('generated Swift artifact failed validation');
+  }
+};
+
 export const createContractOutputs = (): ContractOutputs => {
   const ir = createJsonSchemaIr(contractRegistry.schemas);
-  return Object.freeze({
+  const outputs = Object.freeze({
     'generated/openapi.v2.json': stableJson(
       createOpenApiDocument(contractRegistry),
     ),
@@ -32,4 +51,6 @@ export const createContractOutputs = (): ContractOutputs => {
     'swift-fixture/Sources/ColorfulCodeContracts/ColorfulCodeContracts.swift':
       createSwiftContracts(ir),
   } satisfies ContractOutputs);
+  validateContractOutputs(outputs);
+  return outputs;
 };
