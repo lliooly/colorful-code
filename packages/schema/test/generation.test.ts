@@ -219,6 +219,32 @@ const EXPECTED_EVENT_SCHEMA_NAMES = [
 const compareText = (left: string, right: string) =>
   left < right ? -1 : left > right ? 1 : 0;
 
+const collectJsonReferences = (value: unknown): string[] => {
+  if (Array.isArray(value)) return value.flatMap(collectJsonReferences);
+  if (value === null || typeof value !== 'object') return [];
+  return Object.entries(value).flatMap(([key, nested]) =>
+    key === '$ref' && typeof nested === 'string'
+      ? [nested]
+      : collectJsonReferences(nested),
+  );
+};
+
+const resolveLocalJsonReference = (root: unknown, reference: string): unknown =>
+  reference
+    .slice(2)
+    .split('/')
+    .map((segment) => segment.replaceAll('~1', '/').replaceAll('~0', '~'))
+    .reduce<unknown>((current, segment) => {
+      if (
+        current === null ||
+        typeof current !== 'object' ||
+        !Object.hasOwn(current, segment)
+      ) {
+        return undefined;
+      }
+      return (current as Record<string, unknown>)[segment];
+    }, root);
+
 const deeplyFrozenPlainObjects = (value: unknown): boolean => {
   if (
     value === null ||
@@ -239,6 +265,11 @@ const registryModule = await import('../src/registry.js').catch(
 const jsonSchemaModule = await import('../scripts/lib/json-schema.js').catch(
   () => undefined,
 );
+const openApiModule = await import('../scripts/lib/openapi.js').catch(
+  () => undefined,
+);
+const eventsSchemaModule =
+  await import('../scripts/lib/events-schema.js').catch(() => undefined);
 
 type RegistryViewFactory = <Schema extends z.ZodType>(schema: Schema) => Schema;
 
@@ -756,4 +787,342 @@ describe('Zod JSON Schema IR', () => {
       ).toThrow(`${name} at ${path}`);
     },
   );
+});
+
+describe('OpenAPI 3.1 emitter', () => {
+  test('emits stable registry-backed operations and reusable error responses', () => {
+    expect(openApiModule).toBeDefined();
+    if (openApiModule === undefined) return;
+
+    const document = openApiModule.createOpenApiDocument();
+    const paths = document.paths as Record<
+      string,
+      Record<string, Record<string, unknown>>
+    >;
+    const serialized = JSON.stringify(document);
+
+    expect(document.openapi).toBe('3.1.0');
+    expect(document.info).toEqual({
+      title: 'Colorful Code API',
+      version: '0.0.0',
+    });
+    expect(document.servers).toEqual([]);
+    expect(Object.keys(paths)).toEqual(
+      [...Object.keys(paths)].sort(compareText),
+    );
+    expect(
+      Object.values(paths)
+        .flatMap((pathItem) => Object.values(pathItem))
+        .map((operation) => operation.operationId)
+        .sort(compareText),
+    ).toEqual([...EXPECTED_HTTP_OPERATION_IDS]);
+    expect(Object.keys(document.components.schemas)).toEqual(
+      [...Object.keys(document.components.schemas)].sort(compareText),
+    );
+
+    const threadGet = paths['/v2/threads/{threadId}']?.get;
+    const threadCreate = paths['/v2/threads']?.post;
+    const threadList = paths['/v2/threads']?.get;
+    expect(threadGet?.parameters).toContainEqual({
+      in: 'path',
+      name: 'threadId',
+      required: true,
+      schema: {
+        $ref: '#/components/schemas/ThreadPath/properties/threadId',
+      },
+    });
+    expect(threadList?.parameters).toContainEqual({
+      in: 'query',
+      name: 'limit',
+      required: false,
+      schema: {
+        $ref: '#/components/schemas/PaginationQuery/properties/limit',
+      },
+    });
+    expect(threadCreate?.requestBody).toEqual({
+      required: true,
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/CreateThreadBody' },
+        },
+      },
+    });
+    expect(threadList?.requestBody).toBeUndefined();
+    expect(threadGet?.responses).toMatchObject({
+      '200': {
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/ThreadView' },
+          },
+        },
+      },
+    });
+    expect(threadCreate?.responses).toMatchObject({
+      '202': {
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/ThreadCreateResponse' },
+          },
+        },
+      },
+      '400': { $ref: '#/components/responses/ApiError400' },
+      '503': { $ref: '#/components/responses/ApiError503' },
+    });
+    expect(document.components.responses.ApiError400).toMatchObject({
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/ApiError' },
+        },
+      },
+    });
+    expect(serialized).not.toMatch(/handler|controller|serverImplementation/i);
+    expect(Object.isFrozen(document)).toBe(true);
+  });
+
+  test('rewrites every named IR reference into a resolvable OpenAPI component reference', () => {
+    expect(openApiModule).toBeDefined();
+    if (openApiModule === undefined) return;
+
+    const document = openApiModule.createOpenApiDocument();
+    const references = collectJsonReferences(document);
+    const localReferences = references.filter((reference) =>
+      reference.startsWith('#/'),
+    );
+
+    expect(
+      references.some((reference) => reference.startsWith('#/$defs/')),
+    ).toBe(false);
+    expect(localReferences.length).toBeGreaterThan(0);
+    expect(
+      localReferences.every(
+        (reference) =>
+          resolveLocalJsonReference(document, reference) !== undefined,
+      ),
+    ).toBe(true);
+  });
+
+  test('extracts union-object query parameters and selects the role-specific schema alias', () => {
+    expect(openApiModule).toBeDefined();
+    if (openApiModule === undefined) return;
+
+    const document = openApiModule.createOpenApiDocument();
+    const operation = (
+      document.paths['/v2/threads/{threadId}/events'] as Record<
+        string,
+        Record<string, unknown>
+      >
+    ).get;
+    const queryParameters = (
+      operation?.parameters as Array<Record<string, unknown>>
+    ).filter((parameter) => parameter.in === 'query');
+
+    expect(queryParameters.map((parameter) => parameter.name)).toEqual([
+      'durableAfter',
+      'incarnationId',
+      'streamAfter',
+    ]);
+    expect(
+      queryParameters.every((parameter) => parameter.required === false),
+    ).toBe(true);
+    expect(queryParameters.map((parameter) => parameter.schema)).toEqual([
+      {
+        $ref: '#/components/schemas/EventAttachQuery/anyOf/0/properties/durableAfter',
+      },
+      {
+        $ref: '#/components/schemas/EventAttachQuery/anyOf/1/properties/incarnationId',
+      },
+      {
+        $ref: '#/components/schemas/EventAttachQuery/anyOf/1/properties/streamAfter',
+      },
+    ]);
+    expect(operation?.['x-colorful-code-query-schema']).toEqual({
+      $ref: '#/components/schemas/EventAttachQuery',
+    });
+    const eventAttachQuery = document.components.schemas.EventAttachQuery as {
+      anyOf: Array<Record<string, unknown>>;
+    };
+    expect(eventAttachQuery.anyOf).toHaveLength(2);
+    expect(eventAttachQuery.anyOf[1]?.required).toEqual([
+      'incarnationId',
+      'streamAfter',
+    ]);
+  });
+
+  test('resolves local refs and merges allOf object intersections into parameters', () => {
+    expect(openApiModule).toBeDefined();
+    expect(registryModule).toBeDefined();
+    if (openApiModule === undefined || registryModule === undefined) return;
+
+    const recursive: z.ZodType = z.lazy(() =>
+      z.strictObject({ a: z.string(), next: recursive.optional() }),
+    );
+    const query = registryModule.createIsolatedSchemaView(
+      z.intersection(recursive, z.strictObject({ b: z.number() })),
+    );
+    const response = registryModule.createIsolatedSchemaView(
+      z.strictObject({ ok: z.literal(true) }),
+    );
+    const registry = {
+      schemas: { IntersectionQuery: query, IntersectionResponse: response },
+      http: {
+        'fixture.get': {
+          method: 'GET',
+          path: '/fixture',
+          operationId: 'fixture.get',
+          querySchema: query,
+          resultSchema: response,
+          responseKind: 'query',
+        },
+      },
+      events: {},
+    } as unknown as Parameters<typeof openApiModule.createOpenApiDocument>[0];
+
+    const document = openApiModule.createOpenApiDocument(registry);
+    const operation = document.paths['/fixture']?.get as Record<
+      string,
+      unknown
+    >;
+    const parameters = operation.parameters as Array<Record<string, unknown>>;
+
+    expect(parameters.map(({ name, required }) => [name, required])).toEqual([
+      ['a', true],
+      ['b', true],
+      ['next', false],
+    ]);
+    expect(operation['x-colorful-code-query-schema']).toEqual({
+      $ref: '#/components/schemas/FixtureGetQuery',
+    });
+  });
+
+  test('preserves compatible same-name allOf property constraints as referenced conjunctions', () => {
+    expect(openApiModule).toBeDefined();
+    if (openApiModule === undefined) return;
+
+    const query = z.intersection(
+      z.strictObject({ a: z.string().min(1) }),
+      z.strictObject({ a: z.string().max(3) }),
+    );
+    const response = z.strictObject({ ok: z.literal(true) });
+    const registry = {
+      schemas: {},
+      http: {
+        'constraint.get': {
+          method: 'GET',
+          path: '/constraint',
+          operationId: 'constraint.get',
+          querySchema: query,
+          resultSchema: response,
+          responseKind: 'query',
+        },
+      },
+      events: {},
+    } as unknown as Parameters<typeof openApiModule.createOpenApiDocument>[0];
+
+    const document = openApiModule.createOpenApiDocument(registry);
+    const operation = document.paths['/constraint']?.get as Record<
+      string,
+      unknown
+    >;
+    const parameters = operation.parameters as Array<Record<string, unknown>>;
+
+    expect(parameters).toContainEqual({
+      in: 'query',
+      name: 'a',
+      required: true,
+      schema: {
+        allOf: [
+          {
+            $ref: '#/components/schemas/ConstraintGetQuery/allOf/0/properties/a',
+          },
+          {
+            $ref: '#/components/schemas/ConstraintGetQuery/allOf/1/properties/a',
+          },
+        ],
+      },
+    });
+  });
+
+  test('rejects duplicate operation ids and duplicate normalized routes before generation', () => {
+    expect(openApiModule).toBeDefined();
+    expect(registryModule).toBeDefined();
+    if (openApiModule === undefined || registryModule === undefined) return;
+
+    const threadGet = registryModule.httpRegistry['thread.get'];
+    const threadList = registryModule.httpRegistry['thread.list'];
+    const duplicateOperationRegistry = {
+      ...registryModule.contractRegistry,
+      http: {
+        first: threadGet,
+        second: { ...threadList, operationId: threadGet.operationId },
+      },
+    } as unknown as Parameters<typeof openApiModule.createOpenApiDocument>[0];
+    expect(() =>
+      openApiModule.createOpenApiDocument(duplicateOperationRegistry),
+    ).toThrow(/duplicate operationId.*thread\.get.*first.*second/i);
+
+    const duplicateRouteRegistry = {
+      ...registryModule.contractRegistry,
+      http: {
+        first: threadGet,
+        second: {
+          ...threadList,
+          operationId: 'fixture.second',
+          path: threadGet.path,
+          method: threadGet.method.toLowerCase(),
+        },
+      },
+    } as unknown as Parameters<typeof openApiModule.createOpenApiDocument>[0];
+    expect(() =>
+      openApiModule.createOpenApiDocument(duplicateRouteRegistry),
+    ).toThrow(/duplicate route.*thread\.get.*fixture\.second/i);
+  });
+
+  test('keeps generated maps safe for prototype-like keys', () => {
+    expect(openApiModule).toBeDefined();
+    if (openApiModule === undefined) return;
+
+    const document = openApiModule.createOpenApiDocument();
+    expect(Object.getPrototypeOf(document.paths)).toBeNull();
+    expect(Object.getPrototypeOf(document.components.schemas)).toBeNull();
+    expect(Object.getPrototypeOf(document.components.responses)).toBeNull();
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+});
+
+describe('thread stream events schema emitter', () => {
+  test('emits a frozen draft 2020-12 root and its complete named dependency set', () => {
+    expect(eventsSchemaModule).toBeDefined();
+    if (eventsSchemaModule === undefined) return;
+
+    const document = eventsSchemaModule.createEventsSchema();
+    const serialized = JSON.stringify(document);
+    const durableEnvelope = document.$defs.KnownDurableEventEnvelope as Record<
+      string,
+      unknown
+    >;
+
+    expect(document.$schema).toBe(
+      'https://json-schema.org/draft/2020-12/schema',
+    );
+    expect(document.title).toBe('Colorful Code Thread Stream Events');
+    expect(document.version).toBe('0.0.0');
+    expect(document.$ref).toBe('#/$defs/ThreadStreamFrame');
+    expect(
+      EXPECTED_EVENT_SCHEMA_NAMES.every((name) => name in document.$defs),
+    ).toBe(true);
+    expect(document.$defs.ApiError).toBeUndefined();
+    expect(document.$defs.CreateThreadBody).toBeUndefined();
+    expect(serialized).toContain('"const":"durable"');
+    expect(serialized).toContain('"const":"transient"');
+    expect(serialized).toContain('"kind"');
+    expect(serialized).toContain('"pattern":"^(0|[1-9]\\\\d*)$"');
+    expect(serialized).toContain('"additionalProperties":false');
+    expect(durableEnvelope).toBeDefined();
+    expect(Object.keys(document.$defs)).toEqual(
+      [...Object.keys(document.$defs)].sort(compareText),
+    );
+    expect(Object.getPrototypeOf(document.$defs)).toBeNull();
+    expect(Object.isFrozen(document)).toBe(true);
+    expect(Object.isFrozen(document.$defs)).toBe(true);
+  });
 });
