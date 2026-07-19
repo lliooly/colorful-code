@@ -229,13 +229,9 @@ class SwiftEmitter {
       if (schema !== undefined && swiftName !== undefined)
         this.#emitNamed(swiftName, schema);
     }
-    return [
-      HEADER,
-      runtime.trim(),
-      '',
-      ...[...this.#declarations.values()],
-      '',
-    ].join('\n\n');
+    return `${[HEADER, runtime.trim(), ...this.#declarations.values()].join(
+      '\n\n',
+    )}\n`;
   }
 
   #claimName(preferred: string): string {

@@ -1,6 +1,18 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import {
+  linkSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+  renameSync,
+  readdirSync,
+} from 'node:fs';
+import { createHash } from 'node:crypto';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 
@@ -277,6 +289,12 @@ const typeScriptModule = await import('../scripts/lib/typescript.js').catch(
   () => undefined,
 );
 const swiftModule = await import('../scripts/lib/swift.js').catch(
+  () => undefined,
+);
+const stableJsonModule = await import('../scripts/lib/stable-json.js').catch(
+  () => undefined,
+);
+const generateModule = await import('../scripts/generate.js').catch(
   () => undefined,
 );
 
@@ -1486,4 +1504,622 @@ struct RuntimeChecks {
       rmSync(directory, { recursive: true });
     }
   }, 60_000);
+});
+
+const GENERATED_PATHS = [
+  'generated/openapi.v2.json',
+  'generated/events.schema.json',
+  'generated/typescript/contracts.ts',
+  'swift-fixture/Sources/ColorfulCodeContracts/ColorfulCodeContracts.swift',
+] as const;
+
+const digestFiles = (root: string) =>
+  GENERATED_PATHS.map((path) => {
+    const bytes = readFileSync(join(root, path));
+    return [
+      path,
+      createHash('sha256').update(bytes).digest('hex'),
+      bytes,
+    ] as const;
+  });
+
+const generationResidue = (root: string) =>
+  readdirSync(root).filter((name) => name.startsWith('.schema-generation.'));
+
+describe('stable JSON serialization', () => {
+  test('sorts object keys by Unicode code point while preserving arrays and one LF', () => {
+    expect(stableJsonModule).toBeDefined();
+    if (stableJsonModule === undefined) return;
+    const value = Object.fromEntries([
+      ['z', 1],
+      ['\u{10000}', 2],
+      ['\ue000', 3],
+      ['array', [{ b: 2, a: 1 }, 'z', 'a']],
+    ]);
+    expect(stableJsonModule.stableJson(value)).toBe(
+      '{\n  "array": [\n    {\n      "a": 1,\n      "b": 2\n    },\n    "z",\n    "a"\n  ],\n  "z": 1,\n  "\ue000": 3,\n  "𐀀": 2\n}\n',
+    );
+  });
+
+  test('rejects values that JSON would silently widen or erase', () => {
+    expect(stableJsonModule).toBeDefined();
+    if (stableJsonModule === undefined) return;
+    for (const value of [NaN, Infinity, undefined, 1n]) {
+      expect(() => stableJsonModule.stableJson(value)).toThrow();
+    }
+    expect(() => stableJsonModule.stableJson({ value: undefined })).toThrow();
+    expect(() => stableJsonModule.stableJson(new Date())).toThrow(/plain/i);
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(() => stableJsonModule.stableJson(cyclic)).toThrow(/cycle/i);
+    const sparse = Array(2);
+    sparse[1] = 'present';
+    expect(() => stableJsonModule.stableJson(sparse)).toThrow(/sparse/i);
+  });
+
+  test('preserves __proto__ as inert data without prototype pollution', () => {
+    expect(stableJsonModule).toBeDefined();
+    if (stableJsonModule === undefined) return;
+    const value = Object.fromEntries([['__proto__', { polluted: true }]]);
+    expect(stableJsonModule.stableJson(value)).toContain('"__proto__"');
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+});
+
+describe('atomic deterministic generation', () => {
+  test('generates identical bytes and SHA-256 digests twice in two package roots', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const roots = [
+      mkdtempSync(join(tmpdir(), 'colorful-generate-a-')),
+      mkdtempSync(join(tmpdir(), 'colorful-generate-b-')),
+    ];
+    try {
+      const observations = [];
+      for (const packageRoot of roots) {
+        await generateModule.generateContracts({ packageRoot });
+        const first = digestFiles(packageRoot);
+        await generateModule.generateContracts({ packageRoot });
+        const second = digestFiles(packageRoot);
+        expect(second).toEqual(first);
+        observations.push(second);
+      }
+      expect(observations[1]).toEqual(observations[0]);
+    } finally {
+      for (const root of roots) rmSync(root, { recursive: true });
+    }
+  }, 60_000);
+
+  test('serializes two generator processes without interleaving output', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-generate-processes-'));
+    const runner = join(root, 'runner.ts');
+    const held = join(root, 'held.marker');
+    const release = join(root, 'release.marker');
+    const waited = join(root, 'waited.marker');
+    const moduleUrl = new URL('../scripts/generate.ts', import.meta.url).href;
+    writeFileSync(
+      runner,
+      `import { existsSync, writeFileSync } from 'node:fs'; import { generateContracts } from ${JSON.stringify(moduleUrl)};
+const [root, role] = process.argv.slice(2);
+await generateContracts({ packageRoot: root, dependencies: role === 'first' ? { afterLockAcquired: async () => { writeFileSync(${JSON.stringify(held)}, 'held'); while (!existsSync(${JSON.stringify(release)})) await Bun.sleep(10); } } : { onLockCollision: () => writeFileSync(${JSON.stringify(waited)}, 'waited') } });`,
+    );
+    try {
+      const first = Bun.spawn(['bun', runner, root, 'first'], {
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      for (let index = 0; index < 200 && !existsSync(held); index += 1) {
+        await Bun.sleep(10);
+      }
+      expect(existsSync(held)).toBe(true);
+      const second = Bun.spawn(['bun', runner, root, 'second'], {
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      for (let index = 0; index < 200 && !existsSync(waited); index += 1) {
+        await Bun.sleep(10);
+      }
+      writeFileSync(release, 'release');
+      expect(existsSync(waited)).toBe(true);
+      const [firstCode, secondCode] = await Promise.all([
+        first.exited,
+        second.exited,
+      ]);
+      expect(firstCode).toBe(0);
+      expect(secondCode).toBe(0);
+      const after = digestFiles(root);
+      await generateModule.generateContracts({ packageRoot: root });
+      expect(digestFiles(root)).toEqual(after);
+      expect(generationResidue(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  }, 60_000);
+
+  test('fails safely for active, foreign and malformed locks', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-lock-safe-'));
+    const lockPath = join(root, '.schema-generation.lock');
+    try {
+      const fixtures = [
+        {
+          pid: process.pid,
+          hostname: hostname(),
+          nonce: 'active',
+          createdAt: 0,
+        },
+        {
+          pid: 999999,
+          hostname: hostname(),
+          nonce: 'too-new',
+          createdAt: 9_999,
+        },
+        {
+          pid: 999999,
+          hostname: 'foreign-host',
+          nonce: 'foreign',
+          createdAt: 0,
+        },
+        'not-json-with-secret-value',
+      ];
+      for (const fixture of fixtures) {
+        writeFileSync(
+          lockPath,
+          typeof fixture === 'string' ? fixture : JSON.stringify(fixture),
+        );
+        try {
+          await generateModule.publishGeneratedOutputs(
+            root,
+            { 'generated/openapi.v2.json': '{}\n' },
+            {
+              lockTimeoutMs: 0,
+              staleLockMs: 1,
+              dependencies: { now: () => 10_000 },
+            },
+          );
+          throw new Error('expected lock acquisition to fail');
+        } catch (error) {
+          expect(String(error)).toMatch(/generation lock/i);
+          expect(String(error)).not.toContain('secret-value');
+        }
+        expect(readFileSync(lockPath, 'utf8')).toBe(
+          typeof fixture === 'string' ? fixture : JSON.stringify(fixture),
+        );
+      }
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  });
+
+  test('quarantines a stale same-host dead owner and recovers', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-lock-recover-'));
+    try {
+      writeFileSync(
+        join(root, '.schema-generation.lock'),
+        JSON.stringify({
+          pid: 999999,
+          hostname: hostname(),
+          nonce: 'stale',
+          createdAt: 0,
+        }),
+      );
+      await generateModule.publishGeneratedOutputs(
+        root,
+        { 'generated/openapi.v2.json': '{"ok":true}\n' },
+        {
+          lockTimeoutMs: 0,
+          staleLockMs: 1,
+          dependencies: { now: () => 10_000, pidIsAlive: () => false },
+        },
+      );
+      expect(
+        readFileSync(join(root, 'generated/openapi.v2.json'), 'utf8'),
+      ).toBe('{"ok":true}\n');
+      expect(() =>
+        readFileSync(join(root, '.schema-generation.lock')),
+      ).toThrow();
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  });
+
+  test('records createdAt when exclusive open succeeds after waiting', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-lock-created-at-'));
+    const lockPath = join(root, '.schema-generation.lock');
+    let currentTime = 100;
+    let lockAttempts = 0;
+    let observedCreatedAt: number | undefined;
+    try {
+      writeFileSync(
+        lockPath,
+        JSON.stringify({
+          pid: process.pid,
+          hostname: hostname(),
+          nonce: 'first-owner',
+          createdAt: currentTime,
+        }),
+      );
+      await generateModule.publishGeneratedOutputs(
+        root,
+        { 'generated/openapi.v2.json': '{}\n' },
+        {
+          lockTimeoutMs: 1_000,
+          dependencies: {
+            now: () => currentTime,
+            tryLock: () => {
+              lockAttempts += 1;
+              return lockAttempts > 1;
+            },
+            sleep: async () => {
+              currentTime = 500;
+              rmSync(lockPath);
+            },
+            rename: (from: string, to: string) => {
+              renameSync(from, to);
+              if (to.endsWith('openapi.v2.json')) {
+                observedCreatedAt = JSON.parse(
+                  readFileSync(lockPath, 'utf8'),
+                ).createdAt;
+              }
+            },
+          },
+        },
+      );
+      expect(observedCreatedAt).toBe(500);
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  });
+
+  test('bounds advisory-lock waiting with a monotonic clock', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-lock-monotonic-'));
+    let monotonicTime = 0;
+    let wallTime = 10_000;
+    let attempts = 0;
+    try {
+      await expect(
+        generateModule.publishGeneratedOutputs(
+          root,
+          { 'generated/openapi.v2.json': '{}\n' },
+          {
+            lockTimeoutMs: 50,
+            dependencies: {
+              monotonicNow: () => monotonicTime,
+              now: () => wallTime,
+              tryLock: () => {
+                attempts += 1;
+                return false;
+              },
+              sleep: async (milliseconds: number) => {
+                monotonicTime += milliseconds;
+                wallTime -= 1_000;
+              },
+            },
+          },
+        ),
+      ).rejects.toThrow(/owner is active/i);
+      expect(attempts).toBe(3);
+      expect(monotonicTime).toBe(50);
+      expect(generationResidue(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  });
+
+  test('fails closed if the package root changes while waiting for flock', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const parent = mkdtempSync(join(tmpdir(), 'colorful-root-drift-'));
+    const root = join(parent, 'root');
+    const movedRoot = join(parent, 'moved-root');
+    mkdirSync(root);
+    let replaced = false;
+    try {
+      await expect(
+        generateModule.publishGeneratedOutputs(
+          root,
+          { 'generated/openapi.v2.json': '{}\n' },
+          {
+            dependencies: {
+              tryLock: () => {
+                if (!replaced) {
+                  replaced = true;
+                  renameSync(root, movedRoot);
+                  mkdirSync(root);
+                }
+                return true;
+              },
+            },
+          },
+        ),
+      ).rejects.toThrow(/root changed/i);
+      expect(existsSync(join(root, 'generated/openapi.v2.json'))).toBe(false);
+    } finally {
+      rmSync(parent, { recursive: true });
+    }
+  });
+
+  test('rolls back every target if promotion fails midway', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-promotion-rollback-'));
+    const outputs = Object.fromEntries(
+      GENERATED_PATHS.map((path) => [path, `new:${path}\n`]),
+    );
+    for (const path of GENERATED_PATHS) {
+      mkdirSync(join(root, path, '..'), { recursive: true });
+      writeFileSync(join(root, path), `old:${path}\n`);
+    }
+    let promoted = 0;
+    try {
+      await expect(
+        generateModule.publishGeneratedOutputs(root, outputs, {
+          dependencies: {
+            rename: (from: string, to: string) => {
+              if (
+                from.includes('.schema-generation.staging-') &&
+                !from.includes('/backup/')
+              ) {
+                promoted += 1;
+                if (promoted === 2)
+                  throw new Error('injected promotion failure');
+              }
+              renameSync(from, to);
+            },
+          },
+        }),
+      ).rejects.toThrow('injected promotion failure');
+      for (const path of GENERATED_PATHS) {
+        expect(readFileSync(join(root, path), 'utf8')).toBe(`old:${path}\n`);
+      }
+      expect(generationResidue(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  });
+
+  test('rollback keeps a target absent when it did not exist before promotion', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-rollback-absent-'));
+    let promoted = 0;
+    try {
+      await expect(
+        generateModule.publishGeneratedOutputs(
+          root,
+          {
+            'generated/first.json': 'first\n',
+            'generated/second.json': 'second\n',
+          },
+          {
+            dependencies: {
+              rename: (from: string, to: string) => {
+                if (from.includes('.schema-generation.staging-')) {
+                  promoted += 1;
+                  if (promoted === 2) throw new Error('fail second install');
+                }
+                renameSync(from, to);
+              },
+            },
+          },
+        ),
+      ).rejects.toThrow('fail second install');
+      expect(existsSync(join(root, 'generated/first.json'))).toBe(false);
+      expect(existsSync(join(root, 'generated/second.json'))).toBe(false);
+      expect(generationResidue(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  });
+
+  test('preserves a single promotion error identity and orders cleanup errors', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    for (const includeUnlockFailure of [false, true]) {
+      const root = mkdtempSync(join(tmpdir(), 'colorful-error-order-'));
+      const promotionError = new Error('primary promotion error');
+      const unlockError = new Error('secondary unlock error');
+      let caught: unknown;
+      try {
+        await generateModule.publishGeneratedOutputs(
+          root,
+          { 'generated/output.json': '{}\n' },
+          {
+            dependencies: {
+              rename: () => {
+                throw promotionError;
+              },
+              ...(includeUnlockFailure
+                ? {
+                    unlock: () => {
+                      throw unlockError;
+                    },
+                  }
+                : {}),
+            },
+          },
+        );
+      } catch (error) {
+        caught = error;
+      }
+      if (includeUnlockFailure) {
+        expect(caught).toBeInstanceOf(AggregateError);
+        expect((caught as AggregateError).errors).toEqual([
+          promotionError,
+          unlockError,
+        ]);
+      } else {
+        expect(caught).toBe(promotionError);
+      }
+      expect(generationResidue(root)).toEqual([]);
+      rmSync(root, { recursive: true });
+    }
+  });
+
+  test('recovers after a process crashes while holding stale-lock exclusion', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-flock-crash-'));
+    const runner = join(root, 'crash.ts');
+    const marker = join(root, 'crashed.marker');
+    const moduleUrl = new URL('../scripts/generate.ts', import.meta.url).href;
+    try {
+      writeFileSync(
+        join(root, '.schema-generation.lock'),
+        JSON.stringify({
+          pid: 999999,
+          hostname: hostname(),
+          nonce: 'stale',
+          createdAt: 0,
+        }),
+      );
+      writeFileSync(
+        runner,
+        `import { writeFileSync } from 'node:fs'; import { publishGeneratedOutputs } from ${JSON.stringify(moduleUrl)};
+await publishGeneratedOutputs(process.argv[2], { 'generated/a.json': 'a\\n' }, { lockTimeoutMs: 0, staleLockMs: 0, dependencies: { pidIsAlive: () => false, afterStaleInspect: async () => { writeFileSync(${JSON.stringify(marker)}, 'held'); process.kill(process.pid, 'SIGKILL'); } } });`,
+      );
+      const crashed = Bun.spawn(['bun', runner, root], {
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(await crashed.exited).not.toBe(0);
+      expect(existsSync(marker)).toBe(true);
+      await generateModule.publishGeneratedOutputs(
+        root,
+        { 'generated/b.json': 'b\n' },
+        {
+          lockTimeoutMs: 0,
+          staleLockMs: 0,
+          dependencies: { pidIsAlive: () => false },
+        },
+      );
+      expect(readFileSync(join(root, 'generated/b.json'), 'utf8')).toBe('b\n');
+      expect(
+        generationResidue(root).filter(
+          (name) => !name.startsWith('.schema-generation.staging-'),
+        ),
+      ).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  });
+
+  test('does not delete a lock whose nonce changes before release', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-lock-owner-'));
+    const lockPath = join(root, '.schema-generation.lock');
+    let changed = false;
+    try {
+      await expect(
+        generateModule.publishGeneratedOutputs(
+          root,
+          { 'generated/openapi.v2.json': '{}\n' },
+          {
+            dependencies: {
+              rename: (from: string, to: string) => {
+                renameSync(from, to);
+                if (!changed && to.endsWith('openapi.v2.json')) {
+                  changed = true;
+                  writeFileSync(
+                    lockPath,
+                    JSON.stringify({
+                      pid: 1,
+                      hostname: 'new',
+                      nonce: 'new-owner',
+                      createdAt: 1,
+                    }),
+                  );
+                }
+              },
+            },
+          },
+        ),
+      ).rejects.toThrow(/ownership changed/i);
+      expect(JSON.parse(readFileSync(lockPath, 'utf8')).nonce).toBe(
+        'new-owner',
+      );
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  });
+
+  test('fails closed on traversal and linked lock, root, parent or targets', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-path-safe-'));
+    const outside = join(root, 'outside');
+    writeFileSync(outside, 'outside');
+    try {
+      await expect(
+        generateModule.publishGeneratedOutputs(root, { '../escape': 'bad' }),
+      ).rejects.toThrow(/path/i);
+      expect(generationResidue(root)).toEqual([]);
+
+      symlinkSync(outside, join(root, '.schema-generation.lock'));
+      await expect(
+        generateModule.publishGeneratedOutputs(
+          root,
+          { 'generated/openapi.v2.json': '{}\n' },
+          { lockTimeoutMs: 0 },
+        ),
+      ).rejects.toThrow(/lock.*symbolic link/i);
+      rmSync(join(root, '.schema-generation.lock'));
+
+      linkSync(outside, join(root, '.schema-generation.lock'));
+      await expect(
+        generateModule.publishGeneratedOutputs(
+          root,
+          { 'generated/openapi.v2.json': '{}\n' },
+          { lockTimeoutMs: 0 },
+        ),
+      ).rejects.toThrow(/lock.*regular file/i);
+      rmSync(join(root, '.schema-generation.lock'));
+
+      symlinkSync(root, join(root, 'linked-root'));
+      await expect(
+        generateModule.publishGeneratedOutputs(join(root, 'linked-root'), {
+          'generated/openapi.v2.json': '{}\n',
+        }),
+      ).rejects.toThrow(/root/i);
+      rmSync(join(root, 'linked-root'));
+
+      symlinkSync(outside, join(root, 'generated'));
+      await expect(
+        generateModule.publishGeneratedOutputs(root, {
+          'generated/openapi.v2.json': '{}\n',
+        }),
+      ).rejects.toThrow(/parent/i);
+      rmSync(join(root, 'generated'));
+
+      mkdirSync(join(root, 'generated'), { recursive: true });
+      symlinkSync(outside, join(root, 'generated/openapi.v2.json'));
+      await expect(
+        generateModule.publishGeneratedOutputs(root, {
+          'generated/openapi.v2.json': '{}\n',
+        }),
+      ).rejects.toThrow(/symbolic link/i);
+      rmSync(join(root, 'generated/openapi.v2.json'));
+
+      linkSync(outside, join(root, 'generated/openapi.v2.json'));
+      await expect(
+        generateModule.publishGeneratedOutputs(root, {
+          'generated/openapi.v2.json': '{}\n',
+        }),
+      ).rejects.toThrow(/hard link/i);
+      expect(readFileSync(outside, 'utf8')).toBe('outside');
+      expect(generationResidue(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  });
 });
