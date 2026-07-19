@@ -12,6 +12,14 @@ export type HealthResponse = z.infer<typeof healthResponseSchema>;
 export const timestampSchema = z.iso.datetime({ offset: true });
 export type Timestamp = z.infer<typeof timestampSchema>;
 
+export const canonicalNonBlankStringSchema = z
+  .string()
+  .min(1)
+  .regex(/^\S(?:[\s\S]*\S)?$/, 'must not have leading or trailing whitespace');
+export type CanonicalNonBlankString = z.infer<
+  typeof canonicalNonBlankStringSchema
+>;
+
 const canonicalUnsignedDecimalSchema = z.string().regex(/^(0|[1-9]\d*)$/);
 
 export const durableCursorSchema = canonicalUnsignedDecimalSchema;

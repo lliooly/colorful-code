@@ -138,6 +138,12 @@ const durablePayloads = {
   },
   'approval.expired': { ...approval, status: 'expired' },
   'tool.terminal': toolTerminal,
+  'credential.revoked': {
+    credentialRef: 'credential-store://provider/main',
+    provider: 'example-provider',
+    revokedAt: occurredAt,
+    reason: 'rotated by operator',
+  },
 } as const;
 
 const durableBase = {
@@ -194,7 +200,6 @@ describe('known durable event envelopes', () => {
     );
 
     expect(kinds).toEqual(Object.keys(durablePayloads));
-    expect(kinds).not.toContain('credential.revoked');
 
     for (const [kind, payload] of Object.entries(durablePayloads)) {
       const fixture = { ...durableBase, kind, payload };

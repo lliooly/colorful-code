@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 import {
   undefinedResultSchema,
   type HttpContractDescriptor,
@@ -10,6 +12,11 @@ type ExpectFalse<Value extends false> = Value;
 type ExpectTrue<Value extends true> = Value;
 
 type ResultSchema = typeof undefinedResultSchema;
+type IsExactlyUndefined<Value> = [Value] extends [undefined]
+  ? [undefined] extends [Value]
+    ? true
+    : false
+  : false;
 
 type ValidQuery = {
   readonly method: 'GET';
@@ -38,6 +45,9 @@ type MutationWithQueryResponse = Omit<ValidMutation, 'responseKind'> & {
 type MutationWithoutBody = Omit<ValidMutation, 'bodySchema'>;
 
 export type ValidQueryContract = ExpectTrue<ExtendsHttpContract<ValidQuery>>;
+export type UndefinedResultOutput = ExpectTrue<
+  IsExactlyUndefined<z.output<ResultSchema>>
+>;
 export type ValidMutationContract = ExpectTrue<
   ExtendsHttpContract<ValidMutation>
 >;

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import {
+  canonicalNonBlankStringSchema,
   createBoundedJsonValueSchema,
   durableCursorSchema,
   jsonValueSchema,
@@ -13,6 +14,7 @@ import {
 import { apiErrorPayloadSchema } from './errors.js';
 import { operationCompletionEventKindSchema } from './enums.js';
 import {
+  credentialRefIdSchema,
   eventIdSchema,
   incarnationIdSchema,
   operationIdSchema,
@@ -64,14 +66,10 @@ export type EventBase = z.infer<typeof eventBaseSchema>;
 export const streamBasisSchema = strictObjectSchema({
   incarnationId: incarnationIdSchema,
   streamSequence: streamCursorSchema,
-}).describe(
-  'streamBasis references a pre-existing high-watermark in a specific incarnation stream space. It must not be compared with durableSequence or any durable cursor; it is a causal basis, not a third cursor.',
-);
+});
 export type StreamBasis = z.infer<typeof streamBasisSchema>;
 
-const durableBasisSchema = durableCursorSchema.describe(
-  'durableBasis references a pre-existing high-watermark in the durable cursor space. It must not be compared with streamSequence or any incarnation stream cursor; it is a causal basis, not a third cursor.',
-);
+export const durableBasisSchema = durableCursorSchema.clone();
 
 const assertJsonSchemaCompatible = (payloadSchema: z.ZodType) => {
   try {
@@ -270,6 +268,16 @@ const toolTerminalEventPayloadSchema = createEventPayloadSchema(
     state: z.enum(['completed', 'failed', 'cancelled', 'indeterminate']),
   }),
 );
+const credentialRevocationDetailsSchema = strictObjectSchema({
+  credentialRef: credentialRefIdSchema,
+  provider: canonicalNonBlankStringSchema,
+  revokedAt: timestampSchema,
+  reason: canonicalNonBlankStringSchema,
+});
+export const credentialRevokedEventPayloadSchema = createEventPayloadSchema(
+  'credential.revoked',
+  credentialRevocationDetailsSchema,
+);
 
 export const knownDurableEventPayloadSchema = z.discriminatedUnion('kind', [
   threadUpdatedEventPayloadSchema,
@@ -283,6 +291,7 @@ export const knownDurableEventPayloadSchema = z.discriminatedUnion('kind', [
   approvalResolvedEventPayloadSchema,
   approvalExpiredEventPayloadSchema,
   toolTerminalEventPayloadSchema,
+  credentialRevokedEventPayloadSchema,
 ]);
 export type KnownDurableEventPayload = z.infer<
   typeof knownDurableEventPayloadSchema
@@ -300,6 +309,7 @@ export const knownDurableEventEnvelopeSchema = z.discriminatedUnion('kind', [
   createDurableEventEnvelopeSchema(approvalResolvedEventPayloadSchema),
   createDurableEventEnvelopeSchema(approvalExpiredEventPayloadSchema),
   createDurableEventEnvelopeSchema(toolTerminalEventPayloadSchema),
+  createDurableEventEnvelopeSchema(credentialRevokedEventPayloadSchema),
 ]);
 export type KnownDurableEventEnvelope = z.infer<
   typeof knownDurableEventEnvelopeSchema

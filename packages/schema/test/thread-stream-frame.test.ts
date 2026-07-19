@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { z } from 'zod';
 
+import { toContractJsonSchema } from '@colorful-code/schema';
 import {
   eventAttachAcceptedResponseSchema,
   eventAttachParamsSchema,
@@ -245,7 +246,7 @@ describe('event attach dual cursor contract', () => {
 
 describe('causal basis JSON Schema contract', () => {
   test('describes the two incomparable cursor spaces as existing high-watermarks', () => {
-    const jsonSchema = z.toJSONSchema(threadStreamFrameSchema);
+    const jsonSchema = toContractJsonSchema(threadStreamFrameSchema);
     const properties: Record<
       string,
       { type?: unknown; description?: unknown }[]

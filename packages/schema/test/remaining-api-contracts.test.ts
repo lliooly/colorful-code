@@ -363,7 +363,8 @@ describe('config and policy change contracts', () => {
       sandbox: 'workspaceWrite',
       network: { mode: 'allowListed', allowedHosts: ['api.example.com'] },
       pluginCapabilities: [
-        { pluginId: 'plugin-1', capabilities: ['read', 'write'] },
+        { pluginId: 'plugin-1', capability: 'read', decision: 'allow' },
+        { pluginId: 'plugin-1', capability: 'write', decision: 'deny' },
       ],
       credentialRefs: ['credential-1'],
       revokeCredentialRefs: ['credential-2'],
@@ -383,7 +384,12 @@ describe('config and policy change contracts', () => {
       {
         ...patch,
         pluginCapabilities: [
-          { pluginId: 'plugin-1', capabilities: ['read'], extra: true },
+          {
+            pluginId: 'plugin-1',
+            capability: 'read',
+            decision: 'allow',
+            extra: true,
+          },
         ],
       },
       { ...patch, classification: 'relaxation' },
