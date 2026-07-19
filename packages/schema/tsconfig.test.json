@@ -4,5 +4,10 @@
     "noEmit": true,
     "rootDir": "."
   },
-  "include": ["src", "test/*.typecheck.ts"]
+  "include": [
+    "src",
+    "scripts/create-contract-outputs.ts",
+    "scripts/lib/**/*.ts",
+    "test/*.typecheck.ts"
+  ]
 }

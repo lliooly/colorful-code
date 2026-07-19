@@ -6,12 +6,12 @@ import { stableJson } from './lib/stable-json.js';
 import { createSwiftContracts } from './lib/swift.js';
 import { createTypeScriptContracts } from './lib/typescript.js';
 
-export const GENERATED_PATHS = [
+export const GENERATED_PATHS = Object.freeze([
   'generated/openapi.v2.json',
   'generated/events.schema.json',
   'generated/typescript/contracts.ts',
   'swift-fixture/Sources/ColorfulCodeContracts/ColorfulCodeContracts.swift',
-] as const;
+] as const);
 
 export type ContractOutputs = Readonly<
   Record<(typeof GENERATED_PATHS)[number], string>
