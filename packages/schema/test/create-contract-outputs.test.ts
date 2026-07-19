@@ -6,8 +6,9 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { isBuiltin } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import ts from 'typescript';
 
 import {
@@ -25,6 +26,77 @@ const withOutput = (
 
 const failPurityAudit = (path: string, rule: string): never => {
   throw new Error(`${path}: ${rule}`);
+};
+
+const SCHEMA_PACKAGE_ROOT = resolve(import.meta.dir, '..');
+const ALLOWED_EXTERNAL_MODULES = new Set(['zod']);
+const MUTABLE_CONTAINER_ALLOWLIST = new Set([
+  // These authoring shapes and lookup values are assembled during module
+  // initialization, handed to Zod or read as constants, and never mutated by
+  // contract generation.
+  'src/config.ts:normalizedSensitiveProviderOptionKeys',
+  'src/enums.ts:queueControlStates',
+  'src/errors.ts:errorHttpMappingByCode',
+  'src/events.ts:eventBaseShape',
+  'src/queue.ts:queueViewBaseShape',
+  'src/queue.ts:terminalAssistantPayloadShape',
+  'src/queue.ts:transcriptItemBaseShape',
+  'src/snapshot.ts:snapshotBaseShape',
+  'src/snapshot.ts:snapshotResetBaseShape',
+  'src/snapshot.ts:streamBufferFenceShape',
+  'src/thread.ts:threadViewBaseShape',
+  // Generator lookup tables are populated at module initialization and only
+  // read by createContractOutputs calls.
+  'scripts/lib/swift.ts:SWIFT_KEYWORDS',
+  'scripts/lib/typescript.ts:SCHEMAS_BY_AUTHORING_MODULE',
+  'scripts/lib/typescript.ts:moduleBySchema',
+  // Registry caches are populated while constructing deeply frozen schema
+  // views; generation only reads the completed snapshots and facades.
+  'src/registry.ts:immutableMapBackings',
+  'src/registry.ts:immutableSetBackings',
+  'src/registry.ts:schemaSnapshotOutcomes',
+]);
+const MUTABLE_CONTAINER_CONSTRUCTORS = new Set([
+  'Array',
+  'Map',
+  'Object',
+  'Set',
+  'WeakMap',
+  'WeakSet',
+]);
+
+const packageRelativePath = (path: string): string =>
+  relative(SCHEMA_PACKAGE_ROOT, path).replaceAll('\\', '/');
+
+const unwrapExpression = (expression: ts.Expression): ts.Expression => {
+  let current = expression;
+  while (
+    ts.isAsExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isParenthesizedExpression(current) ||
+    ts.isSatisfiesExpression(current) ||
+    ts.isNonNullExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
+};
+
+const isMutableContainer = (initializer: ts.Expression): boolean => {
+  const expression = unwrapExpression(initializer);
+  if (
+    ts.isArrayLiteralExpression(expression) ||
+    ts.isObjectLiteralExpression(expression)
+  ) {
+    return true;
+  }
+  if (
+    (ts.isNewExpression(expression) || ts.isCallExpression(expression)) &&
+    ts.isIdentifier(expression.expression)
+  ) {
+    return MUTABLE_CONTAINER_CONSTRUCTORS.has(expression.expression.text);
+  }
+  return false;
 };
 
 const resolveFirstPartyModule = (
@@ -65,6 +137,26 @@ const auditPureModuleGraph = (entryPath: string): void => {
       ) {
         failPurityAudit(path, 'top-level let/var');
       }
+      if (ts.isVariableStatement(statement)) {
+        for (const declaration of statement.declarationList.declarations) {
+          if (
+            declaration.initializer === undefined ||
+            !isMutableContainer(declaration.initializer)
+          ) {
+            continue;
+          }
+          const variableName = ts.isIdentifier(declaration.name)
+            ? declaration.name.text
+            : 'destructured-binding';
+          const allowlistKey = `${packageRelativePath(path)}:${variableName}`;
+          if (!MUTABLE_CONTAINER_ALLOWLIST.has(allowlistKey)) {
+            failPurityAudit(
+              path,
+              `top-level mutable container ${variableName}`,
+            );
+          }
+        }
+      }
       if (
         (ts.isImportDeclaration(statement) ||
           ts.isExportDeclaration(statement)) &&
@@ -72,11 +164,14 @@ const auditPureModuleGraph = (entryPath: string): void => {
         ts.isStringLiteral(statement.moduleSpecifier)
       ) {
         const specifier = statement.moduleSpecifier.text;
-        if (/^(?:node:|bun:)/u.test(specifier)) {
-          failPurityAudit(path, 'node:/bun: import');
-        }
         if (specifier.startsWith('.')) {
           dependencies.push(resolveFirstPartyModule(path, specifier));
+        } else if (specifier.startsWith('bun:')) {
+          failPurityAudit(path, 'Bun import');
+        } else if (isBuiltin(specifier)) {
+          failPurityAudit(path, 'Node builtin import');
+        } else if (!ALLOWED_EXTERNAL_MODULES.has(specifier)) {
+          failPurityAudit(path, `non-allowlisted package import ${specifier}`);
         }
       }
     }
@@ -90,7 +185,7 @@ const auditPureModuleGraph = (entryPath: string): void => {
       }
       if (
         ts.isIdentifier(node) &&
-        (node.text === 'process' || node.text === 'globalThis')
+        ['Bun', 'Deno', 'globalThis', 'process'].includes(node.text)
       ) {
         failPurityAudit(path, `${node.text} access`);
       }
@@ -98,9 +193,24 @@ const auditPureModuleGraph = (entryPath: string): void => {
         ts.isPropertyAccessExpression(node) &&
         ts.isIdentifier(node.expression) &&
         ((node.expression.text === 'Date' && node.name.text === 'now') ||
-          (node.expression.text === 'Math' && node.name.text === 'random'))
+          (node.expression.text === 'Math' && node.name.text === 'random') ||
+          (node.expression.text === 'performance' && node.name.text === 'now') ||
+          (node.expression.text === 'crypto' &&
+            (node.name.text === 'getRandomValues' ||
+              node.name.text === 'randomUUID')))
       ) {
         failPurityAudit(path, `${node.expression.text}.${node.name.text}`);
+      }
+      if (
+        ((ts.isCallExpression(node) &&
+          ts.isIdentifier(node.expression) &&
+          node.expression.text === 'Date') ||
+          (ts.isNewExpression(node) &&
+            ts.isIdentifier(node.expression) &&
+            node.expression.text === 'Date')) &&
+        (node.arguments?.length ?? 0) === 0
+      ) {
+        failPurityAudit(path, 'Date without arguments');
       }
       ts.forEachChild(node, visit);
     };
@@ -197,7 +307,7 @@ describe('createContractOutputs', () => {
     ).toThrow('generated Swift artifact failed validation');
   });
 
-  test('keeps the complete generation dependency graph pure', () => {
+  test('keeps the audited generation graph within deterministic boundaries', () => {
     expect(() =>
       auditPureModuleGraph(
         resolve(import.meta.dir, '../scripts/create-contract-outputs.ts'),
@@ -216,14 +326,86 @@ describe('createContractOutputs', () => {
       );
 
       expect(() => auditPureModuleGraph(entry)).toThrow(
-        /child\.ts: node:\/bun: import/u,
+        /child\.ts: Node builtin import/u,
       );
     } finally {
       rmSync(directory, { recursive: true });
     }
   });
 
-  test('typechecks the pure generation closure without the Bun publisher', () => {
+  test('rejects bare Node builtin imports in indirect modules', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'schema-purity-audit-'));
+    try {
+      const entry = join(directory, 'entry.ts');
+      writeFileSync(entry, "export { child } from './child.js';\n");
+      writeFileSync(
+        join(directory, 'child.ts'),
+        "import { readFile } from 'fs/promises';\nexport const child = readFile;\n",
+      );
+
+      expect(() => auditPureModuleGraph(entry)).toThrow(
+        /child\.ts: Node builtin import/u,
+      );
+    } finally {
+      rmSync(directory, { recursive: true });
+    }
+  });
+
+  test('rejects performance.now access in indirect modules', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'schema-purity-audit-'));
+    try {
+      const entry = join(directory, 'entry.ts');
+      writeFileSync(entry, "export { child } from './child.js';\n");
+      writeFileSync(
+        join(directory, 'child.ts'),
+        'export const child = performance.now;\n',
+      );
+
+      expect(() => auditPureModuleGraph(entry)).toThrow(
+        /child\.ts: performance\.now/u,
+      );
+    } finally {
+      rmSync(directory, { recursive: true });
+    }
+  });
+
+  test('rejects crypto.randomUUID access in indirect modules', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'schema-purity-audit-'));
+    try {
+      const entry = join(directory, 'entry.ts');
+      writeFileSync(entry, "export { child } from './child.js';\n");
+      writeFileSync(
+        join(directory, 'child.ts'),
+        'export const child = crypto.randomUUID;\n',
+      );
+
+      expect(() => auditPureModuleGraph(entry)).toThrow(
+        /child\.ts: crypto\.randomUUID/u,
+      );
+    } finally {
+      rmSync(directory, { recursive: true });
+    }
+  });
+
+  test('rejects non-allowlisted top-level mutable containers', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'schema-purity-audit-'));
+    try {
+      const entry = join(directory, 'entry.ts');
+      writeFileSync(entry, "export { child } from './child.js';\n");
+      writeFileSync(
+        join(directory, 'child.ts'),
+        'const cache = new Map();\nexport const child = cache;\n',
+      );
+
+      expect(() => auditPureModuleGraph(entry)).toThrow(
+        /child\.ts: top-level mutable container cache/u,
+      );
+    } finally {
+      rmSync(directory, { recursive: true });
+    }
+  });
+
+  test('includes the pure generation closure without Bun publisher configuration', () => {
     const config = JSON.parse(
       readFileSync(resolve(import.meta.dir, '../tsconfig.test.json'), 'utf8'),
     ) as { include: string[] };
