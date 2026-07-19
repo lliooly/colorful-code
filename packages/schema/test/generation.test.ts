@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { z } from 'zod';
 
 import * as publicContracts from '../src/index.js';
@@ -270,6 +273,12 @@ const openApiModule = await import('../scripts/lib/openapi.js').catch(
 );
 const eventsSchemaModule =
   await import('../scripts/lib/events-schema.js').catch(() => undefined);
+const typeScriptModule = await import('../scripts/lib/typescript.js').catch(
+  () => undefined,
+);
+const swiftModule = await import('../scripts/lib/swift.js').catch(
+  () => undefined,
+);
 
 type RegistryViewFactory = <Schema extends z.ZodType>(schema: Schema) => Schema;
 
@@ -1125,4 +1134,356 @@ describe('thread stream events schema emitter', () => {
     expect(Object.isFrozen(document)).toBe(true);
     expect(Object.isFrozen(document.$defs)).toBe(true);
   });
+});
+
+describe('TypeScript contracts emitter', () => {
+  test('re-exports authoring validators and infers types in registry-key order', () => {
+    expect(typeScriptModule).toBeDefined();
+    expect(registryModule).toBeDefined();
+    if (typeScriptModule === undefined || registryModule === undefined) return;
+
+    const source = typeScriptModule.createTypeScriptContracts(
+      registryModule.schemaRegistry,
+    );
+    const health = source.indexOf('healthResponseSchema');
+    const thread = source.indexOf('threadViewSchema');
+
+    expect(source).toStartWith(
+      "// This file is generated. Do not edit.\n\nimport { z } from 'zod';\n",
+    );
+    expect(source).toContain(
+      "import { healthResponseSchema } from '../../src/common.js';",
+    );
+    expect(source).toContain(
+      "export { threadViewSchema } from '../../src/thread.js';",
+    );
+    expect(source).toContain(
+      'export type ThreadView = z.infer<typeof threadViewSchema>;',
+    );
+    expect(source).not.toContain("from '../../src/index.js'");
+    expect(source).not.toMatch(/\b(?:interface|namespace)\b/);
+    expect(health).toBeLessThan(thread);
+    expect(source.endsWith('\n')).toBe(true);
+  });
+
+  test('fails closed when the registry contains an unmapped schema name', () => {
+    expect(typeScriptModule).toBeDefined();
+    if (typeScriptModule === undefined) return;
+
+    expect(() =>
+      typeScriptModule.createTypeScriptContracts({ Mystery: z.string() }),
+    ).toThrow(/unmapped registry schema.*Mystery/i);
+  });
+});
+
+describe('Swift contracts emitter', () => {
+  const fixtureIr = {
+    $schema: 'https://json-schema.org/draft/2020-12/schema' as const,
+    $defs: {
+      Choice: {
+        oneOf: [
+          {
+            type: 'object',
+            properties: {
+              kind: { type: 'string', const: 'known' },
+              value: { type: 'string' },
+            },
+            required: ['kind', 'value'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              kind: { type: 'string', pattern: '^(?!known$).+' },
+              durability: { type: 'string', const: 'durable' },
+              critical: { type: 'boolean' },
+              payload: { $ref: '#/$defs/JsonValue' },
+            },
+            required: ['kind', 'durability', 'critical', 'payload'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              kind: { type: 'string', pattern: '^(?!known$).+' },
+              durability: { type: 'string', const: 'transient' },
+              critical: { type: 'boolean' },
+              payload: { $ref: '#/$defs/JsonValue' },
+            },
+            required: ['kind', 'durability', 'critical', 'payload'],
+            additionalProperties: false,
+          },
+        ],
+      },
+      Fixture: {
+        type: 'object',
+        properties: {
+          class: { type: 'boolean' },
+          cursor: { type: 'string', pattern: '^(0|[1-9]\\d*)$' },
+          generation: { type: 'integer', minimum: 0 },
+          inlineMode: { type: 'string', enum: ['one', 'two'] },
+          nullable: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          nothing: { type: 'null' },
+          optional: { type: 'string' },
+          tags: { type: 'array', items: { type: 'string' } },
+          'wire-name': { type: 'string' },
+        },
+        required: [
+          'class',
+          'cursor',
+          'generation',
+          'inlineMode',
+          'nullable',
+          'nothing',
+          'tags',
+          'wire-name',
+        ],
+        additionalProperties: false,
+      },
+      JsonValue: {
+        anyOf: [
+          { type: 'string' },
+          { type: 'number' },
+          { type: 'boolean' },
+          { type: 'null' },
+          { type: 'array', items: { $ref: '#/$defs/JsonValue' } },
+          {
+            type: 'object',
+            additionalProperties: { $ref: '#/$defs/JsonValue' },
+          },
+        ],
+      },
+      Mode: { type: 'string', enum: ['fast-mode', 'slow', 'switch'] },
+    },
+  };
+
+  test('maps enums, strict structs, presence, identifiers, arrays and unions deterministically', () => {
+    expect(swiftModule).toBeDefined();
+    if (swiftModule === undefined) return;
+
+    const source = swiftModule.createSwiftContracts(fixtureIr);
+    const sourceAgain = swiftModule.createSwiftContracts({
+      ...fixtureIr,
+      $defs: Object.fromEntries(Object.entries(fixtureIr.$defs).reverse()),
+    });
+
+    expect(source).toStartWith(
+      '// This file is generated. Do not edit.\n\nimport Foundation\n',
+    );
+    expect(source).toContain(
+      'public indirect enum JSONValue: Codable, Sendable',
+    );
+    expect(source).toContain('struct AnyCodingKey: CodingKey');
+    expect(source).toContain('throw DecodingError.dataCorrupted');
+    expect(source).toContain('decodeJSONValue(ChoiceKnown.self, from: raw)');
+    expect(source).toContain('case unknownEvent(ChoiceUnknownEvent)');
+    expect(source).toContain('case unknownEvent3(ChoiceUnknownEvent3)');
+    expect(source).toContain(
+      'decodeJSONValue(ChoiceUnknownEvent.self, from: raw)',
+    );
+    expect(source).toContain(
+      'decodeJSONValue(ChoiceUnknownEvent3.self, from: raw)',
+    );
+    expect(source).toContain('self.durability == "durable"');
+    expect(source).toContain('self.durability == "transient"');
+    expect(source).toContain('public enum Presence<Value: Codable & Sendable>');
+    expect(source).toContain('public enum Mode: String, Codable, Sendable');
+    expect(source).toContain('case fastMode = "fast-mode"');
+    expect(source).toContain('case `switch` = "switch"');
+    expect(source).toContain('public let `class`: Bool');
+    expect(source).toContain('public let cursor: String');
+    expect(source).toContain('public let generation: Int');
+    expect(source).toContain('public let inlineMode: FixtureInlineMode');
+    expect(source).toContain(
+      'public enum FixtureInlineMode: String, Codable, Sendable',
+    );
+    expect(source).toContain('public let nullable: Presence<String>');
+    expect(source).toContain('public let nothing: JSONNull');
+    expect(source).toContain('public let optional: String?');
+    expect(source).toContain('public let tags: [String]');
+    expect(source).toContain('case wireName = "wire-name"');
+    expect(source).toMatch(
+      /public enum Choice: Codable, Sendable[\s\S]*case known\([^)]+\)[\s\S]*case unknownEvent\([^)]+\)/,
+    );
+    expect(source.indexOf('case `class`')).toBeLessThan(
+      source.indexOf('case cursor'),
+    );
+    expect(sourceAgain).toBe(source);
+  });
+
+  test('executes strict optional, null, inline-enum and unknown-event decoding', () => {
+    expect(swiftModule).toBeDefined();
+    if (swiftModule === undefined) return;
+
+    const contracts = swiftModule.createSwiftContracts(fixtureIr);
+    const checks = String.raw`
+@main
+struct RuntimeChecks {
+  static func data(_ source: String) -> Data { Data(source.utf8) }
+
+  static func main() throws {
+    let decoder = JSONDecoder()
+    let missingOptional = #"{"class":true,"cursor":"0","generation":0,"inlineMode":"one","nullable":null,"nothing":null,"tags":[],"wire-name":"ok"}"#
+    guard (try? decoder.decode(Fixture.self, from: data(missingOptional))) != nil else { fatalError("missing optional must decode") }
+
+    let nullOptional = #"{"class":true,"cursor":"0","generation":0,"inlineMode":"one","nullable":null,"nothing":null,"optional":null,"tags":[],"wire-name":"ok"}"#
+    guard (try? decoder.decode(Fixture.self, from: data(nullOptional))) == nil else { fatalError("present null optional must fail") }
+
+    guard (try? decoder.decode(JSONNull.self, from: data("null"))) != nil else { fatalError("JSONNull must decode null") }
+    guard (try? decoder.decode(JSONNull.self, from: data("0"))) == nil else { fatalError("JSONNull must reject values") }
+
+    let invalidEnum = #"{"class":true,"cursor":"0","generation":0,"inlineMode":"invalid","nullable":null,"nothing":null,"tags":[],"wire-name":"ok"}"#
+    guard (try? decoder.decode(Fixture.self, from: data(invalidEnum))) == nil else { fatalError("inline enum must reject invalid raw values") }
+
+    let validUnknown = #"{"kind":"other","durability":"durable","critical":false,"payload":null}"#
+    guard (try? decoder.decode(Choice.self, from: data(validUnknown))) != nil else { fatalError("valid unknown event must decode") }
+    let blankUnknown = #"{"kind":"","durability":"durable","critical":false,"payload":null}"#
+    guard (try? decoder.decode(Choice.self, from: data(blankUnknown))) == nil else { fatalError("unknown event pattern must reject blank kind") }
+  }
+}
+`;
+
+    const swiftVersion = Bun.spawnSync(['swiftc', '--version']);
+    if (swiftVersion.exitCode !== 0) return;
+    const directory = mkdtempSync(join(tmpdir(), 'colorful-schema-runtime-'));
+    try {
+      const input = join(directory, 'Runtime.swift');
+      const executable = join(directory, 'RuntimeChecks');
+      writeFileSync(input, `${contracts}\n${checks}`);
+      const compile = Bun.spawnSync(
+        [
+          'swiftc',
+          '-parse-as-library',
+          '-module-cache-path',
+          directory,
+          input,
+          '-o',
+          executable,
+        ],
+        { stdout: 'pipe', stderr: 'pipe' },
+      );
+      expect(new TextDecoder().decode(compile.stderr)).toBe('');
+      expect(compile.exitCode).toBe(0);
+      const run = Bun.spawnSync([executable], {
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(new TextDecoder().decode(run.stderr)).toBe('');
+      expect(run.exitCode).toBe(0);
+    } finally {
+      rmSync(directory, { recursive: true });
+    }
+  }, 60_000);
+
+  test('does not treat an arbitrary patterned discriminator as an unknown event fallback', () => {
+    expect(swiftModule).toBeDefined();
+    if (swiftModule === undefined) return;
+
+    const source = swiftModule.createSwiftContracts({
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      $defs: {
+        PatternChoice: {
+          oneOf: [
+            {
+              type: 'object',
+              properties: {
+                kind: { type: 'string', const: 'known' },
+              },
+              required: ['kind'],
+              additionalProperties: false,
+            },
+            {
+              type: 'object',
+              properties: {
+                kind: { type: 'string', pattern: '^(?!known$).+' },
+              },
+              required: ['kind'],
+              additionalProperties: false,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(source).not.toContain('case unknownEvent');
+    expect(source).toContain('default: throw DecodingError.dataCorrupted');
+  });
+
+  test('fails closed on normalized enum-case and object-member collisions', () => {
+    expect(swiftModule).toBeDefined();
+    if (swiftModule === undefined) return;
+
+    expect(() =>
+      swiftModule.createSwiftContracts({
+        $schema: 'https://json-schema.org/draft/2020-12/schema',
+        $defs: {
+          Collision: { type: 'string', enum: ['fast-mode', 'fast_mode'] },
+        },
+      }),
+    ).toThrow(/enum case collision.*fast-mode.*fast_mode/i);
+
+    expect(() =>
+      swiftModule.createSwiftContracts({
+        $schema: 'https://json-schema.org/draft/2020-12/schema',
+        $defs: {
+          Collision: {
+            type: 'object',
+            properties: {
+              'wire-name': { type: 'string' },
+              wire_name: { type: 'string' },
+            },
+            additionalProperties: false,
+          },
+        },
+      }),
+    ).toThrow(/member collision.*wire-name.*wire_name/i);
+  });
+
+  test('emits the complete registry as source accepted by swiftc', () => {
+    expect(swiftModule).toBeDefined();
+    expect(jsonSchemaModule).toBeDefined();
+    expect(registryModule).toBeDefined();
+    if (
+      swiftModule === undefined ||
+      jsonSchemaModule === undefined ||
+      registryModule === undefined
+    ) {
+      return;
+    }
+
+    const source = swiftModule.createSwiftContracts(
+      jsonSchemaModule.createJsonSchemaIr(registryModule.schemaRegistry),
+    );
+    expect(source).toContain('public struct ThreadView');
+    expect(source).toContain('public enum ThreadStreamFrame');
+    expect(source).toContain('case unknownEvent');
+    expect(source).toMatch(
+      /public enum UnknownEventEnvelope: Codable, Sendable[\s\S]*case unknownEvent\(UnknownEventEnvelopeUnknownEvent\)[\s\S]*case unknownEvent2\(UnknownEventEnvelopeUnknownEvent2\)/,
+    );
+    expect(source).toContain(
+      'decodeJSONValue(UnknownEventEnvelopeUnknownEvent.self, from: raw)',
+    );
+    expect(source).toContain(
+      'decodeJSONValue(UnknownEventEnvelopeUnknownEvent2.self, from: raw)',
+    );
+
+    const swiftVersion = Bun.spawnSync(['swiftc', '--version']);
+    if (swiftVersion.exitCode !== 0) return;
+    const directory = mkdtempSync(join(tmpdir(), 'colorful-schema-swift-'));
+    try {
+      const input = join(directory, 'Contracts.swift');
+      writeFileSync(input, source);
+      const result = Bun.spawnSync(
+        ['swiftc', '-module-cache-path', directory, '-typecheck', input],
+        {
+          stdout: 'pipe',
+          stderr: 'pipe',
+        },
+      );
+      expect(new TextDecoder().decode(result.stderr)).toBe('');
+      expect(result.exitCode).toBe(0);
+    } finally {
+      rmSync(directory, { recursive: true });
+    }
+  }, 60_000);
 });
