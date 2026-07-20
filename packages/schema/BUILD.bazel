@@ -139,4 +139,5 @@ js_test(
         ":openapi.v2.json",
     ],
     entry_point = ":bazel_output_checker_js",
+    timeout = "short",
 )
