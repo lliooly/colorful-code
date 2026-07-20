@@ -1,0 +1,7 @@
+{
+  "kind": "tool.stderrDelta",
+  "payload": {
+    "chunk": "Fixture stderr",
+    "toolExecutionId": "tool-execution-1"
+  }
+}

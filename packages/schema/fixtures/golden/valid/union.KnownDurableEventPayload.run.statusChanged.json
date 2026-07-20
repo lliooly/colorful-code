@@ -1,0 +1,20 @@
+{
+  "kind": "run.statusChanged",
+  "payload": {
+    "configRevision": 1,
+    "createdAt": "2026-07-17T10:00:00+08:00",
+    "endedAt": null,
+    "kind": "interactive",
+    "planGeneration": 1,
+    "policyRevision": 1,
+    "revision": 1,
+    "runId": "run-1",
+    "sourceInputItemId": "input-1",
+    "sourceQueueItemId": null,
+    "startedAt": "2026-07-17T10:00:00+08:00",
+    "status": "running",
+    "terminalReason": null,
+    "threadId": "thread-1",
+    "updatedAt": "2026-07-17T10:00:00+08:00"
+  }
+}

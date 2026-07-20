@@ -1,0 +1,25 @@
+{
+  "critical": false,
+  "durability": "durable",
+  "durableSequence": "41",
+  "eventId": "event-tool.terminal",
+  "kind": "tool.terminal",
+  "occurredAt": "2026-07-17T10:00:00+08:00",
+  "payload": {
+    "artifacts": [],
+    "completedAt": "2026-07-17T10:00:00+08:00",
+    "createdAt": "2026-07-17T10:00:00+08:00",
+    "planGeneration": 1,
+    "policyRevision": 1,
+    "redactedSummary": {
+      "result": "fixture"
+    },
+    "runId": "run-1",
+    "state": "completed",
+    "threadId": "thread-1",
+    "toolExecutionId": "tool-execution-1",
+    "toolName": "fixture-tool",
+    "updatedAt": "2026-07-17T10:00:00+08:00"
+  },
+  "threadId": "thread-1"
+}

@@ -1,0 +1,17 @@
+{
+  "critical": false,
+  "durability": "durable",
+  "durableSequence": "41",
+  "eventId": "event-operation.completed",
+  "kind": "operation.completed",
+  "occurredAt": "2026-07-17T10:00:00+08:00",
+  "payload": {
+    "completedAt": "2026-07-17T10:00:00+08:00",
+    "kind": "steer",
+    "operationId": "operation-1",
+    "revision": 1,
+    "runId": "run-1",
+    "status": "completed"
+  },
+  "threadId": "thread-1"
+}

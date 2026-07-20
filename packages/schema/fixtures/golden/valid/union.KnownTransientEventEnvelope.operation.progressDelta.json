@@ -1,0 +1,17 @@
+{
+  "critical": false,
+  "durability": "transient",
+  "durableBasis": "41",
+  "eventId": "event-operation.progressDelta",
+  "incarnationId": "incarnation-1",
+  "kind": "operation.progressDelta",
+  "occurredAt": "2026-07-17T10:00:00+08:00",
+  "payload": {
+    "operationId": "operation-1",
+    "progress": {
+      "phase": "fixture"
+    }
+  },
+  "streamSequence": "43",
+  "threadId": "thread-1"
+}

@@ -35,6 +35,7 @@ const MUTABLE_CONTAINER_ALLOWLIST = new Set([
   // initialization, handed to Zod or read as constants, and never mutated by
   // contract generation.
   'src/config.ts:normalizedSensitiveProviderOptionKeys',
+  'src/clonable-refinement.ts:refinementFactories',
   'src/enums.ts:queueControlStates',
   'src/errors.ts:errorHttpMappingByCode',
   'src/events.ts:eventBaseShape',

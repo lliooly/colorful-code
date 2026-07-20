@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "INTERNAL_ERROR",
+    "message": "Fixture INTERNAL_ERROR",
+    "retryable": false
+  }
+}

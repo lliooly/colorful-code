@@ -12,6 +12,7 @@ import {
   timestampSchema,
 } from './common.js';
 import { apiErrorPayloadSchema } from './errors.js';
+import { withClonableSuperRefine } from './clonable-refinement.js';
 import { operationCompletionEventKindSchema } from './enums.js';
 import {
   credentialRefIdSchema,
@@ -98,22 +99,22 @@ const createJsonWirePayloadSchema = <PayloadSchema extends z.ZodType>(
   payloadSchema: PayloadSchema,
 ): JsonWirePayloadSchema<PayloadSchema> => {
   assertJsonSchemaCompatible(payloadSchema);
-  return payloadSchema
-    .nonoptional()
-    .overwrite((value) => {
+  return withClonableSuperRefine(
+    payloadSchema.nonoptional().overwrite((value) => {
       const result = jsonValueSchema.safeParse(value);
       return (
         result.success ? result.data : invalidJsonWirePayload
       ) as typeof value;
-    })
-    .superRefine((value, context) => {
+    }),
+    (value, context) => {
       if ((value as unknown) === invalidJsonWirePayload) {
         context.addIssue({
           code: 'custom',
           message: 'Expected a JSON wire value',
         });
       }
-    }) as z.ZodType<
+    },
+  ) as z.ZodType<
     JsonWireOutput<z.output<PayloadSchema>>,
     z.input<PayloadSchema>
   >;

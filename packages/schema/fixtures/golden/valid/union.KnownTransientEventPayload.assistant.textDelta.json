@@ -1,0 +1,7 @@
+{
+  "kind": "assistant.textDelta",
+  "payload": {
+    "chunk": "Fixture text",
+    "transcriptItemId": "transcript-1"
+  }
+}

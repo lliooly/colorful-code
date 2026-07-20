@@ -1,0 +1,11 @@
+{
+  "kind": "queue.changed",
+  "payload": {
+    "blockedByIndeterminate": false,
+    "controlState": "active",
+    "effectiveState": "active",
+    "items": [],
+    "revision": 1,
+    "threadId": "thread-1"
+  }
+}

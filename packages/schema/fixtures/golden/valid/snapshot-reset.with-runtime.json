@@ -1,0 +1,89 @@
+{
+  "durableCursor": "41",
+  "incarnationId": "incarnation-1",
+  "kind": "stream.snapshotReset",
+  "reason": "cursorExpired",
+  "resetId": "reset-1",
+  "snapshot": {
+    "durableCursor": "41",
+    "incarnationId": "incarnation-1",
+    "pendingApprovals": [],
+    "pendingOperations": [],
+    "queue": {
+      "blockedByIndeterminate": false,
+      "controlState": "active",
+      "effectiveState": "active",
+      "items": [],
+      "revision": 1,
+      "threadId": "thread-1"
+    },
+    "recentRuns": {
+      "items": [],
+      "pageInfo": {
+        "hasMore": false,
+        "nextCursor": null
+      }
+    },
+    "snapshotVersion": 1,
+    "streamCursor": "43",
+    "streamState": {
+      "assistantBuffers": [
+        {
+          "incarnationId": "incarnation-1",
+          "interruptionReason": null,
+          "lastStreamSequence": "42",
+          "runId": "run-1",
+          "status": "streaming",
+          "terminalAt": null,
+          "text": "Fixture partial text",
+          "transcriptItemId": "transcript-1"
+        }
+      ],
+      "toolBuffers": [
+        {
+          "content": {
+            "stdout": "Fixture partial output"
+          },
+          "incarnationId": "incarnation-1",
+          "interruptionReason": null,
+          "lastStreamSequence": "43",
+          "runId": "run-1",
+          "status": "streaming",
+          "terminalAt": null,
+          "toolExecutionId": "tool-execution-1"
+        }
+      ]
+    },
+    "thread": {
+      "activeRunId": null,
+      "configRevision": 1,
+      "createdAt": "2026-07-17T10:00:00+08:00",
+      "goal": null,
+      "lifecycle": "available",
+      "lineageId": "lineage-1",
+      "parentThreadId": null,
+      "policyRevision": 1,
+      "queueRevision": 1,
+      "runtimeStatus": "idle",
+      "threadId": "thread-1",
+      "threadRevision": 1,
+      "title": null,
+      "updatedAt": "2026-07-17T10:00:00+08:00",
+      "workspaceBinding": {
+        "displayPath": "/workspace",
+        "trust": "trusted",
+        "workspaceId": "workspace-1"
+      }
+    },
+    "toolExecutions": [],
+    "transcript": {
+      "items": [],
+      "pageInfo": {
+        "hasMore": false,
+        "nextCursor": null
+      }
+    }
+  },
+  "streamCursor": "43",
+  "threadId": "thread-1"
+}

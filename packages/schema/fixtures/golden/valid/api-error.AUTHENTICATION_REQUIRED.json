@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "AUTHENTICATION_REQUIRED",
+    "message": "Fixture AUTHENTICATION_REQUIRED",
+    "retryable": false
+  }
+}

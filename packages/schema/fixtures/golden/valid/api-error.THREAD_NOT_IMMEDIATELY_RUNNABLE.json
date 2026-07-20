@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "THREAD_NOT_IMMEDIATELY_RUNNABLE",
+    "message": "Fixture THREAD_NOT_IMMEDIATELY_RUNNABLE",
+    "retryable": false
+  }
+}

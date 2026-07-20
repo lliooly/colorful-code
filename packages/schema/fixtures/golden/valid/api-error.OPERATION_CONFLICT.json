@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "OPERATION_CONFLICT",
+    "message": "Fixture OPERATION_CONFLICT",
+    "retryable": false
+  }
+}

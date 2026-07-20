@@ -1,0 +1,30 @@
+{
+  "critical": false,
+  "durability": "durable",
+  "durableSequence": "41",
+  "eventId": "event-approval.resolved",
+  "kind": "approval.resolved",
+  "occurredAt": "2026-07-17T10:00:00+08:00",
+  "payload": {
+    "approvalId": "approval-1",
+    "createdAt": "2026-07-17T10:00:00+08:00",
+    "decidedAt": "2026-07-17T10:00:00+08:00",
+    "decision": {
+      "decision": "approve",
+      "reason": "Fixture approval"
+    },
+    "expiresAt": null,
+    "kind": "toolExecution",
+    "planGeneration": 1,
+    "policyRevision": 1,
+    "requestSummary": {
+      "fixture": true
+    },
+    "revision": 1,
+    "runId": "run-1",
+    "status": "approved",
+    "threadId": "thread-1",
+    "updatedAt": "2026-07-17T10:00:00+08:00"
+  },
+  "threadId": "thread-1"
+}

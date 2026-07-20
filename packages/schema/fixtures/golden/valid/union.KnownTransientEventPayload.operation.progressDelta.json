@@ -1,0 +1,9 @@
+{
+  "kind": "operation.progressDelta",
+  "payload": {
+    "operationId": "operation-1",
+    "progress": {
+      "phase": "fixture"
+    }
+  }
+}

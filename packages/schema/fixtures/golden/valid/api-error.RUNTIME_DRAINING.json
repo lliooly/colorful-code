@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "RUNTIME_DRAINING",
+    "message": "Fixture RUNTIME_DRAINING",
+    "retryable": false
+  }
+}

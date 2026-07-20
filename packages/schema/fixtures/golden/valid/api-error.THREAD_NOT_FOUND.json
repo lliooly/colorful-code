@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "THREAD_NOT_FOUND",
+    "message": "Fixture THREAD_NOT_FOUND",
+    "retryable": false
+  }
+}

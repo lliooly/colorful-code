@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Invalid thread stream frame",
+    "retryable": false
+  },
+  "outcome": "protocolError"
+}

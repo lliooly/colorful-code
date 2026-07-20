@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "INDETERMINATE_SIDE_EFFECT",
+    "message": "Fixture INDETERMINATE_SIDE_EFFECT",
+    "retryable": false
+  }
+}

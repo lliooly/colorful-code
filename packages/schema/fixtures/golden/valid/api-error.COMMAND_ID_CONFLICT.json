@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "COMMAND_ID_CONFLICT",
+    "message": "Fixture COMMAND_ID_CONFLICT",
+    "retryable": false
+  }
+}

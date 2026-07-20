@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "QUEUE_ITEM_ALREADY_CONSUMED",
+    "message": "Fixture QUEUE_ITEM_ALREADY_CONSUMED",
+    "retryable": false
+  }
+}

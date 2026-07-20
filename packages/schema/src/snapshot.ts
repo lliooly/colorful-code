@@ -35,6 +35,7 @@ import {
   MAX_THREAD_STREAM_FRAME_SERIALIZED_LENGTH,
   MAX_THREAD_STREAM_FRAME_TOKEN_COUNT,
 } from './stream-limits.js';
+import { withClonableSuperRefine } from './clonable-refinement.js';
 import { threadViewSchema } from './thread.js';
 
 const MAX_STREAM_BUFFERS = 100;
@@ -148,7 +149,8 @@ const bufferIncarnationMismatchMessage =
 const bufferCutoffMismatchMessage =
   'Stream buffer lastStreamSequence must not exceed snapshot.streamCursor';
 
-export const threadSnapshotSchema = rawThreadSnapshotSchema.superRefine(
+export const threadSnapshotSchema = withClonableSuperRefine(
+  rawThreadSnapshotSchema,
   (snapshot, context) => {
     if (!('streamState' in snapshot)) return;
 
@@ -220,9 +222,9 @@ const streamCursorMismatchMessage =
 const threadIdMismatchMessage =
   'SnapshotReset threadId must equal snapshot.thread.threadId';
 
-const validatedSnapshotResetSchema = z
-  .union([durableOnlySnapshotResetSchema, runtimeSnapshotResetSchema])
-  .superRefine((frame, context) => {
+const validatedSnapshotResetSchema = withClonableSuperRefine(
+  z.union([durableOnlySnapshotResetSchema, runtimeSnapshotResetSchema]),
+  (frame, context) => {
     if (frame.threadId !== frame.snapshot.thread.threadId) {
       context.addIssue({
         code: 'custom',
@@ -283,7 +285,8 @@ const validatedSnapshotResetSchema = z
         message: 'SnapshotReset without runtime must not include streamState',
       });
     }
-  });
+  },
+);
 
 const boundedSnapshotResetJsonSchema = createBoundedJsonValueSchema(
   MAX_THREAD_STREAM_FRAME_SERIALIZED_LENGTH,

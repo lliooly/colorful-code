@@ -1,0 +1,6 @@
+{
+  "eventId": "event-critical",
+  "kind": "plugin.futureDurable",
+  "outcome": "resetRequired",
+  "reason": "criticalUnknownEvent"
+}

@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "RECOVERY_BLOCKED",
+    "message": "Fixture RECOVERY_BLOCKED",
+    "retryable": false
+  }
+}

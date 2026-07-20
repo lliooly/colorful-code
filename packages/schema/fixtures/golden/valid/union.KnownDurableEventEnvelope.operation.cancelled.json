@@ -1,0 +1,18 @@
+{
+  "critical": false,
+  "durability": "durable",
+  "durableSequence": "41",
+  "eventId": "event-operation.cancelled",
+  "kind": "operation.cancelled",
+  "occurredAt": "2026-07-17T10:00:00+08:00",
+  "payload": {
+    "cancelledAt": "2026-07-17T10:00:00+08:00",
+    "kind": "steer",
+    "operationId": "operation-1",
+    "reason": "Fixture cancellation",
+    "revision": 1,
+    "runId": "run-1",
+    "status": "cancelled"
+  },
+  "threadId": "thread-1"
+}

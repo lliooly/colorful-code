@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "STALE_INCARNATION",
+    "message": "Fixture STALE_INCARNATION",
+    "retryable": false
+  }
+}

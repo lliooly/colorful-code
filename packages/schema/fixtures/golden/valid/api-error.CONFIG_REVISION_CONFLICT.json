@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "CONFIG_REVISION_CONFLICT",
+    "message": "Fixture CONFIG_REVISION_CONFLICT",
+    "retryable": false
+  }
+}

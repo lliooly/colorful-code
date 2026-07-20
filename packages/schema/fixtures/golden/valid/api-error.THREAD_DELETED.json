@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "THREAD_DELETED",
+    "message": "Fixture THREAD_DELETED",
+    "retryable": false
+  }
+}

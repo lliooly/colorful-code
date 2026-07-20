@@ -117,6 +117,8 @@ export type AtomicDependencies = Readonly<{
 
 export type PublishOptions = Readonly<{
   lockTimeoutMs?: number;
+  /** Validates caller-owned publication preconditions after recovery while locked. */
+  preflightUnderLock?: () => void | Promise<void>;
   staleLockMs?: number;
   dependencies?: Partial<AtomicDependencies>;
 }>;
@@ -1176,6 +1178,7 @@ export const publishGeneratedOutputs = async (
         renameOverride,
       );
     }
+    await options.preflightUnderLock?.();
 
     mkdirAt(heldLock.rootDescriptor, stagingName, 0o700);
     syncDescriptor(heldLock.rootDescriptor, 'package root after staging');

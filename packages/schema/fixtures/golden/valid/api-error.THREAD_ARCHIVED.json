@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "THREAD_ARCHIVED",
+    "message": "Fixture THREAD_ARCHIVED",
+    "retryable": false
+  }
+}

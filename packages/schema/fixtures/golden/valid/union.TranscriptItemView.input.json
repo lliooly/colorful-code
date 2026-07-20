@@ -1,0 +1,21 @@
+{
+  "createdAt": "2026-07-17T10:00:00+08:00",
+  "kind": "input",
+  "payload": {
+    "input": {
+      "content": {
+        "kind": "text",
+        "text": "Fixture input"
+      },
+      "createdAt": "2026-07-17T10:00:00+08:00",
+      "inputItemId": "input-1",
+      "role": "user",
+      "source": "submission",
+      "supersedesInputItemId": null,
+      "threadId": "thread-1"
+    }
+  },
+  "runId": "run-1",
+  "threadId": "thread-1",
+  "transcriptItemId": "transcript-1"
+}

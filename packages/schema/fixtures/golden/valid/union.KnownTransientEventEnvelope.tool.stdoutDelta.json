@@ -1,0 +1,15 @@
+{
+  "critical": false,
+  "durability": "transient",
+  "durableBasis": "41",
+  "eventId": "event-tool.stdoutDelta",
+  "incarnationId": "incarnation-1",
+  "kind": "tool.stdoutDelta",
+  "occurredAt": "2026-07-17T10:00:00+08:00",
+  "payload": {
+    "chunk": "Fixture stdout",
+    "toolExecutionId": "tool-execution-1"
+  },
+  "streamSequence": "43",
+  "threadId": "thread-1"
+}

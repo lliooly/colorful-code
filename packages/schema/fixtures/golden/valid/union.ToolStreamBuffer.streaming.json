@@ -1,0 +1,12 @@
+{
+  "content": {
+    "stdout": "Fixture partial output"
+  },
+  "incarnationId": "incarnation-1",
+  "interruptionReason": null,
+  "lastStreamSequence": "43",
+  "runId": "run-1",
+  "status": "streaming",
+  "terminalAt": null,
+  "toolExecutionId": "tool-execution-1"
+}

@@ -1,0 +1,17 @@
+{
+  "critical": false,
+  "durability": "durable",
+  "durableSequence": "41",
+  "eventId": "event-queue.changed",
+  "kind": "queue.changed",
+  "occurredAt": "2026-07-17T10:00:00+08:00",
+  "payload": {
+    "blockedByIndeterminate": false,
+    "controlState": "active",
+    "effectiveState": "active",
+    "items": [],
+    "revision": 1,
+    "threadId": "thread-1"
+  },
+  "threadId": "thread-1"
+}

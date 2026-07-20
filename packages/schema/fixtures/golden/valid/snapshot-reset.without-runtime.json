@@ -1,0 +1,57 @@
+{
+  "durableCursor": "41",
+  "kind": "stream.snapshotReset",
+  "reason": "runtimeNotLoaded",
+  "resetId": "reset-1",
+  "snapshot": {
+    "durableCursor": "41",
+    "pendingApprovals": [],
+    "pendingOperations": [],
+    "queue": {
+      "blockedByIndeterminate": false,
+      "controlState": "active",
+      "effectiveState": "active",
+      "items": [],
+      "revision": 1,
+      "threadId": "thread-1"
+    },
+    "recentRuns": {
+      "items": [],
+      "pageInfo": {
+        "hasMore": false,
+        "nextCursor": null
+      }
+    },
+    "snapshotVersion": 1,
+    "thread": {
+      "activeRunId": null,
+      "configRevision": 1,
+      "createdAt": "2026-07-17T10:00:00+08:00",
+      "goal": null,
+      "lifecycle": "available",
+      "lineageId": "lineage-1",
+      "parentThreadId": null,
+      "policyRevision": 1,
+      "queueRevision": 1,
+      "runtimeStatus": "idle",
+      "threadId": "thread-1",
+      "threadRevision": 1,
+      "title": null,
+      "updatedAt": "2026-07-17T10:00:00+08:00",
+      "workspaceBinding": {
+        "displayPath": "/workspace",
+        "trust": "trusted",
+        "workspaceId": "workspace-1"
+      }
+    },
+    "toolExecutions": [],
+    "transcript": {
+      "items": [],
+      "pageInfo": {
+        "hasMore": false,
+        "nextCursor": null
+      }
+    }
+  },
+  "threadId": "thread-1"
+}

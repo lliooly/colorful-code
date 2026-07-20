@@ -1,0 +1,21 @@
+{
+  "critical": false,
+  "durability": "durable",
+  "durableSequence": "41",
+  "eventId": "event-operation.failed",
+  "kind": "operation.failed",
+  "occurredAt": "2026-07-17T10:00:00+08:00",
+  "payload": {
+    "error": {
+      "code": "INTERNAL_ERROR",
+      "message": "Fixture operation failed",
+      "retryable": false
+    },
+    "kind": "steer",
+    "operationId": "operation-1",
+    "revision": 1,
+    "runId": "run-1",
+    "status": "failed"
+  },
+  "threadId": "thread-1"
+}

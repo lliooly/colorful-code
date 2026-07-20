@@ -1,0 +1,11 @@
+{
+  "kind": "operation.completed",
+  "payload": {
+    "completedAt": "2026-07-17T10:00:00+08:00",
+    "kind": "steer",
+    "operationId": "operation-1",
+    "revision": 1,
+    "runId": "run-1",
+    "status": "completed"
+  }
+}

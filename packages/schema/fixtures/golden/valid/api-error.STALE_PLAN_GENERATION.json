@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "STALE_PLAN_GENERATION",
+    "message": "Fixture STALE_PLAN_GENERATION",
+    "retryable": false
+  }
+}

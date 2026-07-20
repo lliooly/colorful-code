@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Fixture validation failure",
+    "retryable": false,
+    "unknown": true
+  }
+}

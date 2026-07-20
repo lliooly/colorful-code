@@ -1,0 +1,12 @@
+{
+  "createdAt": "2026-07-17T10:00:00+08:00",
+  "kind": "operation",
+  "payload": {
+    "content": "Fixture",
+    "operationId": "operation-1",
+    "status": "executing"
+  },
+  "runId": "run-1",
+  "threadId": "thread-1",
+  "transcriptItemId": "transcript-1"
+}

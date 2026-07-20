@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "QUEUE_ITEM_NOT_FOUND",
+    "message": "Fixture QUEUE_ITEM_NOT_FOUND",
+    "retryable": false
+  }
+}

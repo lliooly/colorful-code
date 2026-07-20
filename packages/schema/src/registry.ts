@@ -5,6 +5,7 @@ import {
   type HttpContractDescriptor,
 } from './commands.js';
 import * as contracts from './index.js';
+import { cloneRegisteredRefinement } from './clonable-refinement.js';
 
 export type SchemaRegistry = Readonly<Record<string, z.ZodType>>;
 export type HttpRegistry = Readonly<
@@ -467,6 +468,14 @@ const cloneSchemaGraph = <Schema extends z.ZodType>(
     // validating against the mutable authoring definition.
     const coreNode = asZodCoreNode(value);
     if (coreNode !== undefined) {
+      if ((coreNode._zod.def as { check?: unknown }).check === 'custom') {
+        const clonedRefinement = cloneRegisteredRefinement(value);
+        if (clonedRefinement === undefined) {
+          throw new TypeError('cannot isolate unregistered custom Zod check');
+        }
+        containers.set(value, clonedRefinement);
+        return clonedRefinement;
+      }
       const clonedDefinition = cloneValue(coreNode._zod.def);
       const cloned = new coreNode._zod.constr(clonedDefinition);
       containers.set(value, cloned);

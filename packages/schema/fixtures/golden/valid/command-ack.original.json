@@ -1,0 +1,8 @@
+{
+  "acceptedAt": "2026-07-17T10:00:00+08:00",
+  "commandId": "command-1",
+  "currentDurableCursor": "41",
+  "replayed": false,
+  "status": "accepted",
+  "threadId": "thread-1"
+}

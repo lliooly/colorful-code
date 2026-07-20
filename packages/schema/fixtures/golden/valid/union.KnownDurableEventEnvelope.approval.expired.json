@@ -1,0 +1,27 @@
+{
+  "critical": false,
+  "durability": "durable",
+  "durableSequence": "41",
+  "eventId": "event-approval.expired",
+  "kind": "approval.expired",
+  "occurredAt": "2026-07-17T10:00:00+08:00",
+  "payload": {
+    "approvalId": "approval-1",
+    "createdAt": "2026-07-17T10:00:00+08:00",
+    "decidedAt": null,
+    "decision": null,
+    "expiresAt": null,
+    "kind": "toolExecution",
+    "planGeneration": 1,
+    "policyRevision": 1,
+    "requestSummary": {
+      "fixture": true
+    },
+    "revision": 1,
+    "runId": "run-1",
+    "status": "expired",
+    "threadId": "thread-1",
+    "updatedAt": "2026-07-17T10:00:00+08:00"
+  },
+  "threadId": "thread-1"
+}

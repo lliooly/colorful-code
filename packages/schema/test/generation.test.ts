@@ -1768,6 +1768,80 @@ await generateContracts({ packageRoot: root, dependencies: role === 'first' ? { 
     }
   }, 60_000);
 
+  test('rejects a stale writer by validating its precondition under the lock', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-preflight-lock-'));
+    const initialManifest = '{"version":0}\n';
+    const v1Manifest = '{"version":1}\n';
+    let signalHeld!: () => void;
+    let releaseV1!: () => void;
+    let signalCollision!: () => void;
+    const held = new Promise<void>((resolve) => {
+      signalHeld = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseV1 = resolve;
+    });
+    const collision = new Promise<void>((resolve) => {
+      signalCollision = resolve;
+    });
+    const preflight = () => {
+      if (readFileSync(join(root, 'manifest.json'), 'utf8') !== initialManifest) {
+        throw new Error('stale generated-output precondition');
+      }
+    };
+    try {
+      await generateModule.publishGeneratedOutputs(root, {
+        'manifest.json': initialManifest,
+        'valid/a.json': 'a\n',
+      });
+      const v1 = generateModule.publishGeneratedOutputs(
+        root,
+        {
+          'manifest.json': v1Manifest,
+          'valid/a.json': 'a\n',
+          'valid/x.json': 'x\n',
+        },
+        {
+          preflightUnderLock: preflight,
+          dependencies: {
+            afterLockAcquired: async () => {
+              signalHeld();
+              await release;
+            },
+          },
+        },
+      );
+      await held;
+      const staleV0 = generateModule.publishGeneratedOutputs(
+        root,
+        {
+          'manifest.json': initialManifest,
+          'valid/a.json': 'a\n',
+        },
+        {
+          preflightUnderLock: preflight,
+          dependencies: { onLockCollision: signalCollision },
+        },
+      );
+      await collision;
+      releaseV1();
+
+      await v1;
+      await expect(staleV0).rejects.toThrow(/stale.*precondition/i);
+      expect(readFileSync(join(root, 'manifest.json'), 'utf8')).toBe(
+        v1Manifest,
+      );
+      expect(readFileSync(join(root, 'valid/a.json'), 'utf8')).toBe('a\n');
+      expect(readFileSync(join(root, 'valid/x.json'), 'utf8')).toBe('x\n');
+      expect(generationResidue(root)).toEqual([]);
+    } finally {
+      releaseV1?.();
+      rmSync(root, { recursive: true });
+    }
+  });
+
   test('fails safely for active, foreign and malformed locks', async () => {
     expect(generateModule).toBeDefined();
     if (generateModule === undefined) return;

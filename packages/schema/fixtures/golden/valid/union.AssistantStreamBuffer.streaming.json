@@ -1,0 +1,10 @@
+{
+  "incarnationId": "incarnation-1",
+  "interruptionReason": null,
+  "lastStreamSequence": "42",
+  "runId": "run-1",
+  "status": "streaming",
+  "terminalAt": null,
+  "text": "Fixture partial text",
+  "transcriptItemId": "transcript-1"
+}

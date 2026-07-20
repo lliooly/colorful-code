@@ -1,0 +1,7 @@
+{
+  "kind": "assistant.reasoningDelta",
+  "payload": {
+    "chunk": "Fixture reasoning",
+    "transcriptItemId": "transcript-1"
+  }
+}

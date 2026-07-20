@@ -1,0 +1,15 @@
+{
+  "critical": false,
+  "durability": "transient",
+  "durableBasis": "41",
+  "eventId": "event-assistant.textDelta",
+  "incarnationId": "incarnation-1",
+  "kind": "assistant.textDelta",
+  "occurredAt": "2026-07-17T10:00:00+08:00",
+  "payload": {
+    "chunk": "Fixture text",
+    "transcriptItemId": "transcript-1"
+  },
+  "streamSequence": "43",
+  "threadId": "thread-1"
+}

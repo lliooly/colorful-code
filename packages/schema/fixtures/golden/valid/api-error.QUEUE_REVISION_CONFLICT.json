@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "QUEUE_REVISION_CONFLICT",
+    "message": "Fixture QUEUE_REVISION_CONFLICT",
+    "retryable": false
+  }
+}

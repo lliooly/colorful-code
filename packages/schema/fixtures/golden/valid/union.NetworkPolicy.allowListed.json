@@ -1,0 +1,6 @@
+{
+  "allowedHosts": [
+    "example.com"
+  ],
+  "mode": "allowListed"
+}

@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "THREAD_PURGE_STARTED",
+    "message": "Fixture THREAD_PURGE_STARTED",
+    "retryable": false
+  }
+}

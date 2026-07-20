@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "APPROVAL_EXPIRED",
+    "message": "Fixture APPROVAL_EXPIRED",
+    "retryable": false
+  }
+}

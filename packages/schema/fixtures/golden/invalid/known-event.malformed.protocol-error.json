@@ -1,0 +1,10 @@
+{
+  "critical": false,
+  "durability": "durable",
+  "durableSequence": "42",
+  "eventId": "event-malformed-known",
+  "kind": "thread.updated",
+  "occurredAt": "2026-07-17T10:00:00+08:00",
+  "payload": {},
+  "threadId": "thread-1"
+}

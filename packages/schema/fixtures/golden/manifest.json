@@ -1,0 +1,1539 @@
+[
+  {
+    "expect": "accept",
+    "file": "valid/api-error.APPROVAL_EXPIRED.json",
+    "id": "api-error.APPROVAL_EXPIRED",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.AUTHENTICATION_REQUIRED.json",
+    "id": "api-error.AUTHENTICATION_REQUIRED",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.COMMAND_ID_CONFLICT.json",
+    "id": "api-error.COMMAND_ID_CONFLICT",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.CONFIG_REVISION_CONFLICT.json",
+    "id": "api-error.CONFIG_REVISION_CONFLICT",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.CREDENTIAL_UNAVAILABLE.json",
+    "id": "api-error.CREDENTIAL_UNAVAILABLE",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.INDETERMINATE_SIDE_EFFECT.json",
+    "id": "api-error.INDETERMINATE_SIDE_EFFECT",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.INTERNAL_ERROR.json",
+    "id": "api-error.INTERNAL_ERROR",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.OPERATION_CONFLICT.json",
+    "id": "api-error.OPERATION_CONFLICT",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.POLICY_REVISION_CONFLICT.json",
+    "id": "api-error.POLICY_REVISION_CONFLICT",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.QUEUE_ITEM_ALREADY_CONSUMED.json",
+    "id": "api-error.QUEUE_ITEM_ALREADY_CONSUMED",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.QUEUE_ITEM_NOT_FOUND.json",
+    "id": "api-error.QUEUE_ITEM_NOT_FOUND",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.QUEUE_REVISION_CONFLICT.json",
+    "id": "api-error.QUEUE_REVISION_CONFLICT",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.RECOVERY_BLOCKED.json",
+    "id": "api-error.RECOVERY_BLOCKED",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.RUNTIME_DRAINING.json",
+    "id": "api-error.RUNTIME_DRAINING",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.RUN_ALREADY_TERMINAL.json",
+    "id": "api-error.RUN_ALREADY_TERMINAL",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.RUN_NOT_ACTIVE.json",
+    "id": "api-error.RUN_NOT_ACTIVE",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.RUN_NOT_FOUND.json",
+    "id": "api-error.RUN_NOT_FOUND",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.STALE_INCARNATION.json",
+    "id": "api-error.STALE_INCARNATION",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.STALE_PLAN_GENERATION.json",
+    "id": "api-error.STALE_PLAN_GENERATION",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.THREAD_ARCHIVED.json",
+    "id": "api-error.THREAD_ARCHIVED",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.THREAD_DELETED.json",
+    "id": "api-error.THREAD_DELETED",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.THREAD_NOT_FOUND.json",
+    "id": "api-error.THREAD_NOT_FOUND",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.THREAD_NOT_IMMEDIATELY_RUNNABLE.json",
+    "id": "api-error.THREAD_NOT_IMMEDIATELY_RUNNABLE",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.THREAD_PURGE_STARTED.json",
+    "id": "api-error.THREAD_PURGE_STARTED",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/api-error.VALIDATION_ERROR.json",
+    "id": "api-error.VALIDATION_ERROR",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/command-ack.original.json",
+    "id": "command-ack.original",
+    "schema": "http:thread.delete:result"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/command-ack.replayed.json",
+    "id": "command-ack.replayed",
+    "schema": "http:thread.delete:result"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/credential-ref.json",
+    "id": "credential-ref",
+    "schema": "schema:CredentialRef"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/cursor.above-safe-integer.json",
+    "id": "cursor.above-safe-integer",
+    "schema": "schema:DurableCursor"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ApprovalDecision.approve.json",
+    "id": "enum.ApprovalDecision.approve",
+    "schema": "schema:ApprovalDecision"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ApprovalDecision.deny.json",
+    "id": "enum.ApprovalDecision.deny",
+    "schema": "schema:ApprovalDecision"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ApprovalKind.credentialUse.json",
+    "id": "enum.ApprovalKind.credentialUse",
+    "schema": "schema:ApprovalKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ApprovalKind.networkAccess.json",
+    "id": "enum.ApprovalKind.networkAccess",
+    "schema": "schema:ApprovalKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ApprovalKind.toolExecution.json",
+    "id": "enum.ApprovalKind.toolExecution",
+    "schema": "schema:ApprovalKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ApprovalKind.workspaceMutation.json",
+    "id": "enum.ApprovalKind.workspaceMutation",
+    "schema": "schema:ApprovalKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ApprovalStatus.approved.json",
+    "id": "enum.ApprovalStatus.approved",
+    "schema": "schema:ApprovalStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ApprovalStatus.cancelled.json",
+    "id": "enum.ApprovalStatus.cancelled",
+    "schema": "schema:ApprovalStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ApprovalStatus.denied.json",
+    "id": "enum.ApprovalStatus.denied",
+    "schema": "schema:ApprovalStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ApprovalStatus.expired.json",
+    "id": "enum.ApprovalStatus.expired",
+    "schema": "schema:ApprovalStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ApprovalStatus.pending.json",
+    "id": "enum.ApprovalStatus.pending",
+    "schema": "schema:ApprovalStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.AuthenticatedPrincipalKind.installationClient.json",
+    "id": "enum.AuthenticatedPrincipalKind.installationClient",
+    "schema": "schema:AuthenticatedPrincipalKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.AuthenticatedPrincipalKind.system.json",
+    "id": "enum.AuthenticatedPrincipalKind.system",
+    "schema": "schema:AuthenticatedPrincipalKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.EffectiveQueueDispatchState.active.json",
+    "id": "enum.EffectiveQueueDispatchState.active",
+    "schema": "schema:EffectiveQueueDispatchState"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.EffectiveQueueDispatchState.blockedByIndeterminate.json",
+    "id": "enum.EffectiveQueueDispatchState.blockedByIndeterminate",
+    "schema": "schema:EffectiveQueueDispatchState"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.EffectiveQueueDispatchState.pausedByFailure.json",
+    "id": "enum.EffectiveQueueDispatchState.pausedByFailure",
+    "schema": "schema:EffectiveQueueDispatchState"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.EffectiveQueueDispatchState.pausedByStop.json",
+    "id": "enum.EffectiveQueueDispatchState.pausedByStop",
+    "schema": "schema:EffectiveQueueDispatchState"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.EffectiveQueueDispatchState.pausedByUser.json",
+    "id": "enum.EffectiveQueueDispatchState.pausedByUser",
+    "schema": "schema:EffectiveQueueDispatchState"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.APPROVAL_EXPIRED.json",
+    "id": "enum.ErrorCode.APPROVAL_EXPIRED",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.AUTHENTICATION_REQUIRED.json",
+    "id": "enum.ErrorCode.AUTHENTICATION_REQUIRED",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.COMMAND_ID_CONFLICT.json",
+    "id": "enum.ErrorCode.COMMAND_ID_CONFLICT",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.CONFIG_REVISION_CONFLICT.json",
+    "id": "enum.ErrorCode.CONFIG_REVISION_CONFLICT",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.CREDENTIAL_UNAVAILABLE.json",
+    "id": "enum.ErrorCode.CREDENTIAL_UNAVAILABLE",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.INDETERMINATE_SIDE_EFFECT.json",
+    "id": "enum.ErrorCode.INDETERMINATE_SIDE_EFFECT",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.INTERNAL_ERROR.json",
+    "id": "enum.ErrorCode.INTERNAL_ERROR",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.OPERATION_CONFLICT.json",
+    "id": "enum.ErrorCode.OPERATION_CONFLICT",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.POLICY_REVISION_CONFLICT.json",
+    "id": "enum.ErrorCode.POLICY_REVISION_CONFLICT",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.QUEUE_ITEM_ALREADY_CONSUMED.json",
+    "id": "enum.ErrorCode.QUEUE_ITEM_ALREADY_CONSUMED",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.QUEUE_ITEM_NOT_FOUND.json",
+    "id": "enum.ErrorCode.QUEUE_ITEM_NOT_FOUND",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.QUEUE_REVISION_CONFLICT.json",
+    "id": "enum.ErrorCode.QUEUE_REVISION_CONFLICT",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.RECOVERY_BLOCKED.json",
+    "id": "enum.ErrorCode.RECOVERY_BLOCKED",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.RUNTIME_DRAINING.json",
+    "id": "enum.ErrorCode.RUNTIME_DRAINING",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.RUN_ALREADY_TERMINAL.json",
+    "id": "enum.ErrorCode.RUN_ALREADY_TERMINAL",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.RUN_NOT_ACTIVE.json",
+    "id": "enum.ErrorCode.RUN_NOT_ACTIVE",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.RUN_NOT_FOUND.json",
+    "id": "enum.ErrorCode.RUN_NOT_FOUND",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.STALE_INCARNATION.json",
+    "id": "enum.ErrorCode.STALE_INCARNATION",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.STALE_PLAN_GENERATION.json",
+    "id": "enum.ErrorCode.STALE_PLAN_GENERATION",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.THREAD_ARCHIVED.json",
+    "id": "enum.ErrorCode.THREAD_ARCHIVED",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.THREAD_DELETED.json",
+    "id": "enum.ErrorCode.THREAD_DELETED",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.THREAD_NOT_FOUND.json",
+    "id": "enum.ErrorCode.THREAD_NOT_FOUND",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.THREAD_NOT_IMMEDIATELY_RUNNABLE.json",
+    "id": "enum.ErrorCode.THREAD_NOT_IMMEDIATELY_RUNNABLE",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.THREAD_PURGE_STARTED.json",
+    "id": "enum.ErrorCode.THREAD_PURGE_STARTED",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ErrorCode.VALIDATION_ERROR.json",
+    "id": "enum.ErrorCode.VALIDATION_ERROR",
+    "schema": "schema:ErrorCode"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.InputRole.system.json",
+    "id": "enum.InputRole.system",
+    "schema": "schema:InputRole"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.InputRole.user.json",
+    "id": "enum.InputRole.user",
+    "schema": "schema:InputRole"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.InputSource.automation.json",
+    "id": "enum.InputSource.automation",
+    "schema": "schema:InputSource"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.InputSource.checkpointApply.json",
+    "id": "enum.InputSource.checkpointApply",
+    "schema": "schema:InputSource"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.InputSource.recovery.json",
+    "id": "enum.InputSource.recovery",
+    "schema": "schema:InputSource"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.InputSource.steer.json",
+    "id": "enum.InputSource.steer",
+    "schema": "schema:InputSource"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.InputSource.submission.json",
+    "id": "enum.InputSource.submission",
+    "schema": "schema:InputSource"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationCompletionEventKind.operation.cancelled.json",
+    "id": "enum.OperationCompletionEventKind.operation.cancelled",
+    "schema": "schema:OperationCompletionEventKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationCompletionEventKind.operation.completed.json",
+    "id": "enum.OperationCompletionEventKind.operation.completed",
+    "schema": "schema:OperationCompletionEventKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationCompletionEventKind.operation.failed.json",
+    "id": "enum.OperationCompletionEventKind.operation.failed",
+    "schema": "schema:OperationCompletionEventKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationKind.checkpointApply.json",
+    "id": "enum.OperationKind.checkpointApply",
+    "schema": "schema:OperationKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationKind.compaction.json",
+    "id": "enum.OperationKind.compaction",
+    "schema": "schema:OperationKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationKind.lateObservationReconcile.json",
+    "id": "enum.OperationKind.lateObservationReconcile",
+    "schema": "schema:OperationKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationKind.modelInvocation.json",
+    "id": "enum.OperationKind.modelInvocation",
+    "schema": "schema:OperationKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationKind.policyReconcile.json",
+    "id": "enum.OperationKind.policyReconcile",
+    "schema": "schema:OperationKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationKind.steer.json",
+    "id": "enum.OperationKind.steer",
+    "schema": "schema:OperationKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationKind.stop.json",
+    "id": "enum.OperationKind.stop",
+    "schema": "schema:OperationKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationKind.threadArchive.json",
+    "id": "enum.OperationKind.threadArchive",
+    "schema": "schema:OperationKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationKind.threadDelete.json",
+    "id": "enum.OperationKind.threadDelete",
+    "schema": "schema:OperationKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationKind.threadResume.json",
+    "id": "enum.OperationKind.threadResume",
+    "schema": "schema:OperationKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationKind.threadUndelete.json",
+    "id": "enum.OperationKind.threadUndelete",
+    "schema": "schema:OperationKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationKind.toolInvocation.json",
+    "id": "enum.OperationKind.toolInvocation",
+    "schema": "schema:OperationKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationStatus.accepted.json",
+    "id": "enum.OperationStatus.accepted",
+    "schema": "schema:OperationStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationStatus.blocked.json",
+    "id": "enum.OperationStatus.blocked",
+    "schema": "schema:OperationStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationStatus.cancelled.json",
+    "id": "enum.OperationStatus.cancelled",
+    "schema": "schema:OperationStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationStatus.completed.json",
+    "id": "enum.OperationStatus.completed",
+    "schema": "schema:OperationStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationStatus.executing.json",
+    "id": "enum.OperationStatus.executing",
+    "schema": "schema:OperationStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationStatus.failed.json",
+    "id": "enum.OperationStatus.failed",
+    "schema": "schema:OperationStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.OperationStatus.waiting.json",
+    "id": "enum.OperationStatus.waiting",
+    "schema": "schema:OperationStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.QueueControlState.active.json",
+    "id": "enum.QueueControlState.active",
+    "schema": "schema:QueueControlState"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.QueueControlState.pausedByFailure.json",
+    "id": "enum.QueueControlState.pausedByFailure",
+    "schema": "schema:QueueControlState"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.QueueControlState.pausedByStop.json",
+    "id": "enum.QueueControlState.pausedByStop",
+    "schema": "schema:QueueControlState"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.QueueControlState.pausedByUser.json",
+    "id": "enum.QueueControlState.pausedByUser",
+    "schema": "schema:QueueControlState"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.QueueItemStatus.consumed.json",
+    "id": "enum.QueueItemStatus.consumed",
+    "schema": "schema:QueueItemStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.QueueItemStatus.queued.json",
+    "id": "enum.QueueItemStatus.queued",
+    "schema": "schema:QueueItemStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.QueueItemStatus.removed.json",
+    "id": "enum.QueueItemStatus.removed",
+    "schema": "schema:QueueItemStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ReasoningEffort.high.json",
+    "id": "enum.ReasoningEffort.high",
+    "schema": "schema:ReasoningEffort"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ReasoningEffort.low.json",
+    "id": "enum.ReasoningEffort.low",
+    "schema": "schema:ReasoningEffort"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ReasoningEffort.medium.json",
+    "id": "enum.ReasoningEffort.medium",
+    "schema": "schema:ReasoningEffort"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.RunKind.checkpointApply.json",
+    "id": "enum.RunKind.checkpointApply",
+    "schema": "schema:RunKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.RunKind.interactive.json",
+    "id": "enum.RunKind.interactive",
+    "schema": "schema:RunKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.RunStatus.blocked.json",
+    "id": "enum.RunStatus.blocked",
+    "schema": "schema:RunStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.RunStatus.completed.json",
+    "id": "enum.RunStatus.completed",
+    "schema": "schema:RunStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.RunStatus.failed.json",
+    "id": "enum.RunStatus.failed",
+    "schema": "schema:RunStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.RunStatus.recovering.json",
+    "id": "enum.RunStatus.recovering",
+    "schema": "schema:RunStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.RunStatus.running.json",
+    "id": "enum.RunStatus.running",
+    "schema": "schema:RunStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.RunStatus.starting.json",
+    "id": "enum.RunStatus.starting",
+    "schema": "schema:RunStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.RunStatus.steering.json",
+    "id": "enum.RunStatus.steering",
+    "schema": "schema:RunStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.RunStatus.stopped.json",
+    "id": "enum.RunStatus.stopped",
+    "schema": "schema:RunStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.RunStatus.stopping.json",
+    "id": "enum.RunStatus.stopping",
+    "schema": "schema:RunStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.SandboxPolicy.readOnly.json",
+    "id": "enum.SandboxPolicy.readOnly",
+    "schema": "schema:SandboxPolicy"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.SandboxPolicy.unrestricted.json",
+    "id": "enum.SandboxPolicy.unrestricted",
+    "schema": "schema:SandboxPolicy"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.SandboxPolicy.workspaceWrite.json",
+    "id": "enum.SandboxPolicy.workspaceWrite",
+    "schema": "schema:SandboxPolicy"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.SnapshotResetReason.cursorExpired.json",
+    "id": "enum.SnapshotResetReason.cursorExpired",
+    "schema": "schema:SnapshotResetReason"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.SnapshotResetReason.daemonRestarted.json",
+    "id": "enum.SnapshotResetReason.daemonRestarted",
+    "schema": "schema:SnapshotResetReason"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.SnapshotResetReason.incarnationChanged.json",
+    "id": "enum.SnapshotResetReason.incarnationChanged",
+    "schema": "schema:SnapshotResetReason"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.SnapshotResetReason.runtimeNotLoaded.json",
+    "id": "enum.SnapshotResetReason.runtimeNotLoaded",
+    "schema": "schema:SnapshotResetReason"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.SnapshotResetReason.streamStateUnavailable.json",
+    "id": "enum.SnapshotResetReason.streamStateUnavailable",
+    "schema": "schema:SnapshotResetReason"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.SteerStalePolicy.enqueue.json",
+    "id": "enum.SteerStalePolicy.enqueue",
+    "schema": "schema:SteerStalePolicy"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.SteerStalePolicy.reject.json",
+    "id": "enum.SteerStalePolicy.reject",
+    "schema": "schema:SteerStalePolicy"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.StreamInterruptionReason.daemonLost.json",
+    "id": "enum.StreamInterruptionReason.daemonLost",
+    "schema": "schema:StreamInterruptionReason"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.StreamInterruptionReason.steered.json",
+    "id": "enum.StreamInterruptionReason.steered",
+    "schema": "schema:StreamInterruptionReason"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.StreamInterruptionReason.stopped.json",
+    "id": "enum.StreamInterruptionReason.stopped",
+    "schema": "schema:StreamInterruptionReason"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.StreamInterruptionReason.streamStateUnavailable.json",
+    "id": "enum.StreamInterruptionReason.streamStateUnavailable",
+    "schema": "schema:StreamInterruptionReason"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.StreamStateStatus.completed.json",
+    "id": "enum.StreamStateStatus.completed",
+    "schema": "schema:StreamStateStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.StreamStateStatus.interrupted.json",
+    "id": "enum.StreamStateStatus.interrupted",
+    "schema": "schema:StreamStateStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.StreamStateStatus.streaming.json",
+    "id": "enum.StreamStateStatus.streaming",
+    "schema": "schema:StreamStateStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.SubmissionDisposition.auto.json",
+    "id": "enum.SubmissionDisposition.auto",
+    "schema": "schema:SubmissionDisposition"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.SubmissionDisposition.enqueue.json",
+    "id": "enum.SubmissionDisposition.enqueue",
+    "schema": "schema:SubmissionDisposition"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.SubmissionDisposition.requireImmediate.json",
+    "id": "enum.SubmissionDisposition.requireImmediate",
+    "schema": "schema:SubmissionDisposition"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ThreadLifecycle.archived.json",
+    "id": "enum.ThreadLifecycle.archived",
+    "schema": "schema:ThreadLifecycle"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ThreadLifecycle.available.json",
+    "id": "enum.ThreadLifecycle.available",
+    "schema": "schema:ThreadLifecycle"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ThreadLifecycle.deleted.json",
+    "id": "enum.ThreadLifecycle.deleted",
+    "schema": "schema:ThreadLifecycle"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ThreadRuntimeStatus.blocked.json",
+    "id": "enum.ThreadRuntimeStatus.blocked",
+    "schema": "schema:ThreadRuntimeStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ThreadRuntimeStatus.idle.json",
+    "id": "enum.ThreadRuntimeStatus.idle",
+    "schema": "schema:ThreadRuntimeStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ThreadRuntimeStatus.loading.json",
+    "id": "enum.ThreadRuntimeStatus.loading",
+    "schema": "schema:ThreadRuntimeStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ThreadRuntimeStatus.notLoaded.json",
+    "id": "enum.ThreadRuntimeStatus.notLoaded",
+    "schema": "schema:ThreadRuntimeStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ThreadRuntimeStatus.recovering.json",
+    "id": "enum.ThreadRuntimeStatus.recovering",
+    "schema": "schema:ThreadRuntimeStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ThreadRuntimeStatus.running.json",
+    "id": "enum.ThreadRuntimeStatus.running",
+    "schema": "schema:ThreadRuntimeStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ToolExecutionState.cancelRequested.json",
+    "id": "enum.ToolExecutionState.cancelRequested",
+    "schema": "schema:ToolExecutionState"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ToolExecutionState.cancelled.json",
+    "id": "enum.ToolExecutionState.cancelled",
+    "schema": "schema:ToolExecutionState"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ToolExecutionState.completed.json",
+    "id": "enum.ToolExecutionState.completed",
+    "schema": "schema:ToolExecutionState"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ToolExecutionState.failed.json",
+    "id": "enum.ToolExecutionState.failed",
+    "schema": "schema:ToolExecutionState"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ToolExecutionState.indeterminate.json",
+    "id": "enum.ToolExecutionState.indeterminate",
+    "schema": "schema:ToolExecutionState"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ToolExecutionState.running.json",
+    "id": "enum.ToolExecutionState.running",
+    "schema": "schema:ToolExecutionState"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.ToolExecutionState.scheduled.json",
+    "id": "enum.ToolExecutionState.scheduled",
+    "schema": "schema:ToolExecutionState"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.TranscriptItemKind.assistant.json",
+    "id": "enum.TranscriptItemKind.assistant",
+    "schema": "schema:TranscriptItemKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.TranscriptItemKind.input.json",
+    "id": "enum.TranscriptItemKind.input",
+    "schema": "schema:TranscriptItemKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.TranscriptItemKind.operation.json",
+    "id": "enum.TranscriptItemKind.operation",
+    "schema": "schema:TranscriptItemKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.TranscriptItemKind.system.json",
+    "id": "enum.TranscriptItemKind.system",
+    "schema": "schema:TranscriptItemKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.TranscriptItemKind.tool.json",
+    "id": "enum.TranscriptItemKind.tool",
+    "schema": "schema:TranscriptItemKind"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.TranscriptStatus.completed.json",
+    "id": "enum.TranscriptStatus.completed",
+    "schema": "schema:TranscriptStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.TranscriptStatus.interrupted.json",
+    "id": "enum.TranscriptStatus.interrupted",
+    "schema": "schema:TranscriptStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.TranscriptStatus.streaming.json",
+    "id": "enum.TranscriptStatus.streaming",
+    "schema": "schema:TranscriptStatus"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.WorkspaceTrust.trusted.json",
+    "id": "enum.WorkspaceTrust.trusted",
+    "schema": "schema:WorkspaceTrust"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/enum.WorkspaceTrust.untrusted.json",
+    "id": "enum.WorkspaceTrust.untrusted",
+    "schema": "schema:WorkspaceTrust"
+  },
+  {
+    "expect": "reject",
+    "expectedOutcome": "protocolError",
+    "file": "invalid/known-event.malformed.protocol-error.json",
+    "id": "known-event.malformed.protocol-error",
+    "schema": "schema:ThreadStreamFrame"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/nullable.null.json",
+    "id": "nullable.null",
+    "schema": "schema:JsonValue"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/optional-nullable.absent.json",
+    "id": "optional-nullable.absent",
+    "schema": "schema:ConfigPatch"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/optional-nullable.null.json",
+    "id": "optional-nullable.null",
+    "schema": "schema:ConfigPatch"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/optional-nullable.value.json",
+    "id": "optional-nullable.value",
+    "schema": "schema:ConfigPatch"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/optional.absent.json",
+    "id": "optional.absent",
+    "schema": "schema:PaginationQuery"
+  },
+  {
+    "expect": "reject",
+    "file": "invalid/reject.nested-secret.json",
+    "id": "reject.nested-secret",
+    "schema": "schema:ConfigPatch"
+  },
+  {
+    "expect": "reject",
+    "file": "invalid/reject.unknown-nested.json",
+    "id": "reject.unknown-nested",
+    "schema": "schema:ApiError"
+  },
+  {
+    "expect": "reject",
+    "file": "invalid/reject.unknown-top-level.json",
+    "id": "reject.unknown-top-level",
+    "schema": "schema:HealthResponse"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "known",
+    "file": "valid/snapshot-reset.with-runtime.json",
+    "id": "snapshot-reset.with-runtime",
+    "schema": "schema:SnapshotReset"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "known",
+    "file": "valid/snapshot-reset.without-runtime.json",
+    "id": "snapshot-reset.without-runtime",
+    "schema": "schema:SnapshotReset"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.AssistantStreamBuffer.completed.json",
+    "id": "union.AssistantStreamBuffer.completed",
+    "schema": "schema:AssistantStreamBuffer"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.AssistantStreamBuffer.interrupted.json",
+    "id": "union.AssistantStreamBuffer.interrupted",
+    "schema": "schema:AssistantStreamBuffer"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.AssistantStreamBuffer.streaming.json",
+    "id": "union.AssistantStreamBuffer.streaming",
+    "schema": "schema:AssistantStreamBuffer"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.AssistantTranscriptPayload.completed.json",
+    "id": "union.AssistantTranscriptPayload.completed",
+    "schema": "schema:AssistantTranscriptPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.AssistantTranscriptPayload.interrupted.json",
+    "id": "union.AssistantTranscriptPayload.interrupted",
+    "schema": "schema:AssistantTranscriptPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.AssistantTranscriptPayload.streaming.json",
+    "id": "union.AssistantTranscriptPayload.streaming",
+    "schema": "schema:AssistantTranscriptPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.ForkBoundary.checkpoint.json",
+    "id": "union.ForkBoundary.checkpoint",
+    "schema": "schema:ForkBoundary"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.ForkBoundary.contextBoundary.json",
+    "id": "union.ForkBoundary.contextBoundary",
+    "schema": "schema:ForkBoundary"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.ForkBoundary.latestCommitted.json",
+    "id": "union.ForkBoundary.latestCommitted",
+    "schema": "schema:ForkBoundary"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.InputContent.artifactReferences.json",
+    "id": "union.InputContent.artifactReferences",
+    "schema": "schema:InputContent"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.InputContent.structured.json",
+    "id": "union.InputContent.structured",
+    "schema": "schema:InputContent"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.InputContent.text.json",
+    "id": "union.InputContent.text",
+    "schema": "schema:InputContent"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "known",
+    "file": "valid/union.KnownDurableEventEnvelope.approval.expired.json",
+    "id": "union.KnownDurableEventEnvelope.approval.expired",
+    "schema": "schema:KnownDurableEventEnvelope"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "known",
+    "file": "valid/union.KnownDurableEventEnvelope.approval.requested.json",
+    "id": "union.KnownDurableEventEnvelope.approval.requested",
+    "schema": "schema:KnownDurableEventEnvelope"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "known",
+    "file": "valid/union.KnownDurableEventEnvelope.approval.resolved.json",
+    "id": "union.KnownDurableEventEnvelope.approval.resolved",
+    "schema": "schema:KnownDurableEventEnvelope"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "known",
+    "file": "valid/union.KnownDurableEventEnvelope.credential.revoked.json",
+    "id": "union.KnownDurableEventEnvelope.credential.revoked",
+    "schema": "schema:KnownDurableEventEnvelope"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "known",
+    "file": "valid/union.KnownDurableEventEnvelope.operation.cancelled.json",
+    "id": "union.KnownDurableEventEnvelope.operation.cancelled",
+    "schema": "schema:KnownDurableEventEnvelope"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "known",
+    "file": "valid/union.KnownDurableEventEnvelope.operation.completed.json",
+    "id": "union.KnownDurableEventEnvelope.operation.completed",
+    "schema": "schema:KnownDurableEventEnvelope"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "known",
+    "file": "valid/union.KnownDurableEventEnvelope.operation.failed.json",
+    "id": "union.KnownDurableEventEnvelope.operation.failed",
+    "schema": "schema:KnownDurableEventEnvelope"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "known",
+    "file": "valid/union.KnownDurableEventEnvelope.queue.changed.json",
+    "id": "union.KnownDurableEventEnvelope.queue.changed",
+    "schema": "schema:KnownDurableEventEnvelope"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "known",
+    "file": "valid/union.KnownDurableEventEnvelope.run.statusChanged.json",
+    "id": "union.KnownDurableEventEnvelope.run.statusChanged",
+    "schema": "schema:KnownDurableEventEnvelope"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "known",
+    "file": "valid/union.KnownDurableEventEnvelope.thread.lifecycleChanged.json",
+    "id": "union.KnownDurableEventEnvelope.thread.lifecycleChanged",
+    "schema": "schema:KnownDurableEventEnvelope"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "known",
+    "file": "valid/union.KnownDurableEventEnvelope.thread.updated.json",
+    "id": "union.KnownDurableEventEnvelope.thread.updated",
+    "schema": "schema:KnownDurableEventEnvelope"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "known",
+    "file": "valid/union.KnownDurableEventEnvelope.tool.terminal.json",
+    "id": "union.KnownDurableEventEnvelope.tool.terminal",
+    "schema": "schema:KnownDurableEventEnvelope"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.KnownDurableEventPayload.approval.expired.json",
+    "id": "union.KnownDurableEventPayload.approval.expired",
+    "schema": "schema:KnownDurableEventPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.KnownDurableEventPayload.approval.requested.json",
+    "id": "union.KnownDurableEventPayload.approval.requested",
+    "schema": "schema:KnownDurableEventPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.KnownDurableEventPayload.approval.resolved.json",
+    "id": "union.KnownDurableEventPayload.approval.resolved",
+    "schema": "schema:KnownDurableEventPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.KnownDurableEventPayload.credential.revoked.json",
+    "id": "union.KnownDurableEventPayload.credential.revoked",
+    "schema": "schema:KnownDurableEventPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.KnownDurableEventPayload.operation.cancelled.json",
+    "id": "union.KnownDurableEventPayload.operation.cancelled",
+    "schema": "schema:KnownDurableEventPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.KnownDurableEventPayload.operation.completed.json",
+    "id": "union.KnownDurableEventPayload.operation.completed",
+    "schema": "schema:KnownDurableEventPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.KnownDurableEventPayload.operation.failed.json",
+    "id": "union.KnownDurableEventPayload.operation.failed",
+    "schema": "schema:KnownDurableEventPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.KnownDurableEventPayload.queue.changed.json",
+    "id": "union.KnownDurableEventPayload.queue.changed",
+    "schema": "schema:KnownDurableEventPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.KnownDurableEventPayload.run.statusChanged.json",
+    "id": "union.KnownDurableEventPayload.run.statusChanged",
+    "schema": "schema:KnownDurableEventPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.KnownDurableEventPayload.thread.lifecycleChanged.json",
+    "id": "union.KnownDurableEventPayload.thread.lifecycleChanged",
+    "schema": "schema:KnownDurableEventPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.KnownDurableEventPayload.thread.updated.json",
+    "id": "union.KnownDurableEventPayload.thread.updated",
+    "schema": "schema:KnownDurableEventPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.KnownDurableEventPayload.tool.terminal.json",
+    "id": "union.KnownDurableEventPayload.tool.terminal",
+    "schema": "schema:KnownDurableEventPayload"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "known",
+    "file": "valid/union.KnownTransientEventEnvelope.assistant.reasoningDelta.json",
+    "id": "union.KnownTransientEventEnvelope.assistant.reasoningDelta",
+    "schema": "schema:KnownTransientEventEnvelope"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "known",
+    "file": "valid/union.KnownTransientEventEnvelope.assistant.textDelta.json",
+    "id": "union.KnownTransientEventEnvelope.assistant.textDelta",
+    "schema": "schema:KnownTransientEventEnvelope"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "known",
+    "file": "valid/union.KnownTransientEventEnvelope.operation.progressDelta.json",
+    "id": "union.KnownTransientEventEnvelope.operation.progressDelta",
+    "schema": "schema:KnownTransientEventEnvelope"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "known",
+    "file": "valid/union.KnownTransientEventEnvelope.tool.stderrDelta.json",
+    "id": "union.KnownTransientEventEnvelope.tool.stderrDelta",
+    "schema": "schema:KnownTransientEventEnvelope"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "known",
+    "file": "valid/union.KnownTransientEventEnvelope.tool.stdoutDelta.json",
+    "id": "union.KnownTransientEventEnvelope.tool.stdoutDelta",
+    "schema": "schema:KnownTransientEventEnvelope"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.KnownTransientEventPayload.assistant.reasoningDelta.json",
+    "id": "union.KnownTransientEventPayload.assistant.reasoningDelta",
+    "schema": "schema:KnownTransientEventPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.KnownTransientEventPayload.assistant.textDelta.json",
+    "id": "union.KnownTransientEventPayload.assistant.textDelta",
+    "schema": "schema:KnownTransientEventPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.KnownTransientEventPayload.operation.progressDelta.json",
+    "id": "union.KnownTransientEventPayload.operation.progressDelta",
+    "schema": "schema:KnownTransientEventPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.KnownTransientEventPayload.tool.stderrDelta.json",
+    "id": "union.KnownTransientEventPayload.tool.stderrDelta",
+    "schema": "schema:KnownTransientEventPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.KnownTransientEventPayload.tool.stdoutDelta.json",
+    "id": "union.KnownTransientEventPayload.tool.stdoutDelta",
+    "schema": "schema:KnownTransientEventPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.NetworkPolicy.allowListed.json",
+    "id": "union.NetworkPolicy.allowListed",
+    "schema": "schema:NetworkPolicy"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.NetworkPolicy.denyAll.json",
+    "id": "union.NetworkPolicy.denyAll",
+    "schema": "schema:NetworkPolicy"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.OperationTerminalEventPayload.cancelled.json",
+    "id": "union.OperationTerminalEventPayload.cancelled",
+    "schema": "schema:OperationTerminalEventPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.OperationTerminalEventPayload.completed.json",
+    "id": "union.OperationTerminalEventPayload.completed",
+    "schema": "schema:OperationTerminalEventPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.OperationTerminalEventPayload.failed.json",
+    "id": "union.OperationTerminalEventPayload.failed",
+    "schema": "schema:OperationTerminalEventPayload"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.ParseThreadStreamFrameResult.known.json",
+    "id": "union.ParseThreadStreamFrameResult.known",
+    "schema": "schema:ParseThreadStreamFrameResult"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.ParseThreadStreamFrameResult.protocolError.json",
+    "id": "union.ParseThreadStreamFrameResult.protocolError",
+    "schema": "schema:ParseThreadStreamFrameResult"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.ParseThreadStreamFrameResult.resetRequired.json",
+    "id": "union.ParseThreadStreamFrameResult.resetRequired",
+    "schema": "schema:ParseThreadStreamFrameResult"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.ParseThreadStreamFrameResult.unknownNonCritical.json",
+    "id": "union.ParseThreadStreamFrameResult.unknownNonCritical",
+    "schema": "schema:ParseThreadStreamFrameResult"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.SubmissionResult.queueItemCreated.json",
+    "id": "union.SubmissionResult.queueItemCreated",
+    "schema": "schema:SubmissionResult"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.SubmissionResult.runCreated.json",
+    "id": "union.SubmissionResult.runCreated",
+    "schema": "schema:SubmissionResult"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.ThreadView.archived.json",
+    "id": "union.ThreadView.archived",
+    "schema": "schema:ThreadView"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.ThreadView.available.json",
+    "id": "union.ThreadView.available",
+    "schema": "schema:ThreadView"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.ThreadView.deleted.json",
+    "id": "union.ThreadView.deleted",
+    "schema": "schema:ThreadView"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.ToolStreamBuffer.completed.json",
+    "id": "union.ToolStreamBuffer.completed",
+    "schema": "schema:ToolStreamBuffer"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.ToolStreamBuffer.interrupted.json",
+    "id": "union.ToolStreamBuffer.interrupted",
+    "schema": "schema:ToolStreamBuffer"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.ToolStreamBuffer.streaming.json",
+    "id": "union.ToolStreamBuffer.streaming",
+    "schema": "schema:ToolStreamBuffer"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.TranscriptItemView.assistant.json",
+    "id": "union.TranscriptItemView.assistant",
+    "schema": "schema:TranscriptItemView"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.TranscriptItemView.input.json",
+    "id": "union.TranscriptItemView.input",
+    "schema": "schema:TranscriptItemView"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.TranscriptItemView.operation.json",
+    "id": "union.TranscriptItemView.operation",
+    "schema": "schema:TranscriptItemView"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.TranscriptItemView.system.json",
+    "id": "union.TranscriptItemView.system",
+    "schema": "schema:TranscriptItemView"
+  },
+  {
+    "expect": "accept",
+    "file": "valid/union.TranscriptItemView.tool.json",
+    "id": "union.TranscriptItemView.tool",
+    "schema": "schema:TranscriptItemView"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "unknownNonCritical",
+    "file": "valid/union.UnknownEventEnvelope.durable.json",
+    "id": "union.UnknownEventEnvelope.durable",
+    "schema": "schema:UnknownEventEnvelope"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "unknownNonCritical",
+    "file": "valid/union.UnknownEventEnvelope.transient.json",
+    "id": "union.UnknownEventEnvelope.transient",
+    "schema": "schema:UnknownEventEnvelope"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "resetRequired",
+    "file": "valid/unknown.critical.json",
+    "id": "unknown.critical",
+    "schema": "schema:ThreadStreamFrame"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "unknownNonCritical",
+    "file": "valid/unknown.durable.non-critical.json",
+    "id": "unknown.durable.non-critical",
+    "schema": "schema:ThreadStreamFrame"
+  },
+  {
+    "expect": "accept",
+    "expectedOutcome": "unknownNonCritical",
+    "file": "valid/unknown.transient.non-critical.json",
+    "id": "unknown.transient.non-critical",
+    "schema": "schema:ThreadStreamFrame"
+  }
+]

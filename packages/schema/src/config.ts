@@ -8,6 +8,7 @@ import {
   timestampSchema,
 } from './common.js';
 import { credentialRefIdSchema } from './ids.js';
+import { withClonableSuperRefine } from './clonable-refinement.js';
 
 const boundedConfigNameSchema = z.string().trim().min(1).max(256);
 export const credentialRefSchema = strictObjectSchema({
@@ -99,7 +100,7 @@ const providerOptionFrame = (
   return undefined;
 };
 
-const providerOptionsSchema = jsonValueSchema.superRefine((root, context) => {
+const providerOptionsSchema = withClonableSuperRefine(jsonValueSchema, (root, context) => {
   const rootFrame = providerOptionFrame(root);
   if (rootFrame === undefined) return;
   const pending: ProviderOptionFrame[] = [rootFrame];

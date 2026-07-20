@@ -1,0 +1,7 @@
+{
+  "kind": "tool.stdoutDelta",
+  "payload": {
+    "chunk": "Fixture stdout",
+    "toolExecutionId": "tool-execution-1"
+  }
+}

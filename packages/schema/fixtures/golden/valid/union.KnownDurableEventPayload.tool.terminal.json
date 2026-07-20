@@ -1,0 +1,19 @@
+{
+  "kind": "tool.terminal",
+  "payload": {
+    "artifacts": [],
+    "completedAt": "2026-07-17T10:00:00+08:00",
+    "createdAt": "2026-07-17T10:00:00+08:00",
+    "planGeneration": 1,
+    "policyRevision": 1,
+    "redactedSummary": {
+      "result": "fixture"
+    },
+    "runId": "run-1",
+    "state": "completed",
+    "threadId": "thread-1",
+    "toolExecutionId": "tool-execution-1",
+    "toolName": "fixture-tool",
+    "updatedAt": "2026-07-17T10:00:00+08:00"
+  }
+}
