@@ -31,6 +31,7 @@
 ### 任务 1：提取纯生成内核
 
 **文件：**
+
 - 创建：`packages/schema/scripts/create-contract-outputs.ts`
 - 修改：`packages/schema/scripts/generate.ts`
 - 创建：`packages/schema/test/create-contract-outputs.test.ts`
@@ -96,6 +97,7 @@ export const createContractOutputs = (): ContractOutputs => {
 ### 任务 2：实现严格 Bazel runner
 
 **文件：**
+
 - 创建：`packages/schema/scripts/bazel-runner.ts`
 - 创建：`packages/schema/test/bazel-runner.test.ts`
 
@@ -109,12 +111,14 @@ export const createContractOutputs = (): ContractOutputs => {
 
 ```ts
 expect(() => parseOutputArguments([])).toThrow(/missing output/u);
-expect(() => parseOutputArguments([
-  '--openapi=/tmp/shared',
-  '--events=/tmp/shared',
-  '--typescript=/tmp/contracts.ts',
-  '--swift=/tmp/contracts.swift',
-])).toThrow(/unique/u);
+expect(() =>
+  parseOutputArguments([
+    '--openapi=/tmp/shared',
+    '--events=/tmp/shared',
+    '--typescript=/tmp/contracts.ts',
+    '--swift=/tmp/contracts.swift',
+  ]),
+).toThrow(/unique/u);
 ```
 
 - [ ] **步骤 2：运行测试确认因 API 缺失而失败**
@@ -139,7 +143,8 @@ const OUTPUT_TO_CONTRACT = {
   openapi: 'generated/openapi.v2.json',
   events: 'generated/events.schema.json',
   typescript: 'generated/typescript/contracts.ts',
-  swift: 'swift-fixture/Sources/ColorfulCodeContracts/ColorfulCodeContracts.swift',
+  swift:
+    'swift-fixture/Sources/ColorfulCodeContracts/ColorfulCodeContracts.swift',
 } as const;
 ```
 
@@ -154,6 +159,7 @@ const OUTPUT_TO_CONTRACT = {
 ### 任务 3：固定 Bzlmod 工具链与 npm graph
 
 **文件：**
+
 - 修改：`MODULE.bazel`
 - 修改：`MODULE.bazel.lock`
 - 修改：`BUILD.bazel`
@@ -204,6 +210,7 @@ package 总共只有七个 target。
 ### 任务 4：建立四输出 Bazel target 与 drift test
 
 **文件：**
+
 - 创建：`packages/schema/BUILD.bazel`
 - 创建：`packages/schema/scripts/check-bazel-outputs.ts`
 - 创建：`packages/schema/tsconfig.bazel.json`
@@ -259,6 +266,7 @@ bazel test //packages/schema:contract_codegen_check
 ### 任务 5：缓存、hermeticity 与 CI Gate
 
 **文件：**
+
 - 修改：`.github/workflows/ci.yml`
 - 修改：`bazel/README.md`
 - 测试：`packages/schema/BUILD.bazel`

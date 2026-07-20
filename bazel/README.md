@@ -27,17 +27,17 @@ Schema codegen 目标不使用宿主 Node.js、pnpm、Bun 或 `node_modules`。`
 
 ## 目标矩阵
 
-| Bazel 目标           | 对应任务                                                      | 说明                         |
-| -------------------- | ------------------------------------------------------------- | ---------------------------- |
-| `//:lint`            | `pnpm turbo run lint '--filter=!@colorful-code/desktop'`      | 检查非桌面端 workspace       |
-| `//:typecheck`       | `pnpm turbo run typecheck '--filter=!@colorful-code/desktop'` | 检查非桌面端 TypeScript 类型 |
-| `//:build`           | `pnpm turbo run build '--filter=!@colorful-code/desktop'`     | 构建非桌面端 workspace       |
-| `//:test`            | `pnpm run test`                                               | 运行非桌面端测试             |
-| `//:desktop-sidecar` | `pnpm --filter @colorful-code/desktop build:server-sidecar`   | 构建桌面端 Server sidecar    |
-| `//:desktop-check`   | `pnpm --filter @colorful-code/desktop lint`                   | 检查 Rust crate              |
-| `//:desktop-test`    | `pnpm --filter @colorful-code/desktop test`                   | 测试 Rust crate              |
-| `//packages/schema:contract_codegen` | 原生 Bazel schema codegen | 生成 4 个声明输出 |
-| `//packages/schema:contract_codegen_check` | 逐字节 fixture drift check | 检查 4 个已提交产物 |
+| Bazel 目标                                 | 对应任务                                                      | 说明                         |
+| ------------------------------------------ | ------------------------------------------------------------- | ---------------------------- |
+| `//:lint`                                  | `pnpm turbo run lint '--filter=!@colorful-code/desktop'`      | 检查非桌面端 workspace       |
+| `//:typecheck`                             | `pnpm turbo run typecheck '--filter=!@colorful-code/desktop'` | 检查非桌面端 TypeScript 类型 |
+| `//:build`                                 | `pnpm turbo run build '--filter=!@colorful-code/desktop'`     | 构建非桌面端 workspace       |
+| `//:test`                                  | `pnpm run test`                                               | 运行非桌面端测试             |
+| `//:desktop-sidecar`                       | `pnpm --filter @colorful-code/desktop build:server-sidecar`   | 构建桌面端 Server sidecar    |
+| `//:desktop-check`                         | `pnpm --filter @colorful-code/desktop lint`                   | 检查 Rust crate              |
+| `//:desktop-test`                          | `pnpm --filter @colorful-code/desktop test`                   | 测试 Rust crate              |
+| `//packages/schema:contract_codegen`       | 原生 Bazel schema codegen                                     | 生成 4 个声明输出            |
+| `//packages/schema:contract_codegen_check` | 逐字节 fixture drift check                                    | 检查 4 个已提交产物          |
 
 例如：
 

@@ -194,7 +194,8 @@ const auditPureModuleGraph = (entryPath: string): void => {
         ts.isIdentifier(node.expression) &&
         ((node.expression.text === 'Date' && node.name.text === 'now') ||
           (node.expression.text === 'Math' && node.name.text === 'random') ||
-          (node.expression.text === 'performance' && node.name.text === 'now') ||
+          (node.expression.text === 'performance' &&
+            node.name.text === 'now') ||
           (node.expression.text === 'crypto' &&
             (node.name.text === 'getRandomValues' ||
               node.name.text === 'randomUUID')))
@@ -259,7 +260,9 @@ describe('createContractOutputs', () => {
   test('emits parseable JSON and preserves generated source headers', () => {
     const outputs = createContractOutputs();
 
-    expect(() => JSON.parse(outputs['generated/openapi.v2.json'])).not.toThrow();
+    expect(() =>
+      JSON.parse(outputs['generated/openapi.v2.json']),
+    ).not.toThrow();
     expect(() =>
       JSON.parse(outputs['generated/events.schema.json']),
     ).not.toThrow();
