@@ -20,7 +20,6 @@
     "src/**/*.ts",
     "scripts/create-contract-outputs.ts",
     "scripts/bazel-runner.ts",
-    "scripts/check-bazel-outputs.ts",
     "scripts/lib/**/*.ts"
   ]
 }

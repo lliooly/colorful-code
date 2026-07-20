@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
+  mkdirSync,
   mkdtempSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -29,11 +31,13 @@ const makeFixture = () => {
     typescript: join(root, 'contracts.ts'),
     swift: join(root, 'ColorfulCodeContracts.swift'),
   } as const;
+  const fixtureRoot = join(root, 'fixtures');
+  mkdirSync(fixtureRoot);
   const fixtures = {
-    openapi: join(root, 'fixture-openapi.v2.json'),
-    events: join(root, 'fixture-events.schema.json'),
-    typescript: join(root, 'fixture-contracts.ts'),
-    swift: join(root, 'fixture-ColorfulCodeContracts.swift'),
+    openapi: join(fixtureRoot, 'openapi.v2.json'),
+    events: join(fixtureRoot, 'events.schema.json'),
+    typescript: join(fixtureRoot, 'contracts.ts'),
+    swift: join(fixtureRoot, 'ColorfulCodeContracts.swift'),
   } as const;
   for (const [name, path] of Object.entries(outputs))
     writeFileSync(path, `${name}\n`);
@@ -81,5 +85,25 @@ describe('checkBazelOutputs', () => {
         fixtures,
       ),
     ).toEqual('output count must be exactly four');
+  });
+
+  test('rejects a symlink fixture that aliases an output', () => {
+    const { outputs, fixtures } = makeFixture();
+    rmSync(fixtures.events);
+    symlinkSync(outputs.events, fixtures.events);
+    expect(checkBazelOutputs(outputs, fixtures)).toEqual({
+      ok: false,
+      diagnostic: 'output and fixture paths must be distinct',
+    });
+  });
+
+  test('rejects output and fixture paths that alias the same file', () => {
+    const { outputs, fixtures } = makeFixture();
+    expect(
+      checkBazelOutputs(outputs, { ...fixtures, swift: outputs.swift }),
+    ).toEqual({
+      ok: false,
+      diagnostic: 'output and fixture paths must be distinct',
+    });
   });
 });

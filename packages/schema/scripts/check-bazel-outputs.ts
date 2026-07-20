@@ -1,5 +1,13 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { basename } from 'node:path';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  type Stats,
+} from 'node:fs';
+import { basename, resolve } from 'node:path';
 
 const OUTPUT_NAMES = ['openapi', 'events', 'typescript', 'swift'] as const;
 type OutputName = (typeof OUTPUT_NAMES)[number];
@@ -32,11 +40,77 @@ const validateOutputSet = (
     if (!(name in outputs) || !(name in fixtures)) {
       return 'output set has unexpected logical names';
     }
-    if (basename(outputs[name]!) !== expectedBasename[name]) {
+    if (
+      basename(outputs[name]!) !== expectedBasename[name] ||
+      basename(fixtures[name]!) !== expectedBasename[name]
+    ) {
       return 'output set has unexpected relative path';
     }
   }
+  const allPaths = OUTPUT_NAMES.reduce<string[]>(
+    (paths, name) => paths.concat(outputs[name]!, fixtures[name]!),
+    [],
+  );
+  if (new Set(allPaths.map((path) => resolve(path))).size !== allPaths.length) {
+    return 'output and fixture paths must be distinct';
+  }
   return undefined;
+};
+
+const readRegularFile = (
+  path: string,
+):
+  | { kind: 'ok'; bytes: Buffer; dev: number; ino: number }
+  | { kind: 'missing' | 'unreadable' } => {
+  try {
+    realpathSync(path);
+  } catch (error) {
+    return {
+      kind:
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        error.code === 'ENOENT'
+          ? 'missing'
+          : 'unreadable',
+    };
+  }
+  let descriptor: number;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY);
+  } catch (error) {
+    return {
+      kind:
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        error.code === 'ENOENT'
+          ? 'missing'
+          : 'unreadable',
+    };
+  }
+  let result:
+    | { kind: 'ok'; bytes: Buffer; dev: number; ino: number }
+    | { kind: 'unreadable' };
+  try {
+    const stats: Stats = fstatSync(descriptor);
+    result = !stats.isFile()
+      ? { kind: 'unreadable' }
+      : {
+          kind: 'ok',
+          bytes: readFileSync(descriptor),
+          dev: stats.dev,
+          ino: stats.ino,
+        };
+  } catch {
+    result = { kind: 'unreadable' };
+  }
+  try {
+    closeSync(descriptor);
+  } catch {
+    return { kind: 'unreadable' };
+  }
+  return result;
 };
 
 export type BazelOutputCheckResult =
@@ -53,30 +127,42 @@ export const checkBazelOutputs = (
   for (const name of OUTPUT_NAMES) {
     const output = outputs[name];
     const fixture = fixtures[name];
-    if (!existsSync(output)) {
+    const outputFile = readRegularFile(output);
+    if (outputFile.kind === 'missing') {
       return {
         ok: false,
         diagnostic: outputDiagnostic(name, output, 'missing output'),
       };
     }
-    if (!existsSync(fixture)) {
-      return {
-        ok: false,
-        diagnostic: `${name}: missing fixture ${basename(fixture)}`,
-      };
-    }
-    let outputBytes: Buffer;
-    let fixtureBytes: Buffer;
-    try {
-      outputBytes = readFileSync(output);
-      fixtureBytes = readFileSync(fixture);
-    } catch {
+    if (outputFile.kind !== 'ok') {
       return {
         ok: false,
         diagnostic: `${name}: unable to read ${basename(output)}`,
       };
     }
-    if (!outputBytes.equals(fixtureBytes)) {
+    const fixtureFile = readRegularFile(fixture);
+    if (fixtureFile.kind === 'missing') {
+      return {
+        ok: false,
+        diagnostic: `${name}: missing fixture ${basename(fixture)}`,
+      };
+    }
+    if (fixtureFile.kind !== 'ok') {
+      return {
+        ok: false,
+        diagnostic: `${name}: unable to read ${basename(fixture)}`,
+      };
+    }
+    if (
+      outputFile.dev === fixtureFile.dev &&
+      outputFile.ino === fixtureFile.ino
+    ) {
+      return {
+        ok: false,
+        diagnostic: 'output and fixture paths must be distinct',
+      };
+    }
+    if (!outputFile.bytes.equals(fixtureFile.bytes)) {
       return {
         ok: false,
         diagnostic: outputDiagnostic(name, output, 'content differs'),

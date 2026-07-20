@@ -8,6 +8,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -348,30 +349,62 @@ describe('runBazelCodegen', () => {
     );
   });
 
-  test('fails closed if a target appears after full preflight validation', () => {
+  test('claims every target before the first write', () => {
     const root = makeDirectory();
     const paths = outputPaths(root);
     let writeCount = 0;
-    let caught: unknown;
+    let raceFailure: unknown;
 
-    try {
-      bazelRunnerTestSeams.runBazelCodegenWithWriter(
-        argumentsFor(paths),
-        (descriptor, contents) => {
-          writeFileSync(descriptor, contents);
-          writeCount += 1;
-          if (writeCount === 1) writeFileSync(paths.events, 'race-marker');
-        },
-      );
-    } catch (error) {
-      caught = error;
+    bazelRunnerTestSeams.runBazelCodegenWithWriter(
+      argumentsFor(paths),
+      (descriptor, contents) => {
+        writeFileSync(descriptor, contents);
+        writeCount += 1;
+        if (writeCount === 1) {
+          try {
+            writeFileSync(paths.events, 'race-marker', { flag: 'wx' });
+          } catch (error) {
+            raceFailure = error;
+          }
+        }
+      },
+    );
+
+    expect(raceFailure).toBeInstanceOf(Error);
+    expect((raceFailure as NodeJS.ErrnoException).code).toBe('EEXIST');
+    expect(readFileSync(paths.events, 'utf8')).toBe(
+      createContractOutputs()['generated/events.schema.json'],
+    );
+  });
+
+  test('keeps every output bound to the original parent after a symlink swap', () => {
+    const root = makeDirectory();
+    const parent = join(root, 'parent');
+    const movedParent = join(root, 'moved-parent');
+    const escape = join(root, 'escape');
+    mkdirSync(parent);
+    mkdirSync(escape);
+    const paths = outputPaths(parent);
+    let writeCount = 0;
+
+    bazelRunnerTestSeams.runBazelCodegenWithWriter(
+      argumentsFor(paths),
+      (descriptor, contents) => {
+        writeFileSync(descriptor, contents);
+        writeCount += 1;
+        if (writeCount === 1) {
+          renameSync(parent, movedParent);
+          symlinkSync(escape, parent);
+        }
+      },
+    );
+
+    for (const path of Object.values(outputPaths(movedParent))) {
+      expect(existsSync(path)).toBe(true);
     }
-
-    expect(caught).toBeInstanceOf(Error);
-    expect(String(caught)).not.toContain(root);
-    expect(String(caught)).not.toContain('events.schema.json');
-    expect(readFileSync(paths.events, 'utf8')).toBe('race-marker');
-    expect(existsSync(paths.openapi)).toBe(true);
+    for (const path of Object.values(outputPaths(escape))) {
+      expect(existsSync(path)).toBe(false);
+    }
   });
 
   test('CLI diagnostic formatter never exposes an unknown error', () => {

@@ -5,6 +5,9 @@ load("@npm//:defs.bzl", "npm_link_all_packages")
 
 npm_link_all_packages()
 
+# rules_ts 3.8.11 defaults to a separately fetched @npm_typescript repository.
+# Keep this private adapter lockstep with aspect_rules_js 3.2.3 and the pinned
+# pnpm-lock.yaml TypeScript store; changing either version must update this label.
 bin_binary_internal(
     name = "typescript_tsc",
     bin_path = "bin/tsc",
@@ -19,7 +22,6 @@ filegroup(
         "scripts/lib/**/*.ts",
     ]) + [
         "scripts/bazel-runner.ts",
-        "scripts/check-bazel-outputs.ts",
         "scripts/create-contract-outputs.ts",
         "tsconfig.bazel.json",
     ],

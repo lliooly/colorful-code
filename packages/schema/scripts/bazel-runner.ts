@@ -3,6 +3,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  statSync,
   writeFileSync,
   type Stats,
 } from 'node:fs';
@@ -143,7 +144,7 @@ const lstatIfPresent = (path: string): Stats | undefined => {
   }
 };
 
-const validateParentDirectories = (outputPath: string): void => {
+const validateParentDirectories = (outputPath: string): Stats => {
   const parent = dirname(outputPath);
   const root = parse(parent).root;
   const relativeSegments = parent.slice(root.length).split(sep).filter(Boolean);
@@ -157,6 +158,7 @@ const validateParentDirectories = (outputPath: string): void => {
   ) {
     throw diagnosticError('Bazel output parent is not a real directory');
   }
+  let verifiedStats = rootStats;
 
   for (const segment of relativeSegments) {
     current = join(current, segment);
@@ -181,30 +183,32 @@ const validateParentDirectories = (outputPath: string): void => {
     ) {
       throw diagnosticError('Bazel output parent is not a real directory');
     }
+    verifiedStats = currentStats;
+  }
+  return verifiedStats;
+};
+
+const validateBoundOutputTarget = (outputPath: string): void => {
+  if (lstatIfPresent(basename(outputPath)) !== undefined) {
+    throw diagnosticError('Bazel output target already exists');
   }
 };
 
-const validateOutputTarget = (outputPath: string): void => {
-  validateParentDirectories(outputPath);
-  if (lstatIfPresent(outputPath) !== undefined) {
-    throw diagnosticError('Bazel output target already exists');
+const outputParent = (paths: BazelOutputPaths): string => {
+  const parents = new Set(OUTPUT_NAMES.map((name) => dirname(paths[name])));
+  if (parents.size !== 1) {
+    throw diagnosticError('Bazel output paths must share a parent directory');
   }
+  return parents.values().next().value!;
 };
 
 type DescriptorWriter = (descriptor: number, contents: string) => void;
 
 const writeOutput = (
-  path: string,
+  descriptor: number,
   contents: string,
   writer: DescriptorWriter,
 ): void => {
-  let descriptor: number;
-  try {
-    descriptor = openSync(path, 'wx', 0o600);
-  } catch (error) {
-    throw diagnosticError('failed to write Bazel output', error);
-  }
-
   let writerFailed = false;
   let writerFailure: unknown;
   try {
@@ -231,21 +235,87 @@ const writeOutput = (
   }
 };
 
+const closeRemainingDescriptors = (
+  descriptors: Partial<Record<OutputName, number>>,
+): void => {
+  for (const name of OUTPUT_NAMES) {
+    const descriptor = descriptors[name];
+    if (descriptor === undefined) continue;
+    descriptors[name] = undefined;
+    try {
+      closeSync(descriptor);
+    } catch {
+      // A primary open/write failure remains the actionable diagnostic.
+    }
+  }
+};
+
+const openOutputDescriptors = (
+  paths: BazelOutputPaths,
+): Partial<Record<OutputName, number>> => {
+  const descriptors: Partial<Record<OutputName, number>> = {};
+  try {
+    for (const name of OUTPUT_NAMES) {
+      descriptors[name] = openSync(basename(paths[name]), 'wx', 0o600);
+    }
+    return descriptors;
+  } catch (error) {
+    closeRemainingDescriptors(descriptors);
+    throw diagnosticError('failed to write Bazel output', error);
+  }
+};
+
 const runBazelCodegenWithWriter = (
   args: readonly string[],
   writer: DescriptorWriter,
 ): void => {
   const paths = parseOutputArguments(args);
-  for (const name of OUTPUT_NAMES) validateOutputTarget(paths[name]);
+  const parent = outputParent(paths);
+  const expectedParent = validateParentDirectories(paths.openapi);
 
-  let outputs: ReturnType<typeof createContractOutputs>;
+  const originalCwd = process.cwd();
+  let descriptors: Partial<Record<OutputName, number>> = {};
+  let primaryFailure: unknown;
   try {
-    outputs = createContractOutputs();
+    process.chdir(parent);
+    const actualParent = statSync('.');
+    if (
+      actualParent.dev !== expectedParent.dev ||
+      actualParent.ino !== expectedParent.ino
+    ) {
+      throw diagnosticError('Bazel output parent changed during validation');
+    }
+    for (const name of OUTPUT_NAMES) validateBoundOutputTarget(paths[name]);
+
+    let outputs: ReturnType<typeof createContractOutputs>;
+    try {
+      outputs = createContractOutputs();
+    } catch (error) {
+      throw diagnosticError('contract generation failed', error);
+    }
+    descriptors = openOutputDescriptors(paths);
+    for (const name of OUTPUT_NAMES) {
+      const descriptor = descriptors[name]!;
+      descriptors[name] = undefined;
+      writeOutput(descriptor, outputs[generatedPathByOutput[name]], writer);
+    }
   } catch (error) {
-    throw diagnosticError('contract generation failed', error);
+    primaryFailure = error;
+  } finally {
+    closeRemainingDescriptors(descriptors);
+    try {
+      process.chdir(originalCwd);
+    } catch (error) {
+      if (primaryFailure === undefined) {
+        primaryFailure = diagnosticError(
+          'failed to restore Bazel runner directory',
+          error,
+        );
+      }
+    }
   }
-  for (const name of OUTPUT_NAMES) {
-    writeOutput(paths[name], outputs[generatedPathByOutput[name]], writer);
+  if (primaryFailure !== undefined) {
+    throw primaryFailure;
   }
 };
 
