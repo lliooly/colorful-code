@@ -210,6 +210,15 @@ describe('runBazelCodegen', () => {
     }
   });
 
+  test('creates missing real output parent directories without following symlinks', () => {
+    const root = makeDirectory();
+    const paths = outputPaths(join(root, 'nested', 'output'));
+    runBazelCodegen(argumentsFor(paths));
+    expect(readFileSync(paths.openapi, 'utf8')).toBe(
+      createContractOutputs()['generated/openapi.v2.json'],
+    );
+  });
+
   test('rejects a symlink parent and creates no output', () => {
     const root = makeDirectory();
     const realParent = join(root, 'real');

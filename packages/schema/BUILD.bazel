@@ -1,0 +1,142 @@
+load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_run_binary", "js_test")
+load("@aspect_rules_js//npm/private:npm_import.bzl", "bin_binary_internal")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+
+npm_link_all_packages()
+
+bin_binary_internal(
+    name = "typescript_tsc",
+    bin_path = "bin/tsc",
+    store_target = "//:.aspect_rules_js/node_modules/typescript@5.9.3",
+    store_target_dir = "//:node_modules/typescript/dir",
+)
+
+filegroup(
+    name = "contract_codegen_srcs",
+    srcs = glob([
+        "src/**/*.ts",
+        "scripts/lib/**/*.ts",
+    ]) + [
+        "scripts/bazel-runner.ts",
+        "scripts/check-bazel-outputs.ts",
+        "scripts/create-contract-outputs.ts",
+        "tsconfig.bazel.json",
+    ],
+)
+
+ts_project(
+    name = "codegen_lib",
+    srcs = [":contract_codegen_srcs"],
+    declaration = True,
+    declaration_map = True,
+    root_dir = ".",
+    source_map = True,
+    supports_workers = 0,
+    transpiler = "tsc",
+    tsc = ":typescript_tsc",
+    tsc_worker = ":typescript_tsc",
+    tsconfig = "tsconfig.bazel.json",
+    validate = False,
+    validator = ":typescript_tsc",
+    deps = [
+        ":node_modules/@types/node",
+        ":node_modules/zod",
+    ],
+)
+
+ts_project(
+    name = "codegen_runner_js",
+    srcs = ["scripts/bazel-runner.ts"],
+    declaration = False,
+    declaration_map = False,
+    out_dir = "bazel-entry",
+    root_dir = "scripts",
+    source_map = False,
+    supports_workers = 0,
+    transpiler = "tsc",
+    tsc = ":typescript_tsc",
+    tsc_worker = ":typescript_tsc",
+    tsconfig = "tsconfig.bazel-entry.json",
+    validate = False,
+    validator = ":typescript_tsc",
+    deps = [
+        ":codegen_lib",
+        ":node_modules/@types/node",
+    ],
+)
+
+ts_project(
+    name = "bazel_output_checker_js",
+    srcs = ["scripts/check-bazel-outputs.ts"],
+    declaration = False,
+    declaration_map = False,
+    out_dir = "bazel-check",
+    root_dir = "scripts",
+    source_map = False,
+    supports_workers = 0,
+    transpiler = "tsc",
+    tsc = ":typescript_tsc",
+    tsc_worker = ":typescript_tsc",
+    tsconfig = "tsconfig.bazel-entry.json",
+    validate = False,
+    validator = ":typescript_tsc",
+    deps = [":node_modules/@types/node"],
+)
+
+js_binary(
+    name = "codegen_runner",
+    copy_data_to_bin = False,
+    data = [
+        ":codegen_lib",
+        ":node_modules/zod",
+    ],
+    entry_point = ":codegen_runner_js",
+)
+
+js_run_binary(
+    name = "contract_codegen",
+    srcs = [":codegen_lib"],
+    outs = [
+        "ColorfulCodeContracts.swift",
+        "contracts.ts",
+        "events.schema.json",
+        "openapi.v2.json",
+    ],
+    allow_execroot_entry_point_with_no_copy_data_to_bin = True,
+    args = [
+        "--openapi=$(location :openapi.v2.json)",
+        "--events=$(location :events.schema.json)",
+        "--typescript=$(location :contracts.ts)",
+        "--swift=$(location :ColorfulCodeContracts.swift)",
+    ],
+    chdir = "../../..",
+    tool = ":codegen_runner",
+    use_execroot_entry_point = True,
+)
+
+js_test(
+    name = "contract_codegen_check",
+    args = [
+        "--openapi=$(location :openapi.v2.json)",
+        "--events=$(location :events.schema.json)",
+        "--typescript=$(location :contracts.ts)",
+        "--swift=$(location :ColorfulCodeContracts.swift)",
+        "--fixture-openapi=$(location generated/openapi.v2.json)",
+        "--fixture-events=$(location generated/events.schema.json)",
+        "--fixture-typescript=$(location generated/typescript/contracts.ts)",
+        "--fixture-swift=$(location swift-fixture/Sources/ColorfulCodeContracts/ColorfulCodeContracts.swift)",
+    ],
+    copy_data_to_bin = False,
+    data = [
+        "generated/events.schema.json",
+        "generated/openapi.v2.json",
+        "generated/typescript/contracts.ts",
+        "swift-fixture/Sources/ColorfulCodeContracts/ColorfulCodeContracts.swift",
+        ":ColorfulCodeContracts.swift",
+        ":contracts.ts",
+        ":events.schema.json",
+        ":openapi.v2.json",
+    ],
+    entry_point = ":bazel_output_checker_js",
+)

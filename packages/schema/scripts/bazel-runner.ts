@@ -1,6 +1,7 @@
 import {
   closeSync,
   lstatSync,
+  mkdirSync,
   openSync,
   writeFileSync,
   type Stats,
@@ -16,7 +17,7 @@ import {
 } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { createContractOutputs } from './create-contract-outputs.js';
+import { createContractOutputs } from '../scripts/create-contract-outputs.js';
 
 const OUTPUT_NAMES = ['openapi', 'events', 'typescript', 'swift'] as const;
 
@@ -160,7 +161,24 @@ const validateParentDirectories = (outputPath: string): void => {
   for (const segment of relativeSegments) {
     current = join(current, segment);
     const stats = lstatIfPresent(current);
-    if (stats === undefined || !stats.isDirectory() || stats.isSymbolicLink()) {
+    if (stats === undefined) {
+      try {
+        mkdirSync(current, 0o755);
+      } catch (error) {
+        if (lstatIfPresent(current) === undefined) {
+          throw diagnosticError(
+            'Bazel output parent is not a real directory',
+            error,
+          );
+        }
+      }
+    }
+    const currentStats = lstatIfPresent(current);
+    if (
+      currentStats === undefined ||
+      !currentStats.isDirectory() ||
+      currentStats.isSymbolicLink()
+    ) {
       throw diagnosticError('Bazel output parent is not a real directory');
     }
   }

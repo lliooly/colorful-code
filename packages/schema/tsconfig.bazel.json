@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "rootDir": "."
+  },
+  "include": [
+    "src/**/*.ts",
+    "scripts/create-contract-outputs.ts",
+    "scripts/bazel-runner.ts",
+    "scripts/check-bazel-outputs.ts",
+    "scripts/lib/**/*.ts"
+  ]
+}

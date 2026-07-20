@@ -24,6 +24,9 @@
   "dependencies": {
     "zod": "^4.4.3"
   },
+  "devDependencies": {
+    "@types/node": "^26.0.1"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "lint": "eslint src --max-warnings=0",
