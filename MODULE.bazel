@@ -8,6 +8,14 @@ bazel_dep(name = "aspect_rules_js", version = "3.2.3")
 bazel_dep(name = "aspect_rules_ts", version = "3.8.11")
 bazel_dep(name = "rules_nodejs", version = "6.7.3")
 
+# bin_binary_internal is an aspect_rules_js private adapter used by the
+# schema codegen rule. Keep its implementation version exact until a public
+# TypeScript binary API is available upstream.
+single_version_override(
+    module_name = "aspect_rules_js",
+    version = "3.2.3",
+)
+
 node = use_extension("@rules_nodejs//nodejs:extensions.bzl", "node")
 node.toolchain(node_version = "22.22.0")
 use_repo(node, "nodejs_toolchains")

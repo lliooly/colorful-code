@@ -194,6 +194,17 @@ for dependency in \
   'bazel_dep(name = "rules_nodejs", version = "6.7.3")'; do
   assert_file_contains "$dependency" "$WORKSPACE_ROOT/MODULE.bazel" "Bazel module dependencies"
 done
+assert_file_contains 'module_name = "aspect_rules_js"' "$WORKSPACE_ROOT/MODULE.bazel" "private rules_js adapter pin"
+assert_file_contains 'version = "3.2.3"' "$WORKSPACE_ROOT/MODULE.bazel" "private rules_js adapter pin"
+if ! awk '
+  /single_version_override\(/ { in_override = 1 }
+  in_override && /module_name = "aspect_rules_js"/ { has_module = 1 }
+  in_override && /version = "3.2.3"/ { has_version = 1 }
+  in_override && /^\)/ { exit !(has_module && has_version) }
+  END { exit !(has_module && has_version) }
+' "$WORKSPACE_ROOT/MODULE.bazel"; then
+  fail "private rules_js adapter pin: override is not exact"
+fi
 assert_file_contains 'node.toolchain(node_version = "22.22.0")' "$WORKSPACE_ROOT/MODULE.bazel" "hermetic Node toolchain"
 assert_file_contains 'register_toolchains("@nodejs_toolchains//:all")' "$WORKSPACE_ROOT/MODULE.bazel" "hermetic Node toolchain"
 assert_file_contains 'pnpm_lock = "//:pnpm-lock.yaml"' "$WORKSPACE_ROOT/MODULE.bazel" "npm lock translation"

@@ -25,6 +25,11 @@ pnpm install
 
 Schema codegen 目标不使用宿主 Node.js、pnpm、Bun 或 `node_modules`。`MODULE.bazel` 为它固定 Node.js 22.22.0，并由 `aspect_rules_js` 根据根目录的 `pnpm-lock.yaml` 解析 npm graph。`pnpm-lock.yaml` 是 Bazel JavaScript/TypeScript 依赖版本的唯一解析来源；不维护第二份 npm lockfile。
 
+Schema BUILD 目前通过 `aspect_rules_js` 的 `bin_binary_internal` 私有适配器绑定
+TypeScript 5.9.3。`MODULE.bazel` 使用 `single_version_override` 将
+`aspect_rules_js` 精确锁定为 3.2.3；升级该规则集时必须同步验证适配器并更新
+`MODULE.bazel.lock`。如果上游提供公共 TypeScript binary API，应优先迁移到公共接口。
+
 ## 目标矩阵
 
 | Bazel 目标                                 | 对应任务                                                      | 说明                         |
@@ -71,6 +76,10 @@ bazel test //packages/schema:contract_codegen_check
 ## 宿主 orchestration 边界
 
 这些目标是非 hermetic 的编排层。它们从 Bazel 启动后回到当前 workspace，读取已经安装的 `node_modules` 和宿主工具链，并把产物写入 Turborepo、Next.js、TypeScript 与 Cargo 现有的输出目录。因此，当前入口不承诺 Bazel remote cache 或 remote execution。
+
+这七个根目标的封闭边界是有意的：它们只是统一的宿主 workspace 入口，不负责封装
+pnpm、Bun、Turbo、Cargo 或已安装依赖。缺少 `pnpm` 或 workspace 依赖时，入口会明确失败；
+需要 hermetic、可缓存的 schema 生成请使用 `//packages/schema:contract_codegen`。
 
 `rules_shell@0.8.0` 用于声明这些 Shell 入口；`MODULE.bazel.lock` 会随仓库提交，以固定 Bzlmod 解析结果。
 

@@ -285,6 +285,7 @@ const runBazelCodegenWithWriter = (
     ) {
       throw diagnosticError('Bazel output parent changed during validation');
     }
+    // cwd is the inode-verified output parent after process.chdir(parent).
     for (const name of OUTPUT_NAMES) validateBoundOutputTarget(paths[name]);
 
     let outputs: ReturnType<typeof createContractOutputs>;

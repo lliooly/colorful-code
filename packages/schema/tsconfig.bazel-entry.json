@@ -15,5 +15,6 @@
     "declarationMap": false,
     "sourceMap": false,
     "rootDir": "."
-  }
+  },
+  "include": ["scripts/bazel-runner.ts", "scripts/check-bazel-outputs.ts"]
 }
