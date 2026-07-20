@@ -2,7 +2,7 @@
 
 本目录收录已经有实际代码、测试或合并提交支持的历史设计与实施计划。归档表示对应工作已经实现，不表示历史文档中的复选框都曾被逐项回填；完成状态以本索引列出的实现证据和当前测试为准。
 
-最后审计日期：2026-07-14。
+最后审计日期：2026-07-20。
 
 ## 1.x 产品与工程基础
 
@@ -48,6 +48,15 @@
 | ------------------ | -------------------------------------------------------- | ------------------------------------------------- | --------------------------------------------------------------------- |
 | Bazel 统一构建入口 | [设计](./build/2026-07-14-bazel-orchestration-design.md) | [计划](./build/2026-07-14-bazel-orchestration.md) | `82fd0cc7`，7 个统一任务入口、CI 接入及 `run-task.test.sh` 适配器测试 |
 
+## Phase 0B：Contract Foundation
+
+| 已完成工作                     | 设计                                                                                        | 计划                                                                                                                                                                                                                                                                   | 主要实现证据                                                                                |
+| ------------------------------ | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Schema Authoring 0B-1 至 0B-4  | [总体设计](../specs/2026-07-15-schema-authoring-foundation-design.md)                       | [0B-1](./phase-0b/2026-07-15-schema-authoring-foundation-0b1.md)、[0B-2](./phase-0b/2026-07-15-schema-authoring-foundation-0b2.md)、[0B-3](./phase-0b/2026-07-15-schema-authoring-foundation-0b3.md)、[0B-4](./phase-0b/2026-07-15-schema-authoring-foundation-0b4.md) | `86b5e3a` 至 `ba56bdf`，领域入口、公共词汇、资源投影与 HTTP registry 测试                   |
+| Schema Authoring 0B-5          | [Hardening 设计](./phase-0b/2026-07-17-schema-authoring-foundation-0b5-hardening-design.md) | [0B-5](./phase-0b/2026-07-15-schema-authoring-foundation-0b5.md)、[Hardening](./phase-0b/2026-07-17-schema-authoring-foundation-0b5-hardening.md)                                                                                                                      | `e609ef9` 至 `188f39f`，Ack、ApiError、terminal operation 与负向安全测试                    |
+| Schema Authoring 0B-6 至 0B-8  | [总体设计](../specs/2026-07-15-schema-authoring-foundation-design.md)                       | [0B-6](./phase-0b/2026-07-15-schema-authoring-foundation-0b6.md)、[0B-7](./phase-0b/2026-07-15-schema-authoring-foundation-0b7.md)、[0B-8](./phase-0b/2026-07-15-schema-authoring-foundation-0b8.md)                                                                   | `e76e448` 至 `a6e738c`，事件流、安全边界、四类确定性生成产物及原子恢复测试                  |
+| Schema Codegen Bazel Hardening | [设计](./phase-0b/2026-07-19-schema-codegen-bazel-hardening-design.md)                      | [计划](./phase-0b/2026-07-19-schema-codegen-bazel-hardening.md)                                                                                                                                                                                                        | `772e7b6` 至 `968c687`，固定 Node/npm graph、四输出 codegen、drift gate、缓存与竞态安全测试 |
+
 ## 下一步
 
-Phase 0B 从 Contract Enums、Schema Authoring Foundation 和 Generated Artifact Drift Checks 开始。当前入口见 [工程文档导航](../README.md) 和 [2.0 Implementation Roadmap](../plans/2026-07-10-colorful-code-2-implementation-roadmap.md)。
+Phase 0B 的 0B-1 至 0B-8 与 Generated Artifact Drift Checks 已完成，下一步实施 0B-9。当前入口见 [工程文档导航](../README.md) 和 [2.0 Implementation Roadmap](../plans/2026-07-10-colorful-code-2-implementation-roadmap.md)。

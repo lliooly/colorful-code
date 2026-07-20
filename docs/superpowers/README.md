@@ -9,7 +9,7 @@
 | 1.x 产品与工程基础            | 已完成 | Agent、工具运行时、前后端、插件、语音、历史与发布能力已经落地                                          |
 | Phase -1：安全冻结            | 已完成 | 1.x 安全修复、基线、备份与 2.0 边界已经验收                                                            |
 | Phase 0A：Persistence Kernel  | 已完成 | 锁、迁移、备份恢复、Provider、Transaction、Clock、SQLite 策略、测试工厂和 1.x Schema 基线已经通过 Gate |
-| Phase 0B：Contract Foundation | 下一步 | 建立 Contract Enums、Schema Authoring Foundation 和生成产物漂移检查                                    |
+| Phase 0B：Contract Foundation | 进行中 | 0B-1 至 0B-8 与 Bazel 生成产物漂移检查已完成；下一步实施 0B-9                                          |
 | Phase 0C–0E                   | 未开始 | Recovery Primitives、Thread Actor/EventMux、Ownership Foundation                                       |
 
 完整的完成项、历史设计和实现证据见 [已完成工作归档](./completed/README.md)。
@@ -17,6 +17,8 @@
 ## 活跃计划
 
 - [Colorful Code 2.0 Implementation Roadmap](./plans/2026-07-10-colorful-code-2-implementation-roadmap.md)
+- [Schema Authoring Foundation 0B-9](./plans/2026-07-15-schema-authoring-foundation-0b9.md)
+- [Schema Authoring Foundation 0B-10](./plans/2026-07-15-schema-authoring-foundation-0b10.md)
 
 ## 活跃规范
 
