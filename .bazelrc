@@ -1,3 +1,4 @@
 build --enable_bzlmod
 common --announce_rc
+common --repo_env=ASPECT_TOOLS_TELEMETRY=-all
 run --action_env=NEXT_PUBLIC_API_BASE_URL

@@ -76,6 +76,13 @@ assert_active_lines_equal() {
   [[ "$actual" == "$expected" ]] || fail "$context: unexpected active configuration in $file"
 }
 
+assert_file_contains() {
+  local expected="$1"
+  local file="$2"
+  local context="$3"
+  grep -Fq -- "$expected" "$file" || fail "$context: missing [$expected] in $file"
+}
+
 run_adapter() {
   local stdout_file="$TMP_DIR/stdout"
   local stderr_file="$TMP_DIR/stderr"
@@ -169,16 +176,39 @@ assert_stderr_equals "" "$(cat "$TMP_DIR/stderr")" "pnpm exit status"
 pass_count=$((pass_count + 1))
 printf 'ok - pnpm exit status propagated\n'
 
-# Full-text checks are intentional: extra targets or active configuration must fail.
-expected_root_build=$'load("@rules_shell//shell:sh_binary.bzl", "sh_binary")\n\nsh_binary(\n    name = "build",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["build"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "lint",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["lint"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "typecheck",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["typecheck"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "test",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["test"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "desktop-sidecar",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["desktop-sidecar"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "desktop-check",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["desktop-check"],\n    visibility = ["//visibility:public"],\n)\n\nsh_binary(\n    name = "desktop-test",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["desktop-test"],\n    visibility = ["//visibility:public"],\n)'
-assert_file_content_equals "$expected_root_build" "$WORKSPACE_ROOT/BUILD.bazel" "root orchestration targets"
+# Launcher blocks remain a precise public contract; supporting npm targets are checked separately.
+expected_launcher_blocks=$'sh_binary(\n    name = "build",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["build"],\n    visibility = ["//visibility:public"],\n)\nsh_binary(\n    name = "lint",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["lint"],\n    visibility = ["//visibility:public"],\n)\nsh_binary(\n    name = "typecheck",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["typecheck"],\n    visibility = ["//visibility:public"],\n)\nsh_binary(\n    name = "test",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["test"],\n    visibility = ["//visibility:public"],\n)\nsh_binary(\n    name = "desktop-sidecar",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["desktop-sidecar"],\n    visibility = ["//visibility:public"],\n)\nsh_binary(\n    name = "desktop-check",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["desktop-check"],\n    visibility = ["//visibility:public"],\n)\nsh_binary(\n    name = "desktop-test",\n    srcs = ["//bazel:run-task.sh"],\n    args = ["desktop-test"],\n    visibility = ["//visibility:public"],\n)'
+actual_launcher_blocks="$(awk '/^sh_binary\($/{in_rule=1} in_rule{if (NF) print} in_rule && /^\)$/{in_rule=0}' "$WORKSPACE_ROOT/BUILD.bazel")"
+[[ "$actual_launcher_blocks" == "$expected_launcher_blocks" ]] || fail "root orchestration targets: launcher declarations changed"
+
+expected_root_support=$'load("@npm//:defs.bzl", "npm_link_all_packages")\nload("@rules_shell//shell:sh_binary.bzl", "sh_binary")\nexports_files([\n    ".npmrc",\n    "package.json",\n    "pnpm-lock.yaml",\n    "pnpm-workspace.yaml",\n])\nnpm_link_all_packages(name = "node_modules")'
+actual_root_support="$(awk '/^sh_binary\($/{in_rule=1} !in_rule && NF{print} in_rule && /^\)$/{in_rule=0}' "$WORKSPACE_ROOT/BUILD.bazel")"
+[[ "$actual_root_support" == "$expected_root_support" ]] || fail "root support targets: unexpected declarations"
 pass_count=$((pass_count + 1))
 printf 'ok - exactly seven orchestration targets share the adapter\n'
 
-expected_module=$'module(\n    name = "colorful_code",\n    version = "0.0.0",\n)\n\nbazel_dep(name = "rules_shell", version = "0.8.0")'
-assert_file_content_equals "$expected_module" "$WORKSPACE_ROOT/MODULE.bazel" "Bazel module dependencies"
+for dependency in \
+  'bazel_dep(name = "rules_shell", version = "0.8.0")' \
+  'bazel_dep(name = "aspect_rules_js", version = "3.2.3")' \
+  'bazel_dep(name = "aspect_rules_ts", version = "3.8.11")' \
+  'bazel_dep(name = "rules_nodejs", version = "6.7.3")'; do
+  assert_file_contains "$dependency" "$WORKSPACE_ROOT/MODULE.bazel" "Bazel module dependencies"
+done
+assert_file_contains 'node.toolchain(node_version = "22.22.0")' "$WORKSPACE_ROOT/MODULE.bazel" "hermetic Node toolchain"
+assert_file_contains 'register_toolchains("@nodejs_toolchains//:all")' "$WORKSPACE_ROOT/MODULE.bazel" "hermetic Node toolchain"
+assert_file_contains 'pnpm_lock = "//:pnpm-lock.yaml"' "$WORKSPACE_ROOT/MODULE.bazel" "npm lock translation"
+assert_file_contains 'data = ["//:pnpm-workspace.yaml"]' "$WORKSPACE_ROOT/MODULE.bazel" "npm workspace translation"
+assert_file_contains 'npmrc = "//:.npmrc"' "$WORKSPACE_ROOT/MODULE.bazel" "npm registry configuration"
+assert_file_contains 'bins = {"typescript": ["tsc=bin/tsc"]}' "$WORKSPACE_ROOT/MODULE.bazel" "TypeScript npm binary"
+if grep -Eq 'npm_typescript|aspect_rules_ts.*extensions|ext\.deps' "$WORKSPACE_ROOT/MODULE.bazel"; then
+  fail "Bazel module declares a second TypeScript/npm resolution source"
+fi
 pass_count=$((pass_count + 1))
-printf 'ok - Bazel module loads the pinned shell rules\n'
+printf 'ok - Bazel module pins JS/TS/Node dependencies and one npm resolution source\n'
+
+assert_file_content_equals 'ignore_directories(["**/node_modules"])' "$WORKSPACE_ROOT/REPO.bazel" "Bazel repository crawl exclusions"
+pass_count=$((pass_count + 1))
+printf 'ok - Bazel ignores every node_modules directory during repository crawl\n'
 
 [[ -f "$WORKSPACE_ROOT/MODULE.bazel.lock" ]] || fail "Bazel module lockfile is missing"
 pass_count=$((pass_count + 1))
@@ -194,16 +224,23 @@ fi
 if [[ -n "$bazel_command" ]]; then
   lock_checksum_before="$(cksum "$WORKSPACE_ROOT/MODULE.bazel.lock")"
   expected_query=$'sh_binary rule //:build\nsh_binary rule //:desktop-check\nsh_binary rule //:desktop-sidecar\nsh_binary rule //:desktop-test\nsh_binary rule //:lint\nsh_binary rule //:test\nsh_binary rule //:typecheck'
-  actual_query="$(cd "$WORKSPACE_ROOT" && "$bazel_command" --ignore_all_rc_files query --lockfile_mode=error --order_output=full --output=label_kind '//:*' | LC_ALL=C sort)"
-  actual_rules="$(printf '%s\n' "$actual_query" | awk '$2 == "rule"')"
-  [[ "$actual_rules" == "$expected_query" ]] || fail "Bazel query: unexpected root target graph"
+  actual_query="$(cd "$WORKSPACE_ROOT" && "$bazel_command" --ignore_all_rc_files query --repo_env=ASPECT_TOOLS_TELEMETRY=-all --lockfile_mode=error --order_output=full --output=label_kind '//:*' | LC_ALL=C sort)"
+  actual_launchers="$(printf '%s\n' "$actual_query" | awk '$1 == "sh_binary" && $2 == "rule"')"
+  [[ "$actual_launchers" == "$expected_query" ]] || fail "Bazel query: unexpected launcher target graph"
+  if ! printf '%s\n' "$actual_query" | awk '$NF == "//:node_modules" { found = 1 } END { exit found ? 0 : 1 }'; then
+    fail "Bazel query: npm support target is missing"
+  fi
+  workspace_query="$(cd "$WORKSPACE_ROOT" && "$bazel_command" --ignore_all_rc_files query --repo_env=ASPECT_TOOLS_TELEMETRY=-all --lockfile_mode=error --output=label '//...' | LC_ALL=C sort)"
+  if printf '%s\n' "$workspace_query" | awk '$0 == "//node_modules" || index($0, "//node_modules/") == 1 || index($0, "//node_modules:") == 1 { found = 1 } END { exit found ? 0 : 1 }'; then
+    fail "Bazel query crawled a node_modules directory"
+  fi
   pass_count=$((pass_count + 1))
   printf 'ok - Bazel query reports seven sh_binary targets\n'
 
   (
     cd "$WORKSPACE_ROOT"
     NEXT_PUBLIC_API_BASE_URL="$API_BASE_URL_SENTINEL" \
-      "$bazel_command" --ignore_all_rc_files build --lockfile_mode=error \
+      "$bazel_command" --ignore_all_rc_files build --repo_env=ASPECT_TOOLS_TELEMETRY=-all --lockfile_mode=error \
       //:build //:lint //:typecheck //:test \
       //:desktop-sidecar //:desktop-check //:desktop-test
   )
@@ -218,7 +255,7 @@ if [[ -n "$bazel_command" ]]; then
     cd "$WORKSPACE_ROOT"
     PNPM_LOG="$PNPM_LOG" PWD_LOG="$PWD_LOG" ENV_LOG="$ENV_LOG" \
       NEXT_PUBLIC_API_BASE_URL="$API_BASE_URL_SENTINEL" PNPM_EXIT=0 PATH="$BIN_DIR:$PATH" \
-      "$bazel_command" --ignore_all_rc_files run --lockfile_mode=error //:build
+      "$bazel_command" --ignore_all_rc_files run --repo_env=ASPECT_TOOLS_TELEMETRY=-all --lockfile_mode=error //:build
   ) >"$TMP_DIR/bazel-run-stdout" 2>"$TMP_DIR/bazel-run-stderr"
   status=$?
   set -e
@@ -252,7 +289,7 @@ assert_file_content_equals '9.1.0' "$WORKSPACE_ROOT/.bazelversion" "Bazel versio
 pass_count=$((pass_count + 1))
 printf 'ok - Bazel version is pinned\n'
 
-expected_bazelrc=$'build --enable_bzlmod\ncommon --announce_rc\nrun --action_env=NEXT_PUBLIC_API_BASE_URL'
+expected_bazelrc=$'build --enable_bzlmod\ncommon --announce_rc\ncommon --repo_env=ASPECT_TOOLS_TELEMETRY=-all\nrun --action_env=NEXT_PUBLIC_API_BASE_URL'
 assert_active_lines_equal "$expected_bazelrc" "$WORKSPACE_ROOT/.bazelrc" "Bazel rc"
 pass_count=$((pass_count + 1))
 printf 'ok - Bazel rc contains only required settings\n'

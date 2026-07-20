@@ -1,4 +1,14 @@
+load("@npm//:defs.bzl", "npm_link_all_packages")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+
+exports_files([
+    ".npmrc",
+    "package.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+])
+
+npm_link_all_packages(name = "node_modules")
 
 sh_binary(
     name = "build",
