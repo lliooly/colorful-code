@@ -1,114 +1,22 @@
-import {
-  lstatSync,
-  realpathSync,
-  readdirSync,
-  readFileSync,
-} from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { lstatSync, readdirSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { z } from 'zod';
 
-import { contractRegistry } from '../src/registry.js';
 import { parseThreadStreamFrame } from '../src/events.js';
 import { publishGeneratedOutputs } from './generate.js';
+export {
+  fixtureManifestEntrySchema,
+  fixtureManifestSchema,
+  resolveFixtureSchema,
+  validateManifestPaths,
+} from './lib/fixture-manifest.js';
+import {
+  fixtureManifestSchema,
+  resolveFixtureSchema,
+  validateManifestPaths,
+  type FixtureManifestEntry,
+} from './lib/fixture-manifest.js';
 import { stableJson } from './lib/stable-json.js';
-
-const expectedOutcomeSchema = z.enum([
-  'known',
-  'unknownNonCritical',
-  'resetRequired',
-  'protocolError',
-]);
-
-export const fixtureManifestEntrySchema = z.strictObject({
-  id: z.string().trim().min(1),
-  schema: z.string().trim().min(1),
-  file: z.string().trim().min(1),
-  expect: z.enum(['accept', 'reject']),
-  expectedOutcome: expectedOutcomeSchema.optional(),
-});
-
-export const fixtureManifestSchema = z
-  .array(fixtureManifestEntrySchema)
-  .superRefine((entries, context) => {
-    for (const field of ['id', 'file'] as const) {
-      const seen = new Set<string>();
-      for (const [index, entry] of entries.entries()) {
-        if (seen.has(entry[field])) {
-          context.addIssue({
-            code: 'custom',
-            message: `duplicate fixture ${field}`,
-            path: [index, field],
-          });
-        }
-        seen.add(entry[field]);
-      }
-    }
-  });
-
-export type FixtureManifestEntry = z.infer<typeof fixtureManifestEntrySchema>;
-
-const invalidTarget = (): never => {
-  throw new TypeError('unknown fixture schema target');
-};
-
-export const resolveFixtureSchema = (target: string): z.ZodType => {
-  if (target.startsWith('schema:')) {
-    const name = target.slice('schema:'.length);
-    if (!Object.hasOwn(contractRegistry.schemas, name)) return invalidTarget();
-    const schema = contractRegistry.schemas[name];
-    return schema instanceof z.ZodType ? schema : invalidTarget();
-  }
-  const match = /^http:([^:]+):result$/.exec(target);
-  if (match !== null) {
-    const operationId = match[1]!;
-    if (!Object.hasOwn(contractRegistry.http, operationId)) {
-      return invalidTarget();
-    }
-    const resultSchema = contractRegistry.http[operationId]?.resultSchema;
-    return resultSchema instanceof z.ZodType ? resultSchema : invalidTarget();
-  }
-  return invalidTarget();
-};
-
-const isWithin = (root: string, candidate: string) => {
-  const path = relative(root, candidate);
-  return path === '' || (!path.startsWith(`..${sep}`) && path !== '..');
-};
-
-export const validateManifestPaths = (
-  input: readonly FixtureManifestEntry[],
-  goldenRoot: string,
-): void => {
-  const manifest = fixtureManifestSchema.parse(input);
-  const root = realpathSync(goldenRoot);
-  for (const entry of manifest) {
-    if (isAbsolute(entry.file) || entry.file.split(/[\\/]/u).includes('..')) {
-      throw new TypeError(`fixture path must stay within golden root: ${entry.id}`);
-    }
-    const destination = resolve(root, entry.file);
-    if (!isWithin(root, destination)) {
-      throw new TypeError(`fixture path escapes golden root: ${entry.id}`);
-    }
-    let cursor = dirname(destination);
-    while (isWithin(root, cursor) && cursor !== root) {
-      try {
-        if (lstatSync(cursor).isSymbolicLink()) {
-          throw new TypeError(`fixture path uses a symlink: ${entry.id}`);
-        }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      }
-      cursor = dirname(cursor);
-    }
-    try {
-      if (lstatSync(destination).isSymbolicLink()) {
-        throw new TypeError(`fixture path uses a symlink: ${entry.id}`);
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-  }
-};
 
 type AuthoredCase = FixtureManifestEntry & { readonly value: unknown };
 
@@ -269,7 +177,7 @@ const createAuthoredCases = (): AuthoredCase[] => {
     schema: string,
     value: unknown,
     expect: 'accept' | 'reject' = 'accept',
-    expectedOutcome?: z.infer<typeof expectedOutcomeSchema>,
+    expectedOutcome?: FixtureManifestEntry['expectedOutcome'],
   ) => {
     let success: boolean;
     try {
@@ -285,7 +193,9 @@ const createAuthoredCases = (): AuthoredCase[] => {
     if (expectedOutcome !== undefined) {
       const outcome = parseThreadStreamFrame(value).outcome;
       if (outcome !== expectedOutcome) {
-        throw new TypeError(`fixture parser outcome validation failed for ${id}`);
+        throw new TypeError(
+          `fixture parser outcome validation failed for ${id}`,
+        );
       }
     }
     cases.push({
@@ -318,15 +228,25 @@ const createAuthoredCases = (): AuthoredCase[] => {
 
   for (const [kind, value] of [
     ['latestCommitted', { kind: 'latestCommitted' }],
-    ['contextBoundary', { kind: 'contextBoundary', contextBoundaryId: 'boundary-1' }],
+    [
+      'contextBoundary',
+      { kind: 'contextBoundary', contextBoundaryId: 'boundary-1' },
+    ],
     ['checkpoint', { kind: 'checkpoint', checkpointId: 'checkpoint-1' }],
-  ] as const) add(`union.ForkBoundary.${kind}`, 'schema:ForkBoundary', value);
+  ] as const)
+    add(`union.ForkBoundary.${kind}`, 'schema:ForkBoundary', value);
   for (const [kind, value] of [
     ['text', { kind: 'text', text: 'hello' }],
     ['structured', { kind: 'structured', value: { fixture: true } }],
-    ['artifactReferences', { kind: 'artifactReferences', artifactIds: ['artifact-1'] }],
-  ] as const) add(`union.InputContent.${kind}`, 'schema:InputContent', value);
-  add('union.NetworkPolicy.denyAll', 'schema:NetworkPolicy', { mode: 'denyAll' });
+    [
+      'artifactReferences',
+      { kind: 'artifactReferences', artifactIds: ['artifact-1'] },
+    ],
+  ] as const)
+    add(`union.InputContent.${kind}`, 'schema:InputContent', value);
+  add('union.NetworkPolicy.denyAll', 'schema:NetworkPolicy', {
+    mode: 'denyAll',
+  });
   add('union.NetworkPolicy.allowListed', 'schema:NetworkPolicy', {
     mode: 'allowListed',
     allowedHosts: ['example.com'],
@@ -456,9 +376,27 @@ const createAuthoredCases = (): AuthoredCase[] => {
     });
   }
 
-  add('unknown.durable.non-critical', 'schema:ThreadStreamFrame', unknownDurable, 'accept', 'unknownNonCritical');
-  add('unknown.transient.non-critical', 'schema:ThreadStreamFrame', unknownTransient, 'accept', 'unknownNonCritical');
-  add('unknown.critical', 'schema:ThreadStreamFrame', { ...unknownDurable, eventId: 'event-critical', critical: true }, 'accept', 'resetRequired');
+  add(
+    'unknown.durable.non-critical',
+    'schema:ThreadStreamFrame',
+    unknownDurable,
+    'accept',
+    'unknownNonCritical',
+  );
+  add(
+    'unknown.transient.non-critical',
+    'schema:ThreadStreamFrame',
+    unknownTransient,
+    'accept',
+    'unknownNonCritical',
+  );
+  add(
+    'unknown.critical',
+    'schema:ThreadStreamFrame',
+    { ...unknownDurable, eventId: 'event-critical', critical: true },
+    'accept',
+    'resetRequired',
+  );
   add(
     'union.UnknownEventEnvelope.durable',
     'schema:UnknownEventEnvelope',
@@ -635,44 +573,56 @@ const createAuthoredCases = (): AuthoredCase[] => {
     snapshot,
     durableCursor: '41',
   } as const;
-  add('snapshot-reset.without-runtime', 'schema:SnapshotReset', durableReset, 'accept', 'known');
-  add('snapshot-reset.with-runtime', 'schema:SnapshotReset', {
-    ...durableReset,
-    reason: 'cursorExpired',
-    snapshot: {
-      ...snapshot,
+  add(
+    'snapshot-reset.without-runtime',
+    'schema:SnapshotReset',
+    durableReset,
+    'accept',
+    'known',
+  );
+  add(
+    'snapshot-reset.with-runtime',
+    'schema:SnapshotReset',
+    {
+      ...durableReset,
+      reason: 'cursorExpired',
+      snapshot: {
+        ...snapshot,
+        incarnationId: 'incarnation-1',
+        streamCursor: '43',
+        streamState: {
+          assistantBuffers: [
+            {
+              transcriptItemId: 'transcript-1',
+              runId: 'run-1',
+              incarnationId: 'incarnation-1',
+              lastStreamSequence: '42',
+              text: 'Fixture partial text',
+              status: 'streaming',
+              terminalAt: null,
+              interruptionReason: null,
+            },
+          ],
+          toolBuffers: [
+            {
+              toolExecutionId: 'tool-execution-1',
+              runId: 'run-1',
+              incarnationId: 'incarnation-1',
+              lastStreamSequence: '43',
+              content: { stdout: 'Fixture partial output' },
+              status: 'streaming',
+              terminalAt: null,
+              interruptionReason: null,
+            },
+          ],
+        },
+      },
       incarnationId: 'incarnation-1',
       streamCursor: '43',
-      streamState: {
-        assistantBuffers: [
-          {
-            transcriptItemId: 'transcript-1',
-            runId: 'run-1',
-            incarnationId: 'incarnation-1',
-            lastStreamSequence: '42',
-            text: 'Fixture partial text',
-            status: 'streaming',
-            terminalAt: null,
-            interruptionReason: null,
-          },
-        ],
-        toolBuffers: [
-          {
-            toolExecutionId: 'tool-execution-1',
-            runId: 'run-1',
-            incarnationId: 'incarnation-1',
-            lastStreamSequence: '43',
-            content: { stdout: 'Fixture partial output' },
-            status: 'streaming',
-            terminalAt: null,
-            interruptionReason: null,
-          },
-        ],
-      },
     },
-    incarnationId: 'incarnation-1',
-    streamCursor: '43',
-  }, 'accept', 'known');
+    'accept',
+    'known',
+  );
   add(
     'union.ParseThreadStreamFrameResult.known',
     'schema:ParseThreadStreamFrameResult',
@@ -712,26 +662,42 @@ const createAuthoredCases = (): AuthoredCase[] => {
     createdAt: at,
   });
 
-  for (const code of (resolveFixtureSchema('schema:ErrorCode') as z.ZodEnum).options) {
+  for (const code of (resolveFixtureSchema('schema:ErrorCode') as z.ZodEnum)
+    .options) {
     add(`api-error.${code}`, 'schema:ApiError', {
       error: { code, message: `Fixture ${code}`, retryable: false },
     });
   }
-  add('reject.nested-secret', 'schema:ConfigPatch', {
-    providerOptions: { nested: [{ secret: 'not-a-secret-value' }] },
-  }, 'reject');
-  add('reject.unknown-top-level', 'schema:HealthResponse', {
-    status: 'ok',
-    unknown: true,
-  }, 'reject');
-  add('reject.unknown-nested', 'schema:ApiError', {
-    error: {
-      code: 'VALIDATION_ERROR',
-      message: 'Fixture validation failure',
-      retryable: false,
+  add(
+    'reject.nested-secret',
+    'schema:ConfigPatch',
+    {
+      providerOptions: { nested: [{ secret: 'not-a-secret-value' }] },
+    },
+    'reject',
+  );
+  add(
+    'reject.unknown-top-level',
+    'schema:HealthResponse',
+    {
+      status: 'ok',
       unknown: true,
     },
-  }, 'reject');
+    'reject',
+  );
+  add(
+    'reject.unknown-nested',
+    'schema:ApiError',
+    {
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Fixture validation failure',
+        retryable: false,
+        unknown: true,
+      },
+    },
+    'reject',
+  );
   return cases;
 };
 
@@ -833,10 +799,7 @@ export const generateFixtureCatalog = async (
   ]);
   await publishGeneratedOutputs(destination, outputs, {
     preflightUnderLock: () =>
-      assertNoOrphanedCatalogFiles(
-        destination,
-        new Set(Object.keys(outputs)),
-      ),
+      assertNoOrphanedCatalogFiles(destination, new Set(Object.keys(outputs))),
   });
 };
 

@@ -32,6 +32,7 @@
     "lint": "eslint src --max-warnings=0",
     "schema:generate": "bun scripts/generate.ts",
     "test": "bun test test",
+    "test:conformance": "bun test test/conformance.test.ts",
     "typecheck": "tsc -p tsconfig.test.json",
     "clean": "rm -rf dist"
   }
