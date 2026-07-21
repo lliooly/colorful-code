@@ -46,6 +46,21 @@ const invalidJsonLines = (): never => {
   throw new TypeError('invalid conformance JSONL');
 };
 
+export const completeConformanceOutput = (
+  succeeded: boolean,
+  cleanup: readonly (() => void)[],
+): void => {
+  let failed = !succeeded;
+  for (const action of cleanup) {
+    try {
+      action();
+    } catch {
+      failed = true;
+    }
+  }
+  if (failed) throw new TypeError('invalid conformance output');
+};
+
 export const compareConformanceIds = (left: string, right: string): number => {
   const leftBytes = Buffer.from(left, 'utf8');
   const rightBytes = Buffer.from(right, 'utf8');
@@ -283,6 +298,7 @@ export const writeConformanceJsonLines = (
   let path: string | undefined;
   let descriptor: number | undefined;
   let succeeded = false;
+  let result: string | undefined;
   try {
     root = openPrivateOutputRoot(outputRoot);
     hooks.afterRootOpen?.();
@@ -338,24 +354,25 @@ export const writeConformanceJsonLines = (
     }
     assertOutputRootCurrent(root);
     succeeded = true;
-    return path;
+    result = path;
   } catch {
-    throw new TypeError('invalid conformance output');
-  } finally {
-    if (!succeeded && descriptor !== undefined) {
-      try {
-        ftruncateSync(descriptor, 0);
-        fsyncSync(descriptor);
-      } catch {
-        // The path cleanup below still requires the originally opened inode.
-      }
-    }
-    if (descriptor !== undefined) closeSync(descriptor);
-    if (!succeeded && descriptor !== undefined) {
-      hooks.beforeFailedOutputUnlink?.();
-    }
-    if (root !== undefined) closeSync(root.descriptor);
+    succeeded = false;
   }
+  const cleanup: Array<() => void> = [];
+  if (!succeeded && descriptor !== undefined) {
+    cleanup.push(() => {
+      ftruncateSync(descriptor, 0);
+      fsyncSync(descriptor);
+    });
+  }
+  if (descriptor !== undefined) cleanup.push(() => closeSync(descriptor));
+  if (!succeeded && descriptor !== undefined) {
+    cleanup.push(() => hooks.beforeFailedOutputUnlink?.());
+  }
+  if (root !== undefined) cleanup.push(() => closeSync(root.descriptor));
+  completeConformanceOutput(succeeded, cleanup);
+  if (result === undefined) throw new TypeError('invalid conformance output');
+  return result;
 };
 
 export const readConformanceJsonLines = (

@@ -50,6 +50,16 @@ afterEach(() => {
 });
 
 describe('TypeScript conformance runner', () => {
+  test('derives registry coverage through public Zod APIs', () => {
+    const source = readFileSync(
+      resolve(import.meta.dir, '../scripts/lib/conformance.ts'),
+      'utf8',
+    );
+    expect(source).not.toContain('._zod');
+    expect(source).toContain('instanceof z.ZodEnum');
+    expect(source).toContain('instanceof z.ZodDiscriminatedUnion');
+  });
+
   test('runs every immutable-registry fixture and all semantic outcomes', () => {
     const report = runConformanceCatalog(GOLDEN_ROOT);
 

@@ -261,51 +261,44 @@ const sameInventory = (
   return true;
 };
 
-type ZodDefinition = Readonly<{
-  discriminator?: unknown;
-  entries?: unknown;
-  options?: unknown;
-  shape?: unknown;
-  type?: unknown;
-  values?: unknown;
+type UnionDiscriminator = Readonly<{
+  name: string;
+  values: readonly string[];
 }>;
 
-const definitionOf = (schema: z.ZodType): ZodDefinition =>
-  (schema as unknown as { _zod: { def: ZodDefinition } })._zod.def;
-
-const unionDiscriminatorValues = (
+const unionDiscriminator = (
   schema: z.ZodType,
-): readonly string[] | undefined => {
-  const definition = definitionOf(schema);
-  if (
-    definition.type !== 'union' ||
-    typeof definition.discriminator !== 'string' ||
-    !Array.isArray(definition.options)
-  ) {
-    return undefined;
+): UnionDiscriminator | undefined => {
+  if (!(schema instanceof z.ZodDiscriminatedUnion)) return undefined;
+  const options = schema.options;
+  if (options.length === 0) {
+    throw new TypeError('unsupported registry discriminated union');
   }
-  return definition.options.map((option) => {
-    const shape = definitionOf(option as z.ZodType).shape;
-    if (shape === null || typeof shape !== 'object') {
+  const objects = options.map((option) => {
+    if (!(option instanceof z.ZodObject)) {
       throw new TypeError('unsupported registry discriminated union');
     }
-    const discriminator = Reflect.get(
-      shape,
-      definition.discriminator as string,
-    );
-    if (!(discriminator instanceof z.ZodType)) {
-      throw new TypeError('unsupported registry discriminated union');
-    }
-    const values = definitionOf(discriminator).values;
-    if (
-      !Array.isArray(values) ||
-      values.length !== 1 ||
-      typeof values[0] !== 'string'
-    ) {
-      throw new TypeError('unsupported registry discriminated union');
-    }
-    return values[0];
+    return option;
   });
+  const candidates = Object.keys(objects[0]!.shape)
+    .map((name) => {
+      const values = objects.map((option) => {
+        const member = option.shape[name];
+        return member instanceof z.ZodLiteral ? member.value : undefined;
+      });
+      return values.every(
+        (value): value is string => typeof value === 'string',
+      ) && new Set(values).size === values.length
+        ? Object.freeze({ name, values: Object.freeze(values) })
+        : undefined;
+    })
+    .filter(
+      (candidate): candidate is UnionDiscriminator => candidate !== undefined,
+    );
+  if (candidates.length !== 1) {
+    throw new TypeError('unsupported registry discriminated union');
+  }
+  return candidates[0];
 };
 
 type Requirement = Readonly<{
@@ -455,15 +448,8 @@ const fixedRequirements: readonly Requirement[] = Object.entries(
 const requiredCoverage = (): readonly Requirement[] => {
   const requirements = [...fixedRequirements];
   for (const [name, schema] of Object.entries(contractRegistry.schemas)) {
-    const definition = definitionOf(schema);
-    if (definition.type === 'enum') {
-      if (
-        definition.entries === null ||
-        typeof definition.entries !== 'object'
-      ) {
-        throw new TypeError('unsupported registry enum');
-      }
-      for (const value of Object.values(definition.entries)) {
+    if (schema instanceof z.ZodEnum) {
+      for (const value of schema.options) {
         if (typeof value !== 'string')
           throw new TypeError('unsupported registry enum');
         requirements.push({
@@ -474,11 +460,11 @@ const requiredCoverage = (): readonly Requirement[] => {
         });
       }
     }
-    const discriminatorValues = unionDiscriminatorValues(schema);
-    if (discriminatorValues !== undefined) {
-      for (const value of discriminatorValues) {
+    const discriminator = unionDiscriminator(schema);
+    if (discriminator !== undefined) {
+      for (const value of discriminator.values) {
         requirements.push({
-          discriminator: definition.discriminator as string,
+          discriminator: discriminator.name,
           expectedExpect: 'accept',
           expectedValue: value,
           id: `union.${name}.${value}`,
@@ -487,14 +473,11 @@ const requiredCoverage = (): readonly Requirement[] => {
       }
     }
   }
-  const errorDefinition = definitionOf(contractRegistry.schemas.ErrorCode!);
-  if (
-    errorDefinition.entries === null ||
-    typeof errorDefinition.entries !== 'object'
-  ) {
+  const errorSchema = contractRegistry.schemas.ErrorCode;
+  if (!(errorSchema instanceof z.ZodEnum)) {
     throw new TypeError('unsupported ErrorCode registry enum');
   }
-  for (const code of Object.values(errorDefinition.entries)) {
+  for (const code of errorSchema.options) {
     if (typeof code !== 'string')
       throw new TypeError('unsupported ErrorCode registry enum');
     requirements.push({

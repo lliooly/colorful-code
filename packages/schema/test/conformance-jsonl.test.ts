@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import {
+  completeConformanceOutput,
   compareConformanceRecords,
   parseConformanceJsonLines,
   readConformanceJsonLines,
@@ -56,6 +57,28 @@ describe('conformance JSONL', () => {
     { id: 'z-last', outcome: 'reject' },
     { id: 'a-first', outcome: 'known' },
   ];
+
+  test('redacts operation and cleanup failures while running every cleanup', () => {
+    const completed: string[] = [];
+    expect(() =>
+      completeConformanceOutput(false, [
+        () => {
+          completed.push('first');
+          throw new Error('SENTINEL_OPERATION');
+        },
+        () => {
+          completed.push('second');
+          throw new Error('SENTINEL_CLEANUP');
+        },
+      ]),
+    ).toThrow('invalid conformance output');
+    expect(completed).toEqual(['first', 'second']);
+    try {
+      completeConformanceOutput(false, [() => undefined]);
+    } catch (error) {
+      expect(String(error)).not.toContain('SENTINEL');
+    }
+  });
 
   test('serializes canonical records in fixture id order', () => {
     expect(serializeConformanceJsonLines(records)).toBe(
