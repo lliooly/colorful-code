@@ -295,6 +295,11 @@ const unionDiscriminator = (
     .filter(
       (candidate): candidate is UnionDiscriminator => candidate !== undefined,
     );
+  // Every registry discriminated union must have exactly one discriminator
+  // field whose value is a distinct string literal in every branch.  Zero
+  // candidates means no field satisfies that constraint; multiple candidates
+  // means the union shape is ambiguous and the registry entry needs to be
+  // narrowed before the conformance runner can enumerate its branches.
   if (candidates.length !== 1) {
     throw new TypeError('unsupported registry discriminated union');
   }
