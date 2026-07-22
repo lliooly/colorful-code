@@ -19,10 +19,7 @@ import {
   validateManifestPaths,
 } from '../scripts/generate-fixtures.js';
 import { withClonableSuperRefine } from '../src/clonable-refinement.js';
-import {
-  contractRegistry,
-  createIsolatedSchemaView,
-} from '../src/registry.js';
+import { contractRegistry, createIsolatedSchemaView } from '../src/registry.js';
 import { snapshotResetSchema } from '../src/snapshot.js';
 
 const GOLDEN_ROOT = resolve(import.meta.dir, '../fixtures/golden');
@@ -43,10 +40,7 @@ describe('golden fixture catalog', () => {
   test('keeps SnapshotReset superRefine checks executable in an isolated view', () => {
     const fixture = JSON.parse(
       readFileSync(
-        join(
-          GOLDEN_ROOT,
-          'valid/snapshot-reset.without-runtime.json',
-        ),
+        join(GOLDEN_ROOT, 'valid/snapshot-reset.without-runtime.json'),
         'utf8',
       ),
     );
@@ -58,18 +52,12 @@ describe('golden fixture catalog', () => {
     ).toBe(false);
   });
   test('isolates custom-check abort metadata and subsequent check execution', () => {
-    const first = withClonableSuperRefine(
-      z.string(),
-      (_value, context) => {
-        context.addIssue({ code: 'custom', message: 'first' });
-      },
-    );
-    const authoring = withClonableSuperRefine(
-      first,
-      (_value, context) => {
-        context.addIssue({ code: 'custom', message: 'second' });
-      },
-    );
+    const first = withClonableSuperRefine(z.string(), (_value, context) => {
+      context.addIssue({ code: 'custom', message: 'first' });
+    });
+    const authoring = withClonableSuperRefine(first, (_value, context) => {
+      context.addIssue({ code: 'custom', message: 'second' });
+    });
     const view = createIsolatedSchemaView(authoring);
     const firstCheck = authoring._zod.def.checks![0]!;
     (firstCheck._zod.def as { abort?: boolean }).abort = true;
@@ -124,7 +112,11 @@ describe('golden fixture catalog', () => {
     expect(() =>
       validateManifestPaths([entry, { ...entry, id: 'two' }], root),
     ).toThrow(/file/i);
-    for (const file of ['../outside.json', '/tmp/outside.json', 'escape/x.json']) {
+    for (const file of [
+      '../outside.json',
+      '/tmp/outside.json',
+      'escape/x.json',
+    ]) {
       expect(() => validateManifestPaths([{ ...entry, file }], root)).toThrow(
         /path|root|symlink/i,
       );
@@ -220,9 +212,7 @@ describe('golden fixture catalog', () => {
         await generateFixtureCatalog(root);
         throw new Error('expected malformed manifest rejection');
       } catch (error) {
-        expect(String(error)).toContain(
-          'golden fixture manifest is malformed',
-        );
+        expect(String(error)).toContain('golden fixture manifest is malformed');
         expect(String(error)).not.toContain(sentinel);
       }
       expect(readFileSync(join(root, 'manifest.json'), 'utf8')).toBe(source);
@@ -261,6 +251,11 @@ describe('golden fixture catalog', () => {
       JSON.parse(firstManifestBytes.toString('utf8')),
     );
     const ids = new Set(manifest.map(({ id }) => id));
+    for (const id of ['command-ack.original', 'command-ack.replayed']) {
+      expect(manifest.find((entry) => entry.id === id)?.schema).toBe(
+        'schema:CommandAck',
+      );
+    }
     for (const required of [
       'optional.absent',
       'nullable.null',

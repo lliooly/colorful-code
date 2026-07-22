@@ -24,13 +24,20 @@ import {
   sameCatalogFileFingerprint,
   type CatalogFileFingerprint,
 } from './secure-catalog-read.js';
+import {
+  compareConformanceIds,
+  type ConformanceRecord,
+} from './conformance-jsonl.js';
 
 type Outcome = NonNullable<FixtureManifestEntry['expectedOutcome']>;
+const MAX_CATALOG_DIRECTORY_ENTRIES = 1_024;
+const MAX_CATALOG_BYTES = 16n * 1024n * 1024n;
 
 export type ConformanceReport = Readonly<{
   fixtureCount: number;
   outcomes: Readonly<Record<Outcome, number>>;
   preservedCursors: readonly string[];
+  records: readonly ConformanceRecord[];
 }>;
 
 export type ConformanceTestHooks = Readonly<{
@@ -176,6 +183,9 @@ const catalogFixtureFiles = (
         throw new TypeError('invalid fixture directory');
       }
       children = readdirSync(directory);
+      if (children.length > MAX_CATALOG_DIRECTORY_ENTRIES) {
+        throw new TypeError('fixture directory has too many entries');
+      }
       hooks.afterDirectoryRead?.({ directory, names: Object.freeze(children) });
       for (const name of children) {
         const currentDirectory = lstatSync(directory, { bigint: true });
@@ -348,12 +358,12 @@ const fixedDescriptors: Readonly<Record<string, FixedDescriptor>> = {
   'command-ack.original': {
     expectedExpect: 'accept',
     predicate: (value) => commandAckMatches(value, false),
-    schema: 'http:thread.delete:result',
+    schema: 'schema:CommandAck',
   },
   'command-ack.replayed': {
     expectedExpect: 'accept',
     predicate: (value) => commandAckMatches(value, true),
-    schema: 'http:thread.delete:result',
+    schema: 'schema:CommandAck',
   },
   'snapshot-reset.without-runtime': {
     expectedExpect: 'accept',
@@ -750,6 +760,13 @@ export const runConformanceCatalog = (
   } catch {
     throw new TypeError('conformance manifest is malformed');
   }
+  const catalogBytes = [...fixtureFiles.values()].reduce(
+    (total, fingerprint) => total + fingerprint.size,
+    manifestFingerprint.size,
+  );
+  if (catalogBytes > MAX_CATALOG_BYTES) {
+    throw new TypeError('conformance catalog is too large');
+  }
   try {
     validateManifestPaths(manifestSnapshot.manifest, root);
   } catch (error) {
@@ -787,6 +804,7 @@ export const runConformanceCatalog = (
     protocolError: 0,
   };
   const preservedCursors: string[] = [];
+  const records: ConformanceRecord[] = [];
   for (const entry of manifest) {
     const schema = schemas.get(entry)!;
     const expectedFingerprint = fixtureFiles.get(entry.file);
@@ -806,6 +824,7 @@ export const runConformanceCatalog = (
     if (actual !== entry.expect) {
       throw new TypeError('conformance fixture expectation mismatch');
     }
+    let recordOutcome: ConformanceRecord['outcome'] = actual;
     if (entry.expectedOutcome !== undefined) {
       const parsed = parseThreadStreamFrame(value);
       if (parsed.outcome !== entry.expectedOutcome) {
@@ -832,8 +851,10 @@ export const runConformanceCatalog = (
           }
         }
       }
+      recordOutcome = parsed.outcome;
     }
     assertFixtureSemantics(entry, value, requirementsById);
+    records.push(Object.freeze({ id: entry.id, outcome: recordOutcome }));
   }
   try {
     const finalManifest = readManifestSnapshot(
@@ -865,5 +886,8 @@ export const runConformanceCatalog = (
     fixtureCount: manifest.length,
     outcomes: Object.freeze(outcomes),
     preservedCursors: Object.freeze(preservedCursors),
+    records: Object.freeze(
+      records.sort((left, right) => compareConformanceIds(left.id, right.id)),
+    ),
   });
 };

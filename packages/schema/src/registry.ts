@@ -787,6 +787,7 @@ export const schemaRegistry: SchemaRegistry = deepFreeze({
   CheckpointPage: contracts.checkpointPageSchema,
   CheckpointPath: contracts.checkpointPathSchema,
   CheckpointSummary: contracts.checkpointSummarySchema,
+  CommandAck: contracts.commandAckWithoutResultSchema,
   CommandId: contracts.commandIdSchema,
   CompletedAssistantTranscriptPayload:
     contracts.completedAssistantTranscriptPayloadSchema,

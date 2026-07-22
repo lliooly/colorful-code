@@ -6,12 +6,14 @@ import {
   fstatSync,
   lstatSync,
   openSync,
-  readFileSync,
+  readSync,
   realpathSync,
   type BigIntStats,
 } from 'node:fs';
 
 import { isWithin } from './fixture-manifest.js';
+
+const MAX_CATALOG_FILE_BYTES = 4n * 1024n * 1024n;
 
 export type SecureCatalogReadHooks = Readonly<{
   afterPathCheck?: (path: string) => void;
@@ -120,6 +122,7 @@ export const readSecureCatalogFile = (
     if (
       !opened.isFile() ||
       opened.nlink !== 1n ||
+      opened.size > MAX_CATALOG_FILE_BYTES ||
       !sameCatalogFileFingerprint(before.fingerprint, openedFingerprint)
     ) {
       throw new TypeError('catalog file changed before open');
@@ -131,7 +134,23 @@ export const readSecureCatalogFile = (
       throw new TypeError('catalog file changed before read');
     }
 
-    const source = readFileSync(descriptor, 'utf8');
+    const bytes = Buffer.alloc(Number(opened.size));
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(
+        descriptor,
+        bytes,
+        offset,
+        bytes.length - offset,
+        null,
+      );
+      if (count === 0) throw new TypeError('catalog file ended during read');
+      offset += count;
+    }
+    if (readSync(descriptor, Buffer.alloc(1), 0, 1, null) !== 0) {
+      throw new TypeError('catalog file grew during read');
+    }
+    const source = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     hooks.afterRead?.(path);
 
     const afterRead = checkedPathMetadata(root, path, before.canonicalPath);

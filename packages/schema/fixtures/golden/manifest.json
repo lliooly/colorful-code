@@ -153,13 +153,13 @@
     "expect": "accept",
     "file": "valid/command-ack.original.json",
     "id": "command-ack.original",
-    "schema": "http:thread.delete:result"
+    "schema": "schema:CommandAck"
   },
   {
     "expect": "accept",
     "file": "valid/command-ack.replayed.json",
     "id": "command-ack.replayed",
-    "schema": "http:thread.delete:result"
+    "schema": "schema:CommandAck"
   },
   {
     "expect": "accept",
@@ -168,10 +168,22 @@
     "schema": "schema:CredentialRef"
   },
   {
+    "expect": "reject",
+    "file": "invalid/credential-ref.bom-provider.json",
+    "id": "credential-ref.bom-provider",
+    "schema": "schema:CredentialRef"
+  },
+  {
     "expect": "accept",
     "file": "valid/cursor.above-safe-integer.json",
     "id": "cursor.above-safe-integer",
     "schema": "schema:DurableCursor"
+  },
+  {
+    "expect": "reject",
+    "file": "invalid/cursor.unicode-digit.json",
+    "id": "cursor.unicode-digit",
+    "schema": "schema:CommandAck"
   },
   {
     "expect": "accept",

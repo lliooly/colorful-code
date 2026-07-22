@@ -3,7 +3,7 @@ import type { z } from 'zod';
 const GENERATED_HEADER = '// This file is generated. Do not edit.\n';
 
 const SCHEMAS_BY_AUTHORING_MODULE = {
-  ack: [],
+  ack: ['CommandAck'],
   auth: [
     'AuthenticatedPrincipal',
     'AuthenticatedPrincipalKind',
@@ -206,7 +206,9 @@ for (const [moduleName, names] of Object.entries(SCHEMAS_BY_AUTHORING_MODULE)) {
 }
 
 const schemaIdentifier = (name: string) =>
-  `${name.slice(0, 1).toLowerCase()}${name.slice(1)}Schema`;
+  name === 'CommandAck'
+    ? 'commandAckWithoutResultSchema'
+    : `${name.slice(0, 1).toLowerCase()}${name.slice(1)}Schema`;
 
 export const createTypeScriptContracts = (
   schemas: Readonly<Record<string, z.ZodType>>,

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { commandAckSchema } from './ack.js';
+import { commandAckSchema, commandAckWithoutResultSchema } from './ack.js';
 import {
   configRevisionSchema,
   durableCursorSchema,
@@ -434,7 +434,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'thread.resume',
     pathSchema: threadPathSchema,
     bodySchema: threadLifecycleBodySchema,
-    resultSchema: commandAckSchema(),
+    resultSchema: commandAckWithoutResultSchema,
     responseKind: 'commandAck',
   }),
   'thread.archive': endpoint({
@@ -461,7 +461,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'thread.undelete',
     pathSchema: threadPathSchema,
     bodySchema: threadLifecycleBodySchema,
-    resultSchema: commandAckSchema(),
+    resultSchema: commandAckWithoutResultSchema,
     responseKind: 'commandAck',
   }),
   'thread.fork': endpoint({
@@ -506,7 +506,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'run.steer',
     pathSchema: runPathSchema,
     bodySchema: steerRunBodySchema,
-    resultSchema: commandAckSchema(),
+    resultSchema: commandAckWithoutResultSchema,
     responseKind: 'commandAck',
   }),
   'run.stop': endpoint({
@@ -515,7 +515,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'run.stop',
     pathSchema: runPathSchema,
     bodySchema: stopRunBodySchema,
-    resultSchema: commandAckSchema(),
+    resultSchema: commandAckWithoutResultSchema,
     responseKind: 'commandAck',
   }),
   'queue.get': endpoint({
@@ -632,7 +632,7 @@ export const httpContractRegistry = defineRegistry({
     operationId: 'checkpoint.apply',
     pathSchema: checkpointPathSchema,
     bodySchema: applyCheckpointBodySchema,
-    resultSchema: commandAckSchema(),
+    resultSchema: commandAckWithoutResultSchema,
     responseKind: 'commandAck',
   }),
   'snapshot.get': endpoint({

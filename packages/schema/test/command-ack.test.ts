@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { z } from 'zod';
 
 import * as ackContract from '@colorful-code/schema/ack';
+import { httpContractRegistry } from '@colorful-code/schema/commands';
 
 const resultSchema = z.strictObject({
   kind: z.literal('queued'),
@@ -35,13 +36,15 @@ const synchronousAck = {
 describe('commandAckSchema', () => {
   test('parses synchronous and complete asynchronous Ack envelopes', () => {
     const schema = ackContract.commandAckSchema(resultSchema);
-    const {
-      result: _asynchronousResult,
-      runId: _asynchronousRunId,
-      ...asynchronousWithoutResultOrRunId
-    } = canonicalAck;
-    const { result: _synchronousResult, ...synchronousWithoutResult } =
-      synchronousAck;
+    const asynchronousWithoutResultOrRunId: Record<string, unknown> = {
+      ...canonicalAck,
+    };
+    delete asynchronousWithoutResultOrRunId.result;
+    delete asynchronousWithoutResultOrRunId.runId;
+    const synchronousWithoutResult: Record<string, unknown> = {
+      ...synchronousAck,
+    };
+    delete synchronousWithoutResult.result;
 
     expect(schema.parse(canonicalAck)).toEqual(canonicalAck);
     expect(schema.parse(synchronousAck)).toEqual(synchronousAck);
@@ -95,9 +98,15 @@ describe('commandAckSchema', () => {
   });
 
   test('omits result from the no-result schema instead of accepting any value', () => {
-    const schema = ackContract.commandAckSchema();
-    const { result: _result, ...asynchronousWithoutResult } = canonicalAck;
-    const { result: _syncResult, ...synchronousWithoutResult } = synchronousAck;
+    const schema = ackContract.commandAckWithoutResultSchema;
+    const asynchronousWithoutResult: Record<string, unknown> = {
+      ...canonicalAck,
+    };
+    delete asynchronousWithoutResult.result;
+    const synchronousWithoutResult: Record<string, unknown> = {
+      ...synchronousAck,
+    };
+    delete synchronousWithoutResult.result;
 
     expect(schema.parse(asynchronousWithoutResult)).toEqual(
       asynchronousWithoutResult,
@@ -109,12 +118,33 @@ describe('commandAckSchema', () => {
     expect(schema.safeParse(synchronousAck).success).toBe(false);
   });
 
+  test('publishes one no-result schema instance reused by no-result endpoints', () => {
+    for (const operationId of [
+      'thread.resume',
+      'thread.undelete',
+      'run.steer',
+      'run.stop',
+      'checkpoint.apply',
+    ] as const) {
+      expect(httpContractRegistry[operationId].resultSchema).toBe(
+        ackContract.commandAckWithoutResultSchema,
+      );
+    }
+
+    expect(httpContractRegistry['thread.delete'].resultSchema).not.toBe(
+      ackContract.commandAckWithoutResultSchema,
+    );
+  });
+
   test('rejects unknown fields, non-accepted statuses and non-canonical cursors', () => {
     const schema = ackContract.commandAckSchema(resultSchema);
 
     for (const invalid of [
       { ...canonicalAck, status: 'rejected' },
-      { ...canonicalAck, currentDurableCursor: 9007199254740993 },
+      {
+        ...canonicalAck,
+        currentDurableCursor: Number(canonicalAck.currentDurableCursor),
+      },
       { ...canonicalAck, currentDurableCursor: '09007199254740993' },
       { ...canonicalAck, clientIdentity: 'client-1' },
       { ...canonicalAck, payloadHash: 'sha256:example' },

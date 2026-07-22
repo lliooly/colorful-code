@@ -70,5 +70,10 @@ export const commandAckSchema = <
   ]) as CommandAckSchema<ResultSchema>;
 };
 
+export const commandAckWithoutResultSchema = commandAckSchema();
+export type CommandAckWithoutResult = z.infer<
+  typeof commandAckWithoutResultSchema
+>;
+
 export type CommandAck<ResultSchema extends z.ZodType | undefined = undefined> =
   z.infer<CommandAckSchema<ResultSchema>>;

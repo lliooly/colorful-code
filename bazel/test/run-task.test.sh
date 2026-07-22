@@ -217,9 +217,9 @@ fi
 pass_count=$((pass_count + 1))
 printf 'ok - Bazel module pins JS/TS/Node dependencies and one npm resolution source\n'
 
-assert_file_content_equals 'ignore_directories(["**/node_modules"])' "$WORKSPACE_ROOT/REPO.bazel" "Bazel repository crawl exclusions"
+assert_file_content_equals 'ignore_directories(["**/.pnpm-store", "**/node_modules"])' "$WORKSPACE_ROOT/REPO.bazel" "Bazel repository crawl exclusions"
 pass_count=$((pass_count + 1))
-printf 'ok - Bazel ignores every node_modules directory during repository crawl\n'
+printf 'ok - Bazel ignores local pnpm stores and every node_modules directory during repository crawl\n'
 
 [[ -f "$WORKSPACE_ROOT/MODULE.bazel.lock" ]] || fail "Bazel module lockfile is missing"
 pass_count=$((pass_count + 1))

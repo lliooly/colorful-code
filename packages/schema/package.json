@@ -33,6 +33,8 @@
     "schema:generate": "bun scripts/generate.ts",
     "test": "bun test test",
     "test:conformance": "bun test test/conformance.test.ts",
+    "test:cross-language": "bun scripts/compare-conformance.ts --fixture-root fixtures/golden",
+    "test:swift-conformance": "bun scripts/compare-conformance.ts --swift-only --fixture-root fixtures/golden",
     "typecheck": "tsc -p tsconfig.test.json",
     "clean": "rm -rf dist"
   }

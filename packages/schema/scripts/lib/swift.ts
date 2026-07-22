@@ -91,6 +91,53 @@ const escapedMember = (value: string) => {
 };
 const swiftString = (value: string) => JSON.stringify(value);
 
+const ECMASCRIPT_WHITESPACE =
+  '\\u0009-\\u000D\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF';
+
+const swiftRegularExpression = (pattern: string): string => {
+  const normalized = pattern
+    .replaceAll('[\\s\\S]', '(?s:.)')
+    .replaceAll('[\\S\\s]', '(?s:.)');
+  let result = '';
+  let characterClass = false;
+  for (let index = 0; index < normalized.length; index += 1) {
+    const character = normalized[index]!;
+    if (character === '[') characterClass = true;
+    if (character === ']') characterClass = false;
+    if (character !== '\\') {
+      result += character;
+      continue;
+    }
+    const escaped = normalized[index + 1];
+    if (escaped === undefined) {
+      throw new TypeError('unsupported dangling Swift regex escape');
+    }
+    if (escaped === 'd') {
+      if (characterClass) {
+        throw new TypeError('unsupported Swift regex digit class escape');
+      }
+      result += '[0-9]';
+      index += 1;
+      continue;
+    }
+    if (escaped === 's' || escaped === 'S') {
+      if (characterClass) {
+        throw new TypeError('unsupported Swift regex whitespace class escape');
+      }
+      result +=
+        escaped === 's'
+          ? `[${ECMASCRIPT_WHITESPACE}]`
+          : `[^${ECMASCRIPT_WHITESPACE}]`;
+      index += 1;
+      continue;
+    }
+    result += `\\${escaped}`;
+    index += 1;
+  }
+  if (characterClass) throw new TypeError('unterminated Swift regex class');
+  return result;
+};
+
 const objectValue = (value: unknown): JsonSchemaObject | undefined =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as JsonSchemaObject)
@@ -181,7 +228,69 @@ private func decodeJSONValue<Value: Decodable>(_ type: Value.Type, from value: J
   try JSONDecoder().decode(type, from: JSONEncoder().encode(value))
 }
 
+private func encodeJSONValue<Value: Encodable>(_ value: Value) throws -> JSONValue {
+  try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(value))
+}
+
+private func normalizedProviderOptionKey(_ value: String) -> String {
+  var result = ""
+  for scalar in value.precomposedStringWithCompatibilityMapping.lowercased().unicodeScalars {
+    switch scalar.properties.generalCategory {
+    case .nonspacingMark, .spacingMark, .enclosingMark,
+      .connectorPunctuation, .dashPunctuation, .openPunctuation,
+      .closePunctuation, .initialPunctuation, .finalPunctuation,
+      .otherPunctuation, .spaceSeparator, .lineSeparator,
+      .paragraphSeparator, .format:
+      continue
+    default:
+      result.unicodeScalars.append(scalar)
+    }
+  }
+  return result
+}
+
+private func rejectForbiddenPropertyNames(
+  _ root: JSONValue,
+  forbidden: Set<String>
+) throws {
+  var pending = [root]
+  while let value = pending.popLast() {
+    switch value {
+    case .array(let values): pending.append(contentsOf: values)
+    case .object(let object):
+      for (key, child) in object {
+        guard !forbidden.contains(normalizedProviderOptionKey(key)) else {
+          throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Forbidden property name"))
+        }
+        pending.append(child)
+      }
+    default: break
+    }
+  }
+}
+
+@propertyWrapper
+public struct RequiredNullable<Value: Codable & Sendable>: Codable, Sendable {
+  public var wrappedValue: Value?
+
+  public init(wrappedValue: Value?) {
+    self.wrappedValue = wrappedValue
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.singleValueContainer()
+    self.wrappedValue = container.decodeNil() ? nil : try container.decode(Value.self)
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.singleValueContainer()
+    if let wrappedValue { try container.encode(wrappedValue) }
+    else { try container.encodeNil() }
+  }
+}
+
 public enum Presence<Value: Codable & Sendable>: Codable, Sendable {
+  case absent
   case null
   case value(Value)
 
@@ -193,6 +302,7 @@ public enum Presence<Value: Codable & Sendable>: Codable, Sendable {
   public func encode(to encoder: Encoder) throws {
     var container = encoder.singleValueContainer()
     switch self {
+    case .absent: throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath, debugDescription: "Absent presence must be omitted by its keyed container"))
     case .null: try container.encodeNil()
     case .value(let value): try container.encode(value)
     }
@@ -209,6 +319,7 @@ class SwiftEmitter {
     'JSONValue',
     'JSONNull',
     'Presence',
+    'RequiredNullable',
     'AnyCodingKey',
   ]);
   readonly #declarations = new Map<string, string>();
@@ -266,8 +377,7 @@ class SwiftEmitter {
       return mapped;
     }
     const nullable = this.#nullable(schema);
-    if (nullable.nullable)
-      return `Presence<${this.#type(nullable.schema, hint)}>`;
+    if (nullable.nullable) return `${this.#type(nullable.schema, hint)}?`;
     if (schema.type === 'string' && Array.isArray(schema.enum)) {
       const name = this.#nestedName(hint);
       this.#emitNamed(name, schema);
@@ -398,22 +508,55 @@ class SwiftEmitter {
         );
       const nullable = this.#nullable(property);
       const base = this.#type(nullable.schema, `${name}${bareTypeName(wire)}`);
+      const isRequired = required.has(wire);
+      const forbiddenPropertyNames =
+        property['x-colorful-forbiddenPropertyNames'];
+      const propertyNameNormalization =
+        property['x-colorful-propertyNameNormalization'];
+      if (
+        forbiddenPropertyNames !== undefined &&
+        (!Array.isArray(forbiddenPropertyNames) ||
+          forbiddenPropertyNames.length === 0 ||
+          forbiddenPropertyNames.some(
+            (item) => typeof item !== 'string' || item.length === 0,
+          ) ||
+          propertyNameNormalization !==
+            'nfkc-lowercase-strip-mark-punctuation-separator-format')
+      ) {
+        throw new TypeError(`${name}.${wire}: unsupported property policy`);
+      }
       const type = nullable.nullable
-        ? `Presence<${base}>${required.has(wire) ? '' : '?'}`
-        : `${base}${required.has(wire) ? '' : '?'}`;
+        ? isRequired
+          ? `${base}?`
+          : `Presence<${base}>`
+        : `${base}${isRequired ? '' : '?'}`;
       return {
         wire,
         member: escapedMember(wire),
         type,
-        required: required.has(wire),
+        required: isRequired,
         nullable: nullable.nullable,
         base,
         constant: property.const,
         pattern:
           typeof property.pattern === 'string' ? property.pattern : undefined,
+        forbiddenPropertyNames:
+          forbiddenPropertyNames === undefined
+            ? undefined
+            : (forbiddenPropertyNames as string[]),
       };
     });
-    const allowed = entries.map(({ wire }) => swiftString(wire)).join(', ');
+    const actualMembers = new Set(
+      entries.map((entry) => entry.member.replaceAll('`', '')),
+    );
+    for (const entry of entries) {
+      const member = entry.member.replaceAll('`', '');
+      if (entry.nullable && entry.required && actualMembers.has(`_${member}`)) {
+        throw new TypeError(
+          `${name}: member backing collision for ${entry.wire}`,
+        );
+      }
+    }
     if (entries.length === 0) {
       return [
         `public struct ${name}: Codable, Sendable {`,
@@ -434,9 +577,9 @@ class SwiftEmitter {
     const decoding = entries.map((entry) => {
       const key = entry.member;
       if (entry.nullable && entry.required)
-        return `    guard container.contains(.${key}) else { throw DecodingError.keyNotFound(CodingKeys.${key}, .init(codingPath: decoder.codingPath, debugDescription: "Missing required key ${entry.wire}")) }\n    self.${entry.member} = try container.decodeNil(forKey: .${key}) ? .null : .value(container.decode(${entry.base}.self, forKey: .${key}))`;
+        return `    self._${entry.member.replaceAll('`', '')} = try container.decode(RequiredNullable<${entry.base}>.self, forKey: .${key})`;
       if (entry.nullable)
-        return `    self.${entry.member} = container.contains(.${key}) ? (try container.decodeNil(forKey: .${key}) ? .null : .value(container.decode(${entry.base}.self, forKey: .${key}))) : nil`;
+        return `    self.${entry.member} = container.contains(.${key}) ? (try container.decodeNil(forKey: .${key}) ? .null : .value(container.decode(${entry.base}.self, forKey: .${key}))) : .absent`;
       if (!entry.required)
         return `    if container.contains(.${key}) {
       guard try !container.decodeNil(forKey: .${key}) else { throw DecodingError.valueNotFound(${entry.base}.self, .init(codingPath: decoder.codingPath, debugDescription: "Present optional key ${entry.wire} cannot be null")) }
@@ -446,6 +589,23 @@ class SwiftEmitter {
     }`;
       return `    self.${entry.member} = try container.${entry.required ? 'decode' : 'decodeIfPresent'}(${entry.base}.self, forKey: .${key})`;
     });
+    const encoding = entries.map((entry) => {
+      const key = entry.member;
+      if (entry.nullable && !entry.required)
+        return `    switch self.${entry.member} {
+    case .absent: break
+    case .null: try container.encodeNil(forKey: .${key})
+    case .value(let value): try container.encode(value, forKey: .${key})
+    }`;
+      if (entry.nullable)
+        return `    try container.encode(self._${entry.member.replaceAll('`', '')}, forKey: .${key})`;
+      if (!entry.required)
+        return `    try container.encodeIfPresent(self.${entry.member}, forKey: .${key})`;
+      return `    try container.encode(self.${entry.member}, forKey: .${key})`;
+    });
+    const needsCustomEncoding = entries.some(
+      (entry) => entry.nullable && !entry.required,
+    );
     const constantChecks = entries.flatMap((entry) => {
       const literal =
         typeof entry.constant === 'string'
@@ -468,30 +628,62 @@ class SwiftEmitter {
         entry.nullable
       )
         return [];
-      const check = `value.range(of: ${swiftString(entry.pattern)}, options: .regularExpression) != nil`;
+      const pattern = swiftRegularExpression(entry.pattern);
+      const check = `value.range(of: ${swiftString(pattern)}, options: .regularExpression) != nil`;
       return entry.required
         ? [
-            `    guard self.${entry.member}.range(of: ${swiftString(entry.pattern)}, options: .regularExpression) != nil else { throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "String does not match pattern for ${entry.wire}")) }`,
+            `    guard self.${entry.member}.range(of: ${swiftString(pattern)}, options: .regularExpression) != nil else { throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "String does not match pattern for ${entry.wire}")) }`,
           ]
         : [
             `    if let value = self.${entry.member} { guard ${check} else { throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "String does not match pattern for ${entry.wire}")) } }`,
           ];
     });
+    const propertyPolicyChecks = entries.flatMap((entry) => {
+      if (entry.forbiddenPropertyNames === undefined) return [];
+      const forbidden = `Set([${entry.forbiddenPropertyNames.map(swiftString).join(', ')}])`;
+      if (entry.nullable && !entry.required) {
+        return [
+          `    if case .value(let value) = self.${entry.member} { try rejectForbiddenPropertyNames(try encodeJSONValue(value), forbidden: ${forbidden}) }`,
+        ];
+      }
+      if (!entry.required || entry.nullable) {
+        return [
+          `    if let value = self.${entry.member} { try rejectForbiddenPropertyNames(try encodeJSONValue(value), forbidden: ${forbidden}) }`,
+        ];
+      }
+      return [
+        `    try rejectForbiddenPropertyNames(try encodeJSONValue(self.${entry.member}), forbidden: ${forbidden})`,
+      ];
+    });
     return [
       `public struct ${name}: Codable, Sendable {`,
-      ...entries.map(({ member, type }) => `  public let ${member}: ${type}`),
+      ...entries.map((entry) =>
+        entry.nullable && entry.required
+          ? `  @RequiredNullable public var ${entry.member}: ${entry.base}?`
+          : `  public let ${entry.member}: ${entry.type}`,
+      ),
       '',
-      '  private enum CodingKeys: String, CodingKey {',
+      '  private enum CodingKeys: String, CodingKey, CaseIterable {',
       ...codingKeys,
       '  }',
       '',
       '  public init(from decoder: Decoder) throws {',
-      `    try rejectUnknownKeys(decoder, allowed: [${allowed}])`,
+      '    try rejectUnknownKeys(decoder, allowed: Set(CodingKeys.allCases.map(\\.rawValue)))',
       '    let container = try decoder.container(keyedBy: CodingKeys.self)',
       ...decoding,
       ...constantChecks,
       ...patternChecks,
+      ...propertyPolicyChecks,
       '  }',
+      ...(needsCustomEncoding
+        ? [
+            '',
+            '  public func encode(to encoder: Encoder) throws {',
+            '    var container = encoder.container(keyedBy: CodingKeys.self)',
+            ...encoding,
+            '  }',
+          ]
+        : []),
       '}',
     ].join('\n');
   }
@@ -514,10 +706,10 @@ class SwiftEmitter {
       'status',
     ]) {
       if (
-        variants.some(
-          (variant) =>
-            objectValue(objectValue(variant.properties)?.[key]) !== undefined,
-        )
+        variants.some((variant) => {
+          const property = objectValue(objectValue(variant.properties)?.[key]);
+          return typeof property?.const === 'string';
+        })
       )
         return key;
     }
@@ -591,7 +783,9 @@ class SwiftEmitter {
       const type = this.#type(variant, `${name}${bareTypeName(bare)}`);
       cases.push({ member, type, literal, fallback });
     }
-    const fallbacks = cases.filter((item) => item.fallback);
+    const defaultCandidates = cases.filter(
+      (item) => item.literal === undefined,
+    );
     const byLiteral = new Map<string, typeof cases>();
     for (const item of cases) {
       if (item.literal === undefined) continue;
@@ -630,17 +824,17 @@ class SwiftEmitter {
             '    }',
             '    switch discriminator {',
             ...switchLines,
-            fallbacks.length === 0
+            defaultCandidates.length === 0
               ? '    default: throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unknown union discriminator"))'
               : [
                   '    default:',
-                  ...fallbacks
+                  ...defaultCandidates
                     .slice(0, -1)
                     .map(
                       (item) =>
                         `      if let value = try? decodeJSONValue(${item.type}.self, from: raw) { self = .${item.member}(value); return }`,
                     ),
-                  `      self = .${fallbacks.at(-1)!.member}(try decodeJSONValue(${fallbacks.at(-1)!.type}.self, from: raw))`,
+                  `      self = .${defaultCandidates.at(-1)!.member}(try decodeJSONValue(${defaultCandidates.at(-1)!.type}.self, from: raw))`,
                 ].join('\n'),
             '    }',
           ].join('\n');

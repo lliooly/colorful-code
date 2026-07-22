@@ -42,6 +42,7 @@ const EXPECTED_SCHEMA_NAMES = [
   'CheckpointPage',
   'CheckpointPath',
   'CheckpointSummary',
+  'CommandAck',
   'CommandId',
   'CompletedAssistantTranscriptPayload',
   'ConfigChangeBody',
@@ -322,9 +323,19 @@ describe('contract registry', () => {
         (entry): entry is [string, z.ZodType] => entry[1] instanceof z.ZodType,
       )
       .map(([name]) => `${name[0]?.toUpperCase()}${name.slice(1, -6)}`)
+      .map((name) => (name === 'CommandAckWithoutResult' ? 'CommandAck' : name))
       .sort(compareText);
     expect(names).toEqual(exportedSchemaNames);
-    expect(names).not.toContain('CommandAck');
+    expect(
+      registryModule.schemaRegistry.CommandAck.safeParse({
+        acceptedAt: '2026-07-16T08:00:00Z',
+        commandId: 'command-1',
+        currentDurableCursor: '9007199254740993',
+        replayed: false,
+        status: 'accepted',
+        threadId: 'thread-1',
+      }).success,
+    ).toBe(true);
     expect(names).not.toContain('Page');
     expect(names).not.toContain('StrictObject');
   });
@@ -1371,8 +1382,17 @@ describe('Swift contracts emitter', () => {
           generation: { type: 'integer', minimum: 0 },
           inlineMode: { type: 'string', enum: ['one', 'two'] },
           nullable: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          optionalNullable: {
+            anyOf: [{ type: 'string' }, { type: 'null' }],
+          },
           nothing: { type: 'null' },
           optional: { type: 'string' },
+          providerOptions: {
+            $ref: '#/$defs/JsonValue',
+            'x-colorful-forbiddenPropertyNames': ['secret', 'apikey'],
+            'x-colorful-propertyNameNormalization':
+              'nfkc-lowercase-strip-mark-punctuation-separator-format',
+          },
           tags: { type: 'array', items: { type: 'string' } },
           'wire-name': { type: 'string' },
         },
@@ -1402,6 +1422,14 @@ describe('Swift contracts emitter', () => {
         ],
       },
       Mode: { type: 'string', enum: ['fast-mode', 'slow', 'switch'] },
+      NonBlankFixture: {
+        type: 'object',
+        properties: {
+          value: { type: 'string', pattern: '^\\S(?:[\\s\\S]*\\S)?$' },
+        },
+        required: ['value'],
+        additionalProperties: false,
+      },
     },
   };
 
@@ -1422,6 +1450,7 @@ describe('Swift contracts emitter', () => {
       'public indirect enum JSONValue: Codable, Sendable',
     );
     expect(source).toContain('struct AnyCodingKey: CodingKey');
+    expect(source).toContain('Set(CodingKeys.allCases.map(\\.rawValue))');
     expect(source).toContain('throw DecodingError.dataCorrupted');
     expect(source).toContain('decodeJSONValue(ChoiceKnown.self, from: raw)');
     expect(source).toContain('case unknownEvent(ChoiceUnknownEvent)');
@@ -1435,17 +1464,28 @@ describe('Swift contracts emitter', () => {
     expect(source).toContain('self.durability == "durable"');
     expect(source).toContain('self.durability == "transient"');
     expect(source).toContain('public enum Presence<Value: Codable & Sendable>');
+    expect(source).toContain(
+      'public struct RequiredNullable<Value: Codable & Sendable>',
+    );
     expect(source).toContain('public enum Mode: String, Codable, Sendable');
     expect(source).toContain('case fastMode = "fast-mode"');
     expect(source).toContain('case `switch` = "switch"');
     expect(source).toContain('public let `class`: Bool');
     expect(source).toContain('public let cursor: String');
+    expect(source).toContain('^(0|[1-9][0-9]*)$');
     expect(source).toContain('public let generation: Int');
     expect(source).toContain('public let inlineMode: FixtureInlineMode');
     expect(source).toContain(
       'public enum FixtureInlineMode: String, Codable, Sendable',
     );
-    expect(source).toContain('public let nullable: Presence<String>');
+    expect(source).toContain('@RequiredNullable public var nullable: String?');
+    expect(source).toContain('public let optionalNullable: Presence<String>');
+    expect(source).toContain('case absent');
+    expect(source).toContain('case .absent: break');
+    expect(source).toContain('rejectForbiddenPropertyNames');
+    expect(source).toMatch(
+      /public struct ChoiceKnown: Codable, Sendable \{(?:(?!public func encode).)*?\n\}/s,
+    );
     expect(source).toContain('public let nothing: JSONNull');
     expect(source).toContain('public let optional: String?');
     expect(source).toContain('public let tags: [String]');
@@ -1472,16 +1512,39 @@ struct RuntimeChecks {
   static func main() throws {
     let decoder = JSONDecoder()
     let missingOptional = #"{"class":true,"cursor":"0","generation":0,"inlineMode":"one","nullable":null,"nothing":null,"tags":[],"wire-name":"ok"}"#
-    guard (try? decoder.decode(Fixture.self, from: data(missingOptional))) != nil else { fatalError("missing optional must decode") }
+    guard let absent = try? decoder.decode(Fixture.self, from: data(missingOptional)), case .absent = absent.optionalNullable else { fatalError("missing optional nullable must be absent") }
+    let encodedRequiredNull = try JSONSerialization.jsonObject(with: JSONEncoder().encode(absent)) as? [String: Any]
+    guard encodedRequiredNull?["nullable"] is NSNull else { fatalError("required nullable null must preserve its key") }
+
+    let missingRequiredNullable = #"{"class":true,"cursor":"0","generation":0,"inlineMode":"one","nothing":null,"tags":[],"wire-name":"ok"}"#
+    guard (try? decoder.decode(Fixture.self, from: data(missingRequiredNullable))) == nil else { fatalError("missing required nullable must fail") }
+
+    let nullOptionalNullable = #"{"class":true,"cursor":"0","generation":0,"inlineMode":"one","nullable":null,"nothing":null,"optionalNullable":null,"tags":[],"wire-name":"ok"}"#
+    guard let nullValue = try? decoder.decode(Fixture.self, from: data(nullOptionalNullable)), case .null = nullValue.optionalNullable else { fatalError("null optional nullable must be null") }
+
+    let valueOptionalNullable = #"{"class":true,"cursor":"0","generation":0,"inlineMode":"one","nullable":null,"nothing":null,"optionalNullable":"set","tags":[],"wire-name":"ok"}"#
+    guard let present = try? decoder.decode(Fixture.self, from: data(valueOptionalNullable)), case .value("set") = present.optionalNullable else { fatalError("optional nullable value must be preserved") }
+    let encodedAbsent = try JSONSerialization.jsonObject(with: JSONEncoder().encode(absent)) as? [String: Any]
+    guard encodedAbsent?["optionalNullable"] == nil else { fatalError("absent optional nullable must be omitted when encoded") }
 
     let nullOptional = #"{"class":true,"cursor":"0","generation":0,"inlineMode":"one","nullable":null,"nothing":null,"optional":null,"tags":[],"wire-name":"ok"}"#
     guard (try? decoder.decode(Fixture.self, from: data(nullOptional))) == nil else { fatalError("present null optional must fail") }
+
+    let nestedSecret = #"{"class":true,"cursor":"0","generation":0,"inlineMode":"one","nullable":null,"nothing":null,"providerOptions":{"nested":[{"Ｓｅｃｒｅｔ":"not-a-secret-value"}]},"tags":[],"wire-name":"ok"}"#
+    guard (try? decoder.decode(Fixture.self, from: data(nestedSecret))) == nil else { fatalError("normalized nested secret key must fail") }
 
     guard (try? decoder.decode(JSONNull.self, from: data("null"))) != nil else { fatalError("JSONNull must decode null") }
     guard (try? decoder.decode(JSONNull.self, from: data("0"))) == nil else { fatalError("JSONNull must reject values") }
 
     let invalidEnum = #"{"class":true,"cursor":"0","generation":0,"inlineMode":"invalid","nullable":null,"nothing":null,"tags":[],"wire-name":"ok"}"#
     guard (try? decoder.decode(Fixture.self, from: data(invalidEnum))) == nil else { fatalError("inline enum must reject invalid raw values") }
+
+    let unicodeDigitCursor = #"{"class":true,"cursor":"1١","generation":0,"inlineMode":"one","nullable":null,"nothing":null,"tags":[],"wire-name":"ok"}"#
+    guard (try? decoder.decode(Fixture.self, from: data(unicodeDigitCursor))) == nil else { fatalError("cursor digits must remain ASCII") }
+
+    guard (try? decoder.decode(NonBlankFixture.self, from: data(#"{"value":"x"}"#))) != nil else { fatalError("ordinary nonblank text must decode") }
+    let bomNonBlank = "{\"value\":\"\u{FEFF}x\"}"
+    guard (try? decoder.decode(NonBlankFixture.self, from: data(bomNonBlank))) == nil else { fatalError("ECMAScript BOM whitespace must remain blank") }
 
     let validUnknown = #"{"kind":"other","durability":"durable","critical":false,"payload":null}"#
     guard (try? decoder.decode(Choice.self, from: data(validUnknown))) != nil else { fatalError("valid unknown event must decode") }
@@ -1554,7 +1617,44 @@ struct RuntimeChecks {
     });
 
     expect(source).not.toContain('case unknownEvent');
-    expect(source).toContain('default: throw DecodingError.dataCorrupted');
+    expect(source).toContain('self = .variant2');
+  });
+
+  test('selects a literal discriminator instead of an earlier nonliteral field', () => {
+    expect(swiftModule).toBeDefined();
+    if (swiftModule === undefined) return;
+
+    const source = swiftModule.createSwiftContracts({
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      $defs: {
+        Result: {
+          oneOf: [
+            {
+              type: 'object',
+              properties: {
+                kind: { type: 'string', enum: ['steer'] },
+                status: { type: 'string', const: 'completed' },
+              },
+              required: ['kind', 'status'],
+              additionalProperties: false,
+            },
+            {
+              type: 'object',
+              properties: {
+                kind: { type: 'string', enum: ['steer'] },
+                status: { type: 'string', const: 'failed' },
+              },
+              required: ['kind', 'status'],
+              additionalProperties: false,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(source).toContain('object["status"]');
+    expect(source).toContain('case "completed":');
+    expect(source).toContain('case "failed":');
   });
 
   test('fails closed on normalized enum-case and object-member collisions', () => {
@@ -1585,6 +1685,23 @@ struct RuntimeChecks {
         },
       }),
     ).toThrow(/member collision.*wire-name.*wire_name/i);
+
+    expect(() =>
+      swiftModule.createSwiftContracts({
+        $schema: 'https://json-schema.org/draft/2020-12/schema',
+        $defs: {
+          Collision: {
+            type: 'object',
+            properties: {
+              foo: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+              _foo: { type: 'string' },
+            },
+            required: ['foo', '_foo'],
+            additionalProperties: false,
+          },
+        },
+      }),
+    ).toThrow(/member collision.*(?:foo.*_foo|_foo.*foo)/i);
   });
 
   test('emits the complete registry as source accepted by swiftc', () => {
@@ -1606,13 +1723,13 @@ struct RuntimeChecks {
     expect(source).toContain('public enum ThreadStreamFrame');
     expect(source).toContain('case unknownEvent');
     expect(source).toMatch(
-      /public enum UnknownEventEnvelope: Codable, Sendable[\s\S]*case unknownEvent\(UnknownEventEnvelopeUnknownEvent\)[\s\S]*case unknownEvent2\(UnknownEventEnvelopeUnknownEvent2\)/,
+      /public enum UnknownEventEnvelope: Codable, Sendable[\s\S]*case durable\(UnknownEventEnvelopeDurable\)[\s\S]*case transient\(UnknownEventEnvelopeTransient\)/,
     );
     expect(source).toContain(
-      'decodeJSONValue(UnknownEventEnvelopeUnknownEvent.self, from: raw)',
+      'decodeJSONValue(UnknownEventEnvelopeDurable.self, from: raw)',
     );
     expect(source).toContain(
-      'decodeJSONValue(UnknownEventEnvelopeUnknownEvent2.self, from: raw)',
+      'decodeJSONValue(UnknownEventEnvelopeTransient.self, from: raw)',
     );
 
     const swiftVersion = Bun.spawnSync(['swiftc', '--version']);
@@ -1787,7 +1904,9 @@ await generateContracts({ packageRoot: root, dependencies: role === 'first' ? { 
       signalCollision = resolve;
     });
     const preflight = () => {
-      if (readFileSync(join(root, 'manifest.json'), 'utf8') !== initialManifest) {
+      if (
+        readFileSync(join(root, 'manifest.json'), 'utf8') !== initialManifest
+      ) {
         throw new Error('stale generated-output precondition');
       }
     };
@@ -1929,6 +2048,95 @@ await generateContracts({ packageRoot: root, dependencies: role === 'first' ? { 
       ).toThrow();
     } finally {
       rmSync(root, { recursive: true });
+    }
+  });
+
+  test('fails closed when a stale lock pathname is replaced before quarantine', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-lock-path-swap-'));
+    const lockPath = join(root, '.schema-generation.lock');
+    const replacement = join(root, 'replacement');
+    writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: 999999,
+        hostname: hostname(),
+        nonce: 'stale',
+        createdAt: 0,
+      }),
+    );
+    writeFileSync(replacement, 'keep\n');
+    try {
+      await expect(
+        generateModule.publishGeneratedOutputs(
+          root,
+          { 'generated/output.json': 'new\n' },
+          {
+            lockTimeoutMs: 0,
+            staleLockMs: 0,
+            dependencies: {
+              pidIsAlive: () => false,
+              afterStaleRevalidate: async () =>
+                renameSync(replacement, lockPath),
+            },
+          },
+        ),
+      ).rejects.toThrow(/lock.*changed|inode/i);
+      expect(readFileSync(lockPath, 'utf8')).toBe('keep\n');
+      expect(existsSync(join(root, 'generated/output.json'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('restores a replaced stale lock quarantined into recovery staging', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-recovery-lock-swap-'));
+    const lockPath = join(root, '.schema-generation.lock');
+    const replacement = join(root, 'replacement');
+    const staging = '.schema-generation.staging-recovery';
+    mkdirSync(join(root, staging));
+    writeFileSync(
+      join(root, '.schema-generation.transaction'),
+      JSON.stringify({
+        version: 1,
+        state: 'committed',
+        staging,
+        entries: [],
+      }),
+    );
+    writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: 999999,
+        hostname: hostname(),
+        nonce: 'stale',
+        createdAt: 0,
+      }),
+    );
+    writeFileSync(replacement, 'keep\n');
+    try {
+      await expect(
+        generateModule.publishGeneratedOutputs(
+          root,
+          { 'generated/output.json': 'new\n' },
+          {
+            lockTimeoutMs: 0,
+            staleLockMs: 0,
+            dependencies: {
+              pidIsAlive: () => false,
+              afterStaleRevalidate: async () =>
+                renameSync(replacement, lockPath),
+            },
+          },
+        ),
+      ).rejects.toThrow(/lock.*changed|inode/i);
+      expect(readFileSync(lockPath, 'utf8')).toBe('keep\n');
+      expect(existsSync(join(root, 'generated/output.json'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -2257,6 +2465,35 @@ await publishGeneratedOutputs(process.argv[2], { 'generated/a.json': 'a\\n' }, {
     }
   });
 
+  test('does not delete a lock pathname replacement during release', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-lock-release-swap-'));
+    const lockPath = join(root, '.schema-generation.lock');
+    const inspected = join(root, 'inspected-lock');
+    const replacement = '{"replacement":true}\n';
+    try {
+      await expect(
+        generateModule.publishGeneratedOutputs(
+          root,
+          { 'generated/openapi.v2.json': '{}\n' },
+          {
+            dependencies: {
+              afterReleaseRevalidate: async () => {
+                renameSync(lockPath, inspected);
+                writeFileSync(lockPath, replacement);
+              },
+            },
+          },
+        ),
+      ).rejects.toThrow(/lock.*(?:changed|quarantine|install)/i);
+      expect(readFileSync(lockPath, 'utf8')).toBe(replacement);
+      expect(readFileSync(inspected, 'utf8')).toContain('"nonce"');
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  });
+
   test('fails closed on traversal and linked lock, root, parent or targets', async () => {
     expect(generateModule).toBeDefined();
     if (generateModule === undefined) return;
@@ -2354,6 +2591,60 @@ await publishGeneratedOutputs(process.argv[2], { 'generated/a.json': 'a\\n' }, {
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test('restores an existing target replaced after descriptor inspection', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-target-entry-swap-'));
+    const target = join(root, 'generated/value.json');
+    const displaced = join(root, 'generated/value.displaced.json');
+    mkdirSync(join(root, 'generated'));
+    writeFileSync(target, 'old\n');
+    try {
+      await expect(
+        generateModule.publishGeneratedOutputs(
+          root,
+          { 'generated/value.json': 'new\n' },
+          {
+            dependencies: {
+              afterTargetInspect: async () => {
+                renameSync(target, displaced);
+                writeFileSync(target, 'replacement\n');
+              },
+            },
+          },
+        ),
+      ).rejects.toThrow(/target|inode|generation/i);
+      expect(readFileSync(target, 'utf8')).toBe('replacement\n');
+      expect(readFileSync(displaced, 'utf8')).toBe('old\n');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('fails closed when an absent target is created after inspection', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-target-create-race-'));
+    const target = join(root, 'generated/output.json');
+    mkdirSync(join(root, 'generated'));
+    try {
+      await expect(
+        generateModule.publishGeneratedOutputs(
+          root,
+          { 'generated/output.json': 'new\n' },
+          {
+            dependencies: {
+              afterTargetInspect: async () => writeFileSync(target, 'keep\n'),
+            },
+          },
+        ),
+      ).rejects.toThrow(/generation|target|promotion/i);
+      expect(readFileSync(target, 'utf8')).toBe('keep\n');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -2515,6 +2806,44 @@ await publishGeneratedOutputs(process.argv[2], { 'generated/third.json': 'new:th
       expect(existsSync(join(root, 'generated/new'))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('does not recursively delete a staging path replaced at final cleanup', async () => {
+    expect(generateModule).toBeDefined();
+    if (generateModule === undefined) return;
+    const root = mkdtempSync(join(tmpdir(), 'colorful-staging-cleanup-swap-'));
+    let replacement = '';
+    let displaced = '';
+    try {
+      await expect(
+        generateModule.publishGeneratedOutputs(
+          root,
+          { 'generated/new': 'new\n' },
+          {
+            dependencies: {
+              beforeStagingTreeRemoval: () => {
+                const staging = readdirSync(root).find((name) =>
+                  name.startsWith('.schema-generation.staging-'),
+                );
+                if (staging === undefined) throw new Error('missing staging');
+                replacement = join(root, staging);
+                displaced = `${replacement}.displaced`;
+                renameSync(replacement, displaced);
+                mkdirSync(replacement);
+                writeFileSync(join(replacement, 'valuable'), 'keep\n');
+              },
+            },
+          },
+        ),
+      ).rejects.toThrow(/staging|changed|identity/i);
+      expect(readFileSync(join(replacement, 'valuable'), 'utf8')).toBe(
+        'keep\n',
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      if (displaced.length > 0)
+        rmSync(displaced, { recursive: true, force: true });
     }
   });
 

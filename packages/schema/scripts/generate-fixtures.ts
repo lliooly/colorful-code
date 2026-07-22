@@ -559,11 +559,17 @@ const createAuthoredCases = (): AuthoredCase[] => {
     currentDurableCursor: '41',
     acceptedAt: at,
   } as const;
-  add('command-ack.original', 'http:thread.delete:result', ack);
-  add('command-ack.replayed', 'http:thread.delete:result', {
+  add('command-ack.original', 'schema:CommandAck', ack);
+  add('command-ack.replayed', 'schema:CommandAck', {
     ...ack,
     replayed: true,
   });
+  add(
+    'cursor.unicode-digit',
+    'schema:CommandAck',
+    { ...ack, currentDurableCursor: '1١' },
+    'reject',
+  );
 
   const durableReset = {
     kind: 'stream.snapshotReset',
@@ -661,6 +667,17 @@ const createAuthoredCases = (): AuthoredCase[] => {
     label: 'Fixture credential',
     createdAt: at,
   });
+  add(
+    'credential-ref.bom-provider',
+    'schema:CredentialRef',
+    {
+      credentialRef: 'credential-ref-1',
+      provider: '\uFEFFfixture-provider',
+      label: 'Fixture credential',
+      createdAt: at,
+    },
+    'reject',
+  );
 
   for (const code of (resolveFixtureSchema('schema:ErrorCode') as z.ZodEnum)
     .options) {

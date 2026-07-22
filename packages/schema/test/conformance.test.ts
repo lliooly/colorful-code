@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -17,6 +18,7 @@ import {
   loadConformanceManifest,
   runConformanceCatalog,
 } from '../scripts/lib/conformance.js';
+import { readSecureCatalogFile } from '../scripts/lib/secure-catalog-read.js';
 
 const GOLDEN_ROOT = resolve(import.meta.dir, '../fixtures/golden');
 const temporaryRoots: string[] = [];
@@ -51,7 +53,7 @@ describe('TypeScript conformance runner', () => {
   test('runs every immutable-registry fixture and all semantic outcomes', () => {
     const report = runConformanceCatalog(GOLDEN_ROOT);
 
-    expect(report.fixtureCount).toBe(252);
+    expect(report.fixtureCount).toBe(254);
     expect(report.outcomes).toEqual({
       known: 19,
       protocolError: 1,
@@ -59,6 +61,19 @@ describe('TypeScript conformance runner', () => {
       unknownNonCritical: 4,
     });
     expect(report.preservedCursors).toContain('9007199254740993');
+    expect(report.records).toHaveLength(254);
+    expect(report.records).toEqual(
+      [...report.records].sort((left, right) =>
+        left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
+      ),
+    );
+    expect(report.records.find(({ id }) => id === 'unknown.critical')).toEqual({
+      id: 'unknown.critical',
+      outcome: 'resetRequired',
+    });
+    expect(
+      report.records.find(({ id }) => id === 'reject.unknown-nested'),
+    ).toEqual({ id: 'reject.unknown-nested', outcome: 'reject' });
   });
 
   test('fails when schema parse acceptance differs from expect', () => {
@@ -310,6 +325,34 @@ describe('TypeScript conformance runner', () => {
     }
   });
 
+  test('rejects oversized fixture files before allocating their full contents', () => {
+    const root = copyCatalog();
+    const path = join(root, 'valid/optional.absent.json');
+    writeFileSync(path, Buffer.alloc(4 * 1024 * 1024 + 1, 0x20));
+
+    expect(() => readSecureCatalogFile(realpathSync(root), path)).toThrow();
+  });
+
+  test('rejects a catalog whose individually bounded files exceed the aggregate limit', () => {
+    const root = copyCatalog();
+    for (let index = 0; index < 5; index += 1) {
+      writeFileSync(
+        join(root, 'valid', `aggregate-${index}.json`),
+        Buffer.alloc(3 * 1024 * 1024 + 512 * 1024, 0x20),
+      );
+    }
+
+    expect(() => runConformanceCatalog(root)).toThrow(/catalog is too large/i);
+  });
+
+  test('rejects malformed fixture UTF-8 instead of replacing invalid bytes', () => {
+    const root = copyCatalog();
+    const path = join(root, 'valid/optional.absent.json');
+    writeFileSync(path, Buffer.from([0x22, 0xff, 0x22, 0x0a]));
+
+    expect(() => readSecureCatalogFile(realpathSync(root), path)).toThrow();
+  });
+
   test('confines manifest and fixture paths and rejects symlinks', () => {
     const escaped = copyCatalog();
     const sentinel = 'SENTINEL_PATH';
@@ -448,6 +491,15 @@ describe('TypeScript conformance runner', () => {
     const directory = join(directoryRoot, 'valid/directory.json');
     mkdirSync(directory);
     expect(() => runConformanceCatalog(directoryRoot)).toThrow(/fixture tree/i);
+  });
+
+  test('bounds fixture directory entry counts before catalog reads', () => {
+    const root = copyCatalog();
+    for (let index = 0; index < 1_025; index += 1) {
+      writeFileSync(join(root, 'valid', `excess-${index}.json`), '');
+    }
+
+    expect(() => runConformanceCatalog(root)).toThrow(/fixture tree/i);
   });
 
   test('redacts malformed manifest syntax and schema details', () => {

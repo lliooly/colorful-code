@@ -11,6 +11,7 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  rmdirSync,
   writeFileSync,
 } from 'node:fs';
 import { hostname as systemHostname } from 'node:os';
@@ -34,6 +35,7 @@ const OPEN_CREATE = process.platform === 'darwin' ? 0x200 : 0x40;
 const OPEN_EXCLUSIVE = process.platform === 'darwin' ? 0x800 : 0x80;
 const OPEN_READ_WRITE = 2;
 const OPEN_CLOEXEC = process.platform === 'darwin' ? 0x1000000 : 0x80000;
+const RENAME_NO_REPLACE = process.platform === 'darwin' ? 0x4 : 0x1;
 const TRANSACTION_NAME = '.schema-generation.transaction';
 const STAGING_OWNER_NAME = '.owner.json';
 
@@ -61,6 +63,10 @@ const flockLibrary = dlopen(libcPath, {
     args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.ptr],
     returns: FFIType.i32,
   },
+  [process.platform === 'darwin' ? 'renameatx_np' : 'renameat2']: {
+    args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.i32],
+    returns: FFIType.i32,
+  },
   unlinkat: {
     args: [FFIType.i32, FFIType.ptr, FFIType.i32],
     returns: FFIType.i32,
@@ -70,6 +76,7 @@ const flockLibrary = dlopen(libcPath, {
     returns: FFIType.i32,
   },
   fsync: { args: [FFIType.i32], returns: FFIType.i32 },
+  fchdir: { args: [FFIType.i32], returns: FFIType.i32 },
   [process.platform === 'darwin' ? '__error' : '__errno_location']: {
     args: [],
     returns: FFIType.ptr,
@@ -78,9 +85,14 @@ const flockLibrary = dlopen(libcPath, {
 const flock = flockLibrary.symbols.flock;
 const openat = flockLibrary.symbols.openat;
 const renameat = flockLibrary.symbols.renameat;
+const renameatNoReplace =
+  flockLibrary.symbols[
+    process.platform === 'darwin' ? 'renameatx_np' : 'renameat2'
+  ];
 const unlinkat = flockLibrary.symbols.unlinkat;
 const mkdirat = flockLibrary.symbols.mkdirat;
 const fsync = flockLibrary.symbols.fsync;
+const fchdir = flockLibrary.symbols.fchdir;
 const errnoPointer =
   flockLibrary.symbols[
     process.platform === 'darwin' ? '__error' : '__errno_location'
@@ -106,11 +118,14 @@ export type AtomicDependencies = Readonly<{
   unlock: (descriptor: number) => void;
   afterLockAcquired: () => Promise<void>;
   afterStaleInspect: () => Promise<void>;
+  afterStaleRevalidate: () => Promise<void>;
+  afterReleaseRevalidate: () => Promise<void>;
   afterTargetInspect: () => Promise<void>;
   afterPromotionStep: (step: number) => Promise<void>;
   afterStagingPrepared: () => Promise<void>;
   afterStagingCleanup: () => Promise<void>;
   afterStagingMkdir: () => Promise<void>;
+  beforeStagingTreeRemoval: () => void;
   afterPreparedJournalRename: () => void;
   onLockCollision: () => void;
 }>;
@@ -154,11 +169,14 @@ const dependencies = (
   },
   afterLockAcquired: async () => {},
   afterStaleInspect: async () => {},
+  afterStaleRevalidate: async () => {},
+  afterReleaseRevalidate: async () => {},
   afterTargetInspect: async () => {},
   afterPromotionStep: async () => {},
   afterStagingPrepared: async () => {},
   afterStagingCleanup: async () => {},
   afterStagingMkdir: async () => {},
+  beforeStagingTreeRemoval: () => {},
   afterPreparedJournalRename: () => {},
   onLockCollision: () => {},
   ...overrides,
@@ -206,9 +224,107 @@ const renameAt = (
   }
 };
 
+const renameAtNoReplace = (
+  fromDescriptor: number,
+  fromName: string,
+  toDescriptor: number,
+  toName: string,
+): void => {
+  if (
+    renameatNoReplace(
+      fromDescriptor,
+      nativeName(fromName),
+      toDescriptor,
+      nativeName(toName),
+      RENAME_NO_REPLACE,
+    ) !== 0
+  ) {
+    throw new Error(`failed to atomically install ${fromName} as ${toName}`);
+  }
+};
+
 const unlinkAt = (descriptor: number, name: string): void => {
   if (unlinkat(descriptor, nativeName(name), 0) !== 0) {
     throw new Error(`failed to unlink ${name}`);
+  }
+};
+
+const assertPathMatchesDescriptor = (
+  parentDescriptor: number,
+  name: string,
+  expectedDescriptor: number,
+  label: string,
+): void => {
+  const current = openat(
+    parentDescriptor,
+    nativeName(name),
+    OPEN_NOFOLLOW | OPEN_CLOEXEC,
+    0,
+  );
+  if (current < 0) throw new Error(`${label} changed before rename`);
+  try {
+    const currentMetadata = fstatSync(current);
+    const expectedMetadata = fstatSync(expectedDescriptor);
+    if (
+      !currentMetadata.isFile() ||
+      currentMetadata.nlink !== 1 ||
+      !sameInode(currentMetadata, expectedMetadata)
+    ) {
+      throw new Error(`${label} inode changed before rename`);
+    }
+  } finally {
+    closeSync(current);
+  }
+};
+
+const verifyQuarantinedLock = (
+  quarantineDescriptor: number,
+  quarantineName: string,
+  rootDescriptor: number,
+  expectedDescriptor: number,
+  preservedName: string,
+): void => {
+  try {
+    assertPathMatchesDescriptor(
+      quarantineDescriptor,
+      quarantineName,
+      expectedDescriptor,
+      'schema generation lock quarantine',
+    );
+  } catch (verificationError) {
+    const errors: unknown[] = [verificationError];
+    try {
+      renameAtNoReplace(
+        quarantineDescriptor,
+        quarantineName,
+        rootDescriptor,
+        LOCK_NAME,
+      );
+      syncDescriptor(quarantineDescriptor, 'lock quarantine restore source');
+      if (quarantineDescriptor !== rootDescriptor) {
+        syncDescriptor(rootDescriptor, 'lock quarantine restore destination');
+      }
+    } catch (restoreError) {
+      errors.push(restoreError);
+      if (quarantineDescriptor !== rootDescriptor) {
+        try {
+          renameAtNoReplace(
+            quarantineDescriptor,
+            quarantineName,
+            rootDescriptor,
+            preservedName,
+          );
+          syncDescriptor(
+            quarantineDescriptor,
+            'lock quarantine preservation source',
+          );
+          syncDescriptor(rootDescriptor, 'lock quarantine preservation root');
+        } catch (preservationError) {
+          errors.push(preservationError);
+        }
+      }
+    }
+    throwCollected(errors, 'schema generation lock quarantine changed');
   }
 };
 
@@ -301,6 +417,26 @@ type BoundFile = Readonly<{
   path: string;
 }>;
 
+const openBoundPrivateFile = (file: BoundFile, label: string): number => {
+  const descriptor = openat(
+    file.parentDescriptor,
+    nativeName(file.name),
+    OPEN_NOFOLLOW | OPEN_CLOEXEC,
+    0,
+  );
+  if (descriptor < 0) throw new Error(`${label} changed before open`);
+  try {
+    const metadata = fstatSync(descriptor);
+    if (!metadata.isFile() || metadata.nlink !== 1) {
+      throw new Error(`${label} is not a private regular file`);
+    }
+    return descriptor;
+  } catch (error) {
+    closeSync(descriptor);
+    throw error;
+  }
+};
+
 const bindFile = (
   rootDescriptor: number,
   root: string,
@@ -364,6 +500,85 @@ const renameBound = (
   syncDescriptor(from.parentDescriptor, 'rename source directory');
   if (to.parentDescriptor !== from.parentDescriptor) {
     syncDescriptor(to.parentDescriptor, 'rename destination directory');
+  }
+};
+
+const installAbsentBound = (
+  from: BoundFile,
+  to: BoundFile,
+  renameOverride: AtomicDependencies['rename'] | undefined,
+): void => {
+  renameAtNoReplace(
+    from.parentDescriptor,
+    from.name,
+    to.parentDescriptor,
+    to.name,
+  );
+  renameOverride?.(from.path, to.path);
+  syncDescriptor(from.parentDescriptor, 'rename source directory');
+  if (to.parentDescriptor !== from.parentDescriptor) {
+    syncDescriptor(to.parentDescriptor, 'rename destination directory');
+  }
+};
+
+const backupVerifiedBound = (
+  target: BoundFile,
+  backup: BoundFile,
+  rootDescriptor: number,
+  expectedDescriptor: number,
+  preservedName: string,
+  renameOverride: AtomicDependencies['rename'] | undefined,
+): void => {
+  renameAt(
+    target.parentDescriptor,
+    target.name,
+    backup.parentDescriptor,
+    backup.name,
+  );
+  try {
+    assertPathMatchesDescriptor(
+      backup.parentDescriptor,
+      backup.name,
+      expectedDescriptor,
+      'generated target backup',
+    );
+  } catch (verificationError) {
+    const errors: unknown[] = [verificationError];
+    try {
+      renameAtNoReplace(
+        backup.parentDescriptor,
+        backup.name,
+        target.parentDescriptor,
+        target.name,
+      );
+      syncDescriptor(backup.parentDescriptor, 'target backup restore source');
+      if (backup.parentDescriptor !== target.parentDescriptor) {
+        syncDescriptor(target.parentDescriptor, 'target backup restore target');
+      }
+    } catch (restoreError) {
+      errors.push(restoreError);
+      try {
+        renameAtNoReplace(
+          backup.parentDescriptor,
+          backup.name,
+          rootDescriptor,
+          preservedName,
+        );
+        syncDescriptor(
+          backup.parentDescriptor,
+          'target backup preservation source',
+        );
+        syncDescriptor(rootDescriptor, 'target backup preservation root');
+      } catch (preservationError) {
+        errors.push(preservationError);
+      }
+    }
+    throwCollected(errors, 'generated target changed during backup');
+  }
+  renameOverride?.(target.path, backup.path);
+  syncDescriptor(target.parentDescriptor, 'rename source directory');
+  if (backup.parentDescriptor !== target.parentDescriptor) {
+    syncDescriptor(backup.parentDescriptor, 'rename destination directory');
   }
 };
 
@@ -529,18 +744,31 @@ const recoverTransaction = (
   if (record === undefined) return;
   const stagingPath = resolve(root, record.staging);
   let stagingExists = true;
+  let stagingIdentity:
+    | Readonly<{ dev: number | bigint; ino: number | bigint }>
+    | undefined;
   try {
     const stagingMetadata = lstatSync(stagingPath);
     if (!stagingMetadata.isDirectory() || stagingMetadata.isSymbolicLink()) {
       throw new Error('schema generation recovery staging directory is unsafe');
     }
+    stagingIdentity = {
+      dev: stagingMetadata.dev,
+      ino: stagingMetadata.ino,
+    };
   } catch (error) {
     if (!errno(error, 'ENOENT')) throw error;
     stagingExists = false;
   }
   if (record.state === 'committed') {
     assertRootIdentity(root, rootDescriptor, 'before committed cleanup');
-    if (stagingExists) rmSync(stagingPath, { recursive: true });
+    if (stagingExists)
+      removePinnedDirectoryTree(
+        root,
+        rootDescriptor,
+        record.staging,
+        stagingIdentity,
+      );
     unlinkAt(rootDescriptor, TRANSACTION_NAME);
     syncDescriptor(rootDescriptor, 'package root after committed recovery');
     return;
@@ -593,7 +821,12 @@ const recoverTransaction = (
   unlinkAt(rootDescriptor, TRANSACTION_NAME);
   syncDescriptor(rootDescriptor, 'package root after recovery');
   assertRootIdentity(root, rootDescriptor, 'before recovery cleanup');
-  rmSync(stagingPath, { recursive: true });
+  removePinnedDirectoryTree(
+    root,
+    rootDescriptor,
+    record.staging,
+    stagingIdentity,
+  );
 };
 
 const parseLock = (source: string): LockRecord | undefined => {
@@ -648,6 +881,59 @@ const assertRootIdentity = (
   if (!sameInode(fstatSync(descriptor), lstatSync(root))) {
     throw new Error(`package root changed ${phase}`);
   }
+};
+
+const removePinnedDirectoryTree = (
+  root: string,
+  rootDescriptor: number,
+  name: string,
+  expectedIdentity?: Readonly<{ dev: number | bigint; ino: number | bigint }>,
+  beforeRemoval: () => void = () => {},
+): void => {
+  const path = resolve(root, name);
+  try {
+    lstatSync(path);
+  } catch (error) {
+    if (errno(error, 'ENOENT')) return;
+    throw error;
+  }
+  assertRootIdentity(root, rootDescriptor, 'before pinned tree cleanup');
+  const directory = openDirectoryAt(rootDescriptor, name);
+  const identity = fstatSync(directory);
+  if (
+    expectedIdentity !== undefined &&
+    !sameInode(identity, expectedIdentity)
+  ) {
+    closeSync(directory);
+    throw new Error('staging identity changed before pinned cleanup');
+  }
+  const original = openSync('.', OPEN_DIRECTORY | OPEN_CLOEXEC);
+  let entered = false;
+  let restored = false;
+  try {
+    if (fchdir(directory) !== 0) {
+      throw new Error('failed to enter staging directory for cleanup');
+    }
+    entered = true;
+    if (!sameInode(identity, lstatSync('.'))) {
+      throw new Error('staging identity changed during pinned cleanup');
+    }
+    beforeRemoval();
+    for (const child of readdirSync('.')) {
+      rmSync(child, { force: true, recursive: true });
+    }
+  } finally {
+    if (entered) restored = fchdir(original) === 0;
+    closeSync(original);
+    closeSync(directory);
+  }
+  if (!restored) throw new Error('failed to restore cwd after staging cleanup');
+  assertRootIdentity(root, rootDescriptor, 'after pinned tree cleanup');
+  const current = lstatSync(path);
+  if (!sameInode(identity, current)) {
+    throw new Error('staging identity changed before final removal');
+  }
+  rmdirSync(path);
 };
 
 const readDescriptor = (descriptor: number): string => {
@@ -785,7 +1071,12 @@ const isolateAndRemoveOrphanStaging = (
       if (!sameInode(isolatedPathMetadata, orphan.identity)) {
         throw new Error('isolated orphan identity changed before deletion');
       }
-      rmSync(quarantinePath, { recursive: true });
+      removePinnedDirectoryTree(
+        root,
+        rootDescriptor,
+        quarantineName,
+        quarantineIdentity,
+      );
       syncDescriptor(rootDescriptor, 'package root after orphan cleanup');
     } finally {
       closeSync(quarantineDescriptor);
@@ -913,6 +1204,15 @@ const acquireMetadataLock = async (
         throw new Error('schema generation lock is too new; refusing recovery');
       }
       await system.afterStaleInspect();
+      assertPathMatchesDescriptor(
+        rootDescriptor,
+        LOCK_NAME,
+        existingDescriptor,
+        'schema generation lock',
+      );
+      await system.afterStaleRevalidate();
+      const quarantineName = `${LOCK_NAME}.quarantine-${contender.nonce}`;
+      const preservedName = `${LOCK_NAME}.preserved-${contender.nonce}`;
       if (recoveryStaging !== undefined) {
         const stagingDescriptor = openDirectoryAt(
           rootDescriptor,
@@ -923,23 +1223,29 @@ const acquireMetadataLock = async (
             rootDescriptor,
             LOCK_NAME,
             stagingDescriptor,
-            `${LOCK_NAME}.quarantine-${contender.nonce}`,
+            quarantineName,
+          );
+          verifyQuarantinedLock(
+            stagingDescriptor,
+            quarantineName,
+            rootDescriptor,
+            existingDescriptor,
+            preservedName,
           );
           syncDescriptor(stagingDescriptor, 'recovery staging directory');
         } finally {
           closeSync(stagingDescriptor);
         }
       } else {
-        const quarantinePath = resolve(
-          root,
-          `${LOCK_NAME}.quarantine-${contender.nonce}`,
-        );
+        const quarantinePath = resolve(root, quarantineName);
         assertSafeFile(quarantinePath, 'schema generation quarantine');
-        renameAt(
+        renameAt(rootDescriptor, LOCK_NAME, rootDescriptor, quarantineName);
+        verifyQuarantinedLock(
           rootDescriptor,
-          LOCK_NAME,
+          quarantineName,
           rootDescriptor,
-          `${LOCK_NAME}.quarantine-${contender.nonce}`,
+          existingDescriptor,
+          preservedName,
         );
         quarantinePaths.push(quarantinePath);
       }
@@ -1091,7 +1397,24 @@ const releaseOwnedLock = async (
         'schema generation lock ownership changed before release',
       );
     }
-    unlinkAt(held.rootDescriptor, LOCK_NAME);
+    await system.afterReleaseRevalidate();
+    const token = identityToken(held.owner.nonce);
+    const releaseName = `${LOCK_NAME}.release-${token}`;
+    const preservedName = `${LOCK_NAME}.preserved-release-${token}`;
+    renameAtNoReplace(
+      held.rootDescriptor,
+      LOCK_NAME,
+      held.rootDescriptor,
+      releaseName,
+    );
+    verifyQuarantinedLock(
+      held.rootDescriptor,
+      releaseName,
+      held.rootDescriptor,
+      held.lockDescriptor,
+      preservedName,
+    );
+    unlinkAt(held.rootDescriptor, releaseName);
     syncDescriptor(held.rootDescriptor, 'package root after lock release');
   } catch (error) {
     if (!errno(error, 'ENOENT')) errors.push(error);
@@ -1296,6 +1619,7 @@ export const publishGeneratedOutputs = async (
 
     for (const [index, entry] of transaction.entries.entries()) {
       const files: BoundFile[] = [];
+      let expectedTargetDescriptor: number | undefined;
       try {
         const target = bindFile(
           heldLock.rootDescriptor,
@@ -1315,12 +1639,30 @@ export const publishGeneratedOutputs = async (
           safeRelativePath(entry.backup),
         );
         files.push(backup);
+        if (entry.hadOriginal) {
+          expectedTargetDescriptor = openBoundPrivateFile(
+            target,
+            `generated target ${entry.target}`,
+          );
+        }
         await system.afterTargetInspect();
         if (entry.hadOriginal) {
-          renameBound(target, backup, renameOverride);
+          backupVerifiedBound(
+            target,
+            backup,
+            heldLock.rootDescriptor,
+            expectedTargetDescriptor!,
+            `.schema-generation.target-preserved-${identityToken(nonce)}-${index}`,
+            renameOverride,
+          );
+          renameBound(staged, target, renameOverride);
+        } else {
+          installAbsentBound(staged, target, renameOverride);
         }
-        renameBound(staged, target, renameOverride);
       } finally {
+        if (expectedTargetDescriptor !== undefined) {
+          closeSync(expectedTargetDescriptor);
+        }
         for (const file of files) closeBoundFile(file, heldLock.rootDescriptor);
       }
       await system.afterPromotionStep(index + 1);
@@ -1366,7 +1708,17 @@ export const publishGeneratedOutputs = async (
           'before staging cleanup',
         );
       }
-      rmSync(stagingRoot, { recursive: true, force: true });
+      if (heldLock !== undefined) {
+        removePinnedDirectoryTree(
+          root,
+          heldLock.rootDescriptor,
+          stagingName,
+          undefined,
+          system.beforeStagingTreeRemoval,
+        );
+      } else {
+        rmSync(stagingRoot, { recursive: true, force: true });
+      }
       if (transactionCommitted && heldLock !== undefined) {
         await system.afterStagingCleanup();
         unlinkAt(heldLock.rootDescriptor, TRANSACTION_NAME);
